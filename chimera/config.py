@@ -31,6 +31,7 @@ class ChimeraConfig:
     max_series_len: int = 256
     temporal_layers: int = 2
     temporal_statistics: bool = False
+    temporal_statistics_relative: bool = False
     n_latents: int = 16
     resampler_layers: int = 2
     num_classes: int = 6
@@ -118,6 +119,8 @@ class ChimeraConfig:
             raise ValueError("gradient_checkpointing doit être booléen")
         if type(self.temporal_statistics) is not bool:
             raise ValueError("temporal_statistics doit être booléen")
+        if type(self.temporal_statistics_relative) is not bool:
+            raise ValueError("temporal_statistics_relative doit être booléen")
         if type(self.forecast_adapter_relative) is not bool:
             raise ValueError("forecast_adapter_relative doit être booléen")
         if type(self.forecast_adapter_missing_gate) is not bool:

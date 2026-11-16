@@ -98,6 +98,12 @@ def load_checkpoint(path, device="cpu", *, mmap=True, overrides=None):
                                             dtype=state["embedding.weight"].dtype, device="cpu")
     elif original_config.temporal_statistics and not config.temporal_statistics:
         state.pop(statistics_key)
+    elif (config.temporal_statistics
+          and config.temporal_statistics_relative != original_config.temporal_statistics_relative):
+        # Même forme, autre sens des caractéristiques : ne pas réinterpréter
+        # les coefficients appris sur le niveau et l'échelle absolus.
+        previous_statistics = state.pop(statistics_key)
+        state[statistics_key] = torch.zeros_like(previous_statistics)
     adapter_keys = ("forecast_adapter.proj.weight", "forecast_adapter.proj.bias")
     missing_keys = ("forecast_adapter.missing_proj.weight", "forecast_adapter.missing_proj.bias")
     if (config.forecast_adapter_context != original_config.forecast_adapter_context

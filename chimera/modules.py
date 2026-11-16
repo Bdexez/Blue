@@ -266,6 +266,7 @@ class TemporalEncoder(nn.Module):
         self.blocks = nn.ModuleList([EncoderBlock(config) for _ in range(config.temporal_layers)])
         self.norm = RMSNorm(config.d_model, config.norm_eps)
         self.forecast_context = config.forecast_context
+        self.statistics_relative = config.temporal_statistics_relative
         self.forecast_skip = nn.Linear(config.forecast_context, config.forecast_horizon, bias=False)
         self.statistics_proj = (nn.Linear(6 * config.series_features + 1, config.d_model, bias=False)
                                 if config.temporal_statistics else None)
@@ -292,8 +293,26 @@ class TemporalEncoder(nn.Module):
             # Les âges comptent les positions valides après la dernière observation,
             # afin de rester invariants au padding ou aux positions exclues.
             age = (valid.unsqueeze(-1) & (positions > last_index[:, None])).sum(1) / length
-            statistics = torch.cat((mean.squeeze(1).asinh(), scale.squeeze(1).log(),
-                                    anchor.asinh(), (anchor - mean.squeeze(1)) / scale.squeeze(1),
+            if self.statistics_relative:
+                first_index = positions.expand_as(series).masked_fill(~observed, series.size(1)).min(1).values
+                first = clean.gather(1, first_index.clamp_max(series.size(1) - 1).unsqueeze(1)).squeeze(1)
+                first = torch.where(observed_count.squeeze(1) > 0, first, mean.squeeze(1))
+                low = clean.masked_fill(~observed, float("inf")).min(1).values
+                high = clean.masked_fill(~observed, float("-inf")).max(1).values
+                low = torch.where(observed_count.squeeze(1) > 0, low, mean.squeeze(1))
+                high = torch.where(observed_count.squeeze(1) > 0, high, mean.squeeze(1))
+                normalized = centered / scale
+                previous = positions[..., 0].expand_as(valid).masked_fill(~valid, -1).cummax(1).values
+                previous = F.pad(previous[:, :-1], (1, 0), value=-1)
+                indices = previous.clamp_min(0).unsqueeze(-1).expand_as(series)
+                adjacent = observed & observed.gather(1, indices) & (previous >= 0).unsqueeze(-1)
+                energy = ((normalized - normalized.gather(1, indices)).square() * adjacent).sum(1)
+                energy = energy / adjacent.sum(1).clamp_min(1)
+                summary = ((first - mean.squeeze(1)) / scale.squeeze(1),
+                           (high - low) / scale.squeeze(1), energy)
+            else:
+                summary = (mean.squeeze(1).asinh(), scale.squeeze(1).log(), anchor.asinh())
+            statistics = torch.cat((*summary, (anchor - mean.squeeze(1)) / scale.squeeze(1),
                                     observed_count.squeeze(1) / length, age,
                                     (length / self.forecast_context).log()), dim=-1)
             x = x + self.statistics_proj(statistics.to(self.statistics_proj.weight.dtype))[:, None]
