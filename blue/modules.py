@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .config import ChimeraConfig
+from .config import BlueConfig
 from .temporal_precision import temporal_work_dtype
 
 
@@ -79,7 +79,7 @@ class LayerCache:
 
 
 class GroupedQueryAttention(nn.Module):
-    def __init__(self, config: ChimeraConfig, *, causal=True, window=0):
+    def __init__(self, config: BlueConfig, *, causal=True, window=0):
         super().__init__()
         self.n_heads, self.n_kv_heads = config.n_heads, config.n_kv_heads
         self.head_dim = config.d_model // config.n_heads

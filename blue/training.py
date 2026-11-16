@@ -15,10 +15,10 @@ from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 
-from .config import ChimeraConfig
+from .config import BlueConfig
 from .augmentation import SeriesAffineAugmentation, SeriesAugmentation
 from .data import JointDataset, collate_records, synthetic_batch
-from .model import Chimera
+from .model import Blue
 from .modalities import MODALITIES, balanced_modalities, has_observed_targets, keep_modalities
 from .modality_batch_sampler import ModalityBatchSampler
 from .observed_objective import observed_objective, target_counts
@@ -81,12 +81,12 @@ def load_checkpoint(path, device="cpu", *, mmap=True, overrides=None):
     payload = torch.load(path, map_location="cpu", weights_only=True, mmap=mmap)
     if payload.get("format_version") != 1:
         raise ValueError("Version de checkpoint inconnue")
-    original_config = ChimeraConfig.from_dict(payload["config"])
+    original_config = BlueConfig.from_dict(payload["config"])
     if overrides is not None and not isinstance(overrides, dict):
         raise ValueError("Les changements de configuration doivent être un objet JSON")
-    config = ChimeraConfig.from_dict(original_config.to_dict() | (overrides or {}))
+    config = BlueConfig.from_dict(original_config.to_dict() | (overrides or {}))
     with torch.device("meta"):
-        model = Chimera(config)
+        model = Blue(config)
     state = dict(payload["model"])
     statistics_key = "temporal.statistics_proj.weight"
     if config.temporal_statistics and not original_config.temporal_statistics:
@@ -227,7 +227,7 @@ def train(args, config):
             payload, previous, start = {}, {}, 0
         del source
     else:
-        model, payload, previous, start = Chimera(config).to(device), {}, {}, 0
+        model, payload, previous, start = Blue(config).to(device), {}, {}, 0
     previous_policy = previous.get("modality_policy", "dropout")
     args.modality_policy = args.modality_policy or previous_policy
     if args.resume and args.modality_policy != previous_policy:

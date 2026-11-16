@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 @dataclass
-class ChimeraConfig:
+class BlueConfig:
     vocab_size: int = 260
     d_model: int = 256
     n_layers: int = 8

@@ -59,5 +59,5 @@ def balanced_modalities(batch, index, seed=0, *, prediction_steps=1):
     if not choices:
         raise ValueError("Le lot doit contenir une entrée et une cible supervisée")
     cycle, position = divmod(index, len(choices))
-    random.Random(f"chimera-modalities:{seed}:{cycle}").shuffle(choices)
+    random.Random(f"blue-modalities:{seed}:{cycle}").shuffle(choices)
     return keep_modalities(batch, choices[position])

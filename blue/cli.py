@@ -12,11 +12,11 @@ from torch.utils.data import DataLoader
 
 from .augmentation import SeriesAugmentation
 from .calibration import ForecastCalibration, file_sha256, fit_calibration
-from .config import ChimeraConfig
+from .config import BlueConfig
 from .data import JointDataset, collate_records, synthetic_batch
 from .forecast_adapter import fit_forecast_adapter
 from .embedding_search import search_embeddings
-from .model import Chimera
+from .model import Blue
 from .modality_batch_sampler import OrderedModalityBatchSampler
 from .retrieval_evaluation import evaluate_retrieval
 from .retrieval_relevance import write_class_relevance
@@ -83,7 +83,7 @@ def prediction_stream(path):
 def inspect_config(config):
     # Pas d'allocation des poids, même pour une architecture de centaines de milliards.
     with torch.device("meta"):
-        model = Chimera(config)
+        model = Blue(config)
     total = sum(p.numel() for p in model.parameters())
     expert_size = 3 * config.d_model * config.hidden_dim
     unselected = config.n_layers * (config.n_experts - config.top_k) * expert_size
@@ -103,11 +103,11 @@ def inspect_config(config):
 
 
 def get_config(args):
-    return ChimeraConfig.load(args.config) if args.config else ChimeraConfig.preset(args.preset)
+    return BlueConfig.load(args.config) if args.config else BlueConfig.preset(args.preset)
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="CHIMERA — réseau multimodal à experts")
+    parser = argparse.ArgumentParser(description="BLUE — réseau multimodal à experts")
     parser.add_argument("--threads", type=int, default=4, help="Threads CPU (défaut : 4)")
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect", help="Compter les paramètres sans allouer les poids")
@@ -191,7 +191,7 @@ def main(argv=None):
     initialization.add_argument("--resume", help="Checkpoint complet dont reprendre l'entraînement")
     initialization.add_argument("--init-from", help="Poids initiaux pour un nouvel entraînement avec un optimiseur neuf")
     training.add_argument("--model-overrides", help="Objet JSON partiel de configuration à appliquer avec --init-from")
-    training.add_argument("--output", default="runs/chimera")
+    training.add_argument("--output", default="runs/blue")
     training.add_argument("--save-every", type=int, default=25)
     training.add_argument("--log-every", type=int, default=10)
     training.add_argument("--eval-every", type=int, default=25, help="Fréquence des validations et sélection du meilleur modèle")
@@ -412,7 +412,7 @@ def main(argv=None):
             raise SystemExit(2)
     elif args.command == "inspect":
         if args.all:
-            report = {name: inspect_config(ChimeraConfig.preset(name))
+            report = {name: inspect_config(BlueConfig.preset(name))
                       for name in ("tiny", "small", "workstation", "base", "large", "ultra")}
         else:
             report = inspect_config(get_config(args))
@@ -424,7 +424,7 @@ def main(argv=None):
     elif args.command == "demo":
         torch.manual_seed(42)
         model = (load_checkpoint(args.checkpoint, args.device)[0] if args.checkpoint
-                 else Chimera(get_config(args)).to(args.device))
+                 else Blue(get_config(args)).to(args.device))
         model.eval()
         batch = synthetic_batch(model.config, batch_size=2, seed=7, device=args.device)
         with torch.inference_mode():
