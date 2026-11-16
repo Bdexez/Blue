@@ -10,16 +10,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera.augmentation import SeriesAugmentation
-from chimera.calibration import file_sha256
-from chimera.cli import prediction_stream, same_file
-from chimera.data import synthetic_batch
-from chimera.evaluation import evaluate
-from chimera.modalities import keep_modalities
-from chimera.series_classifier import fit_series_classifier
-from chimera.series_gate import fit_series_gate
-from chimera.series_gate_guard import fit_series_gate_guard
-from chimera.training import load_checkpoint
+from blue.augmentation import SeriesAugmentation
+from blue.calibration import file_sha256
+from blue.cli import prediction_stream, same_file
+from blue.data import synthetic_batch
+from blue.evaluation import evaluate
+from blue.modalities import keep_modalities
+from blue.series_classifier import fit_series_classifier
+from blue.series_gate import fit_series_gate
+from blue.series_gate_guard import fit_series_gate_guard
+from blue.training import load_checkpoint
 
 
 TRANSFORMS = {'identity': (1., 0.), 'shift1': (1., 1.), 'shift3': (1., 3.), 'shift20': (1., 20.),

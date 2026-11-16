@@ -9,7 +9,7 @@ import unittest
 
 import torch
 
-from chimera import ChimeraConfig
+from blue import BlueConfig
 
 
 class DistributedResumeTests(unittest.TestCase):
@@ -17,14 +17,14 @@ class DistributedResumeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "model.json"
-            replace(ChimeraConfig.preset("tiny"), dropout=0.2).save(config)
+            replace(BlueConfig.preset("tiny"), dropout=0.2).save(config)
             data = root / "data.jsonl"
             records = [dict(text="Classe " + str(i) + "!" * i,
                             series=[[float(i), float(t), float(i + t)] for t in range(8 + i % 3)],
                             class_label=i % 6) for i in range(9)]
             data.write_text("\n".join(json.dumps(row) for row in records))
             common = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=2",
-                      "-m", "chimera", "--threads", "1", "train", "--config", str(config),
+                      "-m", "blue", "--threads", "1", "train", "--config", str(config),
                       "--steps", "5", "--batch-size", "2", "--accumulation", "2", "--data", str(data),
                       "--val-data", str(data), "--eval-every", "2", "--save-every", "2",
                       "--modality-dropout", "0.4", "--series-missing-rate", "0.2", "--seed", "44"]
@@ -70,9 +70,9 @@ class DistributedResumeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "model.json"
-            replace(ChimeraConfig.preset("tiny"), dropout=0.1).save(config)
+            replace(BlueConfig.preset("tiny"), dropout=0.1).save(config)
             common = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=2",
-                      "-m", "chimera", "--threads", "1", "train", "--config", str(config),
+                      "-m", "blue", "--threads", "1", "train", "--config", str(config),
                       "--steps", "3", "--batch-size", "2", "--accumulation", "2", "--eval-every", "2"]
             env = dict(os.environ, OMP_NUM_THREADS="1")
             for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
@@ -98,7 +98,7 @@ class DistributedResumeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "model.json"
-            replace(ChimeraConfig.preset("tiny"), balance_weight=0, router_z_weight=0, alignment_weight=0).save(config)
+            replace(BlueConfig.preset("tiny"), balance_weight=0, router_z_weight=0, alignment_weight=0).save(config)
             data = root / "data.jsonl"
             records = [dict(series=[[float(index), float(step), float(index + step)] for step in range(8)])
                        for index in range(4)]
@@ -111,8 +111,8 @@ class DistributedResumeTests(unittest.TestCase):
             for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
                 env.pop(key, None)
             commands = [
-                [sys.executable, "-m", "chimera", *common, "--batch-size", "4", "--output", str(root / "single")],
-                [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=2", "-m", "chimera",
+                [sys.executable, "-m", "blue", *common, "--batch-size", "4", "--output", str(root / "single")],
+                [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=2", "-m", "blue",
                  *common, "--batch-size", "1", "--accumulation", "2", "--output", str(root / "ddp")],
             ]
             for command in commands:

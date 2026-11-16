@@ -5,10 +5,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.retrieval_evaluation import evaluate_retrieval
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.retrieval_evaluation import evaluate_retrieval
+from blue.training import save_checkpoint
 from tests import test_embedding_search
 from tests.test_partial_embedding_search import remove_modalities
 from tests.test_mixed_modality_training import make_data
@@ -96,7 +96,7 @@ class PartialRetrievalEvaluationTests(unittest.TestCase):
 
     def test_real_mixed_embeddings_end_to_end(self):
         config_path, data = make_data(self.root)
-        model = Chimera(ChimeraConfig.load(config_path)).eval()
+        model = Blue(BlueConfig.load(config_path)).eval()
         checkpoint, embeddings = self.root / 'model.pt', self.root / 'mixed.jsonl'
         save_checkpoint(checkpoint, model)
         with redirect_stdout(io.StringIO()):

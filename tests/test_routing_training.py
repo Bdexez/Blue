@@ -13,12 +13,12 @@ sys.path.insert(0, str(ROOT))
 
 
 def routing_worker():
-    from chimera import Chimera
-    from chimera.cli import main
+    from blue import Blue
+    from blue.cli import main
 
-    capture = Path(os.environ["CHIMERA_ROUTING_CAPTURE"])
+    capture = Path(os.environ["BLUE_ROUTING_CAPTURE"])
     rank = os.environ["RANK"]
-    original = Chimera.forward
+    original = Blue.forward
 
     def forward(model, *args, **kwargs):
         output = original(model, *args, **kwargs)
@@ -28,7 +28,7 @@ def routing_worker():
                 stream.write(json.dumps(row) + "\n")
         return output
 
-    Chimera.forward = forward
+    Blue.forward = forward
     main(["--threads", "1", "train", "--steps", "1", "--batch-size", "2", "--accumulation", "2",
           "--modality-policy", "balanced", "--output", str(capture / "run")])
 
@@ -37,7 +37,7 @@ class RoutingTrainingTests(unittest.TestCase):
     def test_training_reports_token_weighted_usage_across_all_ranks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = dict(os.environ, OMP_NUM_THREADS="1", CHIMERA_ROUTING_CAPTURE=directory)
+            env = dict(os.environ, OMP_NUM_THREADS="1", BLUE_ROUTING_CAPTURE=directory)
             for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
                 env.pop(key, None)
             command = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=2",

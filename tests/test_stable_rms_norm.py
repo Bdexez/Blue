@@ -9,12 +9,12 @@ from pathlib import Path
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.cli import main
-from chimera.calibration import file_sha256
-from chimera.modules import RMSNorm
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.cli import main
+from blue.calibration import file_sha256
+from blue.modules import RMSNorm
+from blue.training import load_checkpoint, save_checkpoint
 
 
 class StableRMSNormTests(unittest.TestCase):
@@ -84,10 +84,10 @@ class StableRMSNormTests(unittest.TestCase):
             self.assertTrue(torch.isfinite(data.grad).all())
 
     def test_model_compatibility_cache_and_checkpoint_override(self):
-        config = ChimeraConfig.preset('tiny')
+        config = BlueConfig.preset('tiny')
         torch.manual_seed(432)
-        legacy = Chimera(config).eval()
-        stable = Chimera(replace(config, stable_rms_norm=True)).eval()
+        legacy = Blue(config).eval()
+        stable = Blue(replace(config, stable_rms_norm=True)).eval()
         stable.load_state_dict(legacy.state_dict(), strict=True)
         self.assertTrue(all(m.stable for m in stable.modules() if isinstance(m,RMSNorm)))
         self.assertTrue(all(not m.stable for m in legacy.modules() if isinstance(m,RMSNorm)))
@@ -120,14 +120,14 @@ class StableRMSNormTests(unittest.TestCase):
             self.assertTrue(all(m.stable for m in upgraded.modules() if isinstance(m,RMSNorm)))
         serialized = config.to_dict()
         del serialized['stable_rms_norm']
-        self.assertFalse(ChimeraConfig.from_dict(serialized).stable_rms_norm)
+        self.assertFalse(BlueConfig.from_dict(serialized).stable_rms_norm)
         with self.assertRaises(ValueError):
             replace(config, stable_rms_norm=1)
 
 
     def test_stable_norm_with_gradient_checkpointing(self):
-        config = replace(ChimeraConfig.preset('tiny'), stable_rms_norm=True, gradient_checkpointing=True)
-        model = Chimera(config).train()
+        config = replace(BlueConfig.preset('tiny'), stable_rms_norm=True, gradient_checkpointing=True)
+        model = Blue(config).train()
         batch = synthetic_batch(config, batch_size=2, seed=975)
         loss = model(**batch).loss
         self.assertTrue(torch.isfinite(loss))
@@ -139,7 +139,7 @@ class StableRMSNormTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
             source, target = root / 'source.pt', root / 'stable.pt'
-            save_checkpoint(source, Chimera(ChimeraConfig.preset('tiny')), step=7)
+            save_checkpoint(source, Blue(BlueConfig.preset('tiny')), step=7)
             original_sha = file_sha256(source)
             main(['export','--checkpoint',str(source),'--output',str(target),'--stable-rms-norm'])
             model, payload = load_checkpoint(target)
@@ -164,14 +164,14 @@ class StableRMSNormTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
             source, target = root / 'source.pt', root / 'stable.pt'
-            save_checkpoint(source, Chimera(ChimeraConfig.preset('tiny')))
+            save_checkpoint(source, Blue(BlueConfig.preset('tiny')))
             target.write_text('existing')
             def changed(*args, **kwargs):
                 result = load_checkpoint(*args, **kwargs)
                 with source.open('ab') as stream:
                     stream.write(b'changed')
                 return result
-            with patch('chimera.cli.load_checkpoint', side_effect=changed):
+            with patch('blue.cli.load_checkpoint', side_effect=changed):
                 with self.assertRaisesRegex(ValueError, 'a changé'):
                     main(['export','--checkpoint',str(source),'--output',str(target),'--stable-rms-norm'])
             self.assertEqual(target.read_text(),'existing')

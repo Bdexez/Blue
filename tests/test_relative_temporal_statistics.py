@@ -5,9 +5,9 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.training import load_checkpoint, save_checkpoint
 
 
 class RelativeTemporalStatisticsTests(unittest.TestCase):
@@ -17,9 +17,9 @@ class RelativeTemporalStatisticsTests(unittest.TestCase):
 
     def test_translation_invariance_padding_missing_features_and_backward(self):
         torch.manual_seed(7041)
-        config = replace(ChimeraConfig.preset("tiny"), temporal_statistics=True, temporal_statistics_relative=True,
+        config = replace(BlueConfig.preset("tiny"), temporal_statistics=True, temporal_statistics_relative=True,
                          gradient_checkpointing=True)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         torch.nn.init.normal_(model.temporal.statistics_proj.weight, std=0.02)
         batch = synthetic_batch(config, batch_size=2, seed=7042)
         series = batch["series"][:, -16:].clone()
@@ -58,7 +58,7 @@ class RelativeTemporalStatisticsTests(unittest.TestCase):
     def test_feature_mode_transfer_resets_only_statistics_and_roundtrips(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.pt"
-            model = Chimera(replace(ChimeraConfig.preset("tiny"), temporal_statistics=True))
+            model = Blue(replace(BlueConfig.preset("tiny"), temporal_statistics=True))
             torch.nn.init.normal_(model.temporal.statistics_proj.weight, std=0.01)
             save_checkpoint(source, model)
             relative, _ = load_checkpoint(source, overrides={"temporal_statistics_relative": True})

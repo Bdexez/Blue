@@ -4,9 +4,9 @@ import unittest
 import torch
 from torch.nn import functional as F
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.losses import symmetric_contrastive_loss
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.losses import symmetric_contrastive_loss
 
 
 class AlignmentTests(unittest.TestCase):
@@ -46,9 +46,9 @@ class AlignmentTests(unittest.TestCase):
 
     def test_mode_preserves_weight_compatibility_and_never_conditions_predictions_on_labels(self):
         torch.set_num_threads(2)
-        config = ChimeraConfig.preset("tiny")
-        paired = Chimera(config).eval()
-        grouped = Chimera(replace(config, alignment_mode="class")).eval()
+        config = BlueConfig.preset("tiny")
+        paired = Blue(config).eval()
+        grouped = Blue(replace(config, alignment_mode="class")).eval()
         grouped.load_state_dict(paired.state_dict(), strict=True)
         batch = synthetic_batch(config, batch_size=3)
         with torch.no_grad():

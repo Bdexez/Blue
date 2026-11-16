@@ -10,12 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera.calibration import file_sha256, fit_calibration
-from chimera.cli import prediction_stream, same_file
-from chimera.data import synthetic_batch
-from chimera.evaluation import evaluate
-from chimera.modalities import keep_modalities
-from chimera.training import load_checkpoint
+from blue.calibration import file_sha256, fit_calibration
+from blue.cli import prediction_stream, same_file
+from blue.data import synthetic_batch
+from blue.evaluation import evaluate
+from blue.modalities import keep_modalities
+from blue.training import load_checkpoint
 
 
 def main():

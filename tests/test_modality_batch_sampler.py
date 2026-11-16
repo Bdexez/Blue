@@ -10,9 +10,9 @@ from unittest.mock import patch
 import torch
 from torch.utils.data import DataLoader
 
-from chimera import ChimeraConfig
-from chimera.data import JointDataset, collate_records
-from chimera.modality_batch_sampler import ModalityBatchSampler
+from blue import BlueConfig
+from blue.data import JointDataset, collate_records
+from blue.modality_batch_sampler import ModalityBatchSampler
 
 
 class ModalityBatchSamplerTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class ModalityBatchSamplerTests(unittest.TestCase):
                    [{'series': [[float(i)] * 3], 'class_label': 1} for i in range(3)] +
                    [{'text': 'associé', 'series': [[1.] * 3], 'class_label': 2}])
         self.path.write_text(''.join(json.dumps(record) + '\n' for record in records))
-        self.config = ChimeraConfig.preset('tiny')
+        self.config = BlueConfig.preset('tiny')
         self.dataset = JointDataset(self.path, self.config, allow_mixed=True)
 
     def test_default_still_rejects_mixed_and_opt_in_indexes_signatures(self):

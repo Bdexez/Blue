@@ -14,12 +14,12 @@ sys.path.insert(0, str(ROOT))
 
 import torch
 
-from chimera.calibration import file_sha256
-from chimera.cli import prediction_stream
-from chimera.data import JointDataset, synthetic_batch
-from chimera.modality_batch_sampler import ModalityBatchSampler
-from chimera.tokenizer import ByteTokenizer
-from chimera.training import load_checkpoint
+from blue.calibration import file_sha256
+from blue.cli import prediction_stream
+from blue.data import JointDataset, synthetic_batch
+from blue.modality_batch_sampler import ModalityBatchSampler
+from blue.tokenizer import ByteTokenizer
+from blue.training import load_checkpoint
 from tools.compare_shared_modality_batches import exposure, measure
 
 
@@ -141,7 +141,7 @@ def main():
                 raise ValueError('Le checkpoint ou les données ont changé pendant la comparaison')
             destination = output / f'{mode}-{seed}'
             command = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=2',
-                       '-m', 'chimera', '--threads', '1', 'train', '--init-from', str(checkpoint),
+                       '-m', 'blue', '--threads', '1', 'train', '--init-from', str(checkpoint),
                        '--model-overrides', str(override), '--data', str(data), '--mixed-modalities',
                        '--no-alignment-duplicate-positives', '--modality-dropout', '0',
                        '--loss-normalization', 'observed', '--steps', str(args.steps),

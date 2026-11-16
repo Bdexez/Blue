@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from chimera.cli import main
-from chimera.retrieval_evaluation import evaluate_retrieval
+from blue.cli import main
+from blue.retrieval_evaluation import evaluate_retrieval
 from tests import test_embedding_search
 
 
@@ -99,7 +99,7 @@ class RetrievalEvaluationTests(unittest.TestCase):
             main(args)
             original = self.output.read_text()
             self.assertAlmostEqual(json.loads(original)['metrics']['recall'], .75)
-            with patch('chimera.retrieval_evaluation.file_sha256', return_value='invalid'):
+            with patch('blue.retrieval_evaluation.file_sha256', return_value='invalid'):
                 with self.assertRaisesRegex(ValueError, 'modifié'):
                     main(args)
             self.assertEqual(self.output.read_text(), original)

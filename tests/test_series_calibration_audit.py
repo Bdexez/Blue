@@ -3,8 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from chimera.calibration import file_sha256
-from chimera.cli import audit_series_calibration
+from blue.calibration import file_sha256
+from blue.cli import audit_series_calibration
 
 
 class SeriesCalibrationAuditTests(unittest.TestCase):

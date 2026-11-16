@@ -9,10 +9,10 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.calibration import file_sha256
-from chimera.cli import main
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import Blue, BlueConfig
+from blue.calibration import file_sha256
+from blue.cli import main
+from blue.training import load_checkpoint, save_checkpoint
 from tools.make_forecast_data import main as make_data
 from tools.benchmark_calibration import main as benchmark_calibration
 
@@ -22,7 +22,7 @@ class ForecastAdapterCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
             source, data, output, report = [root / name for name in ("base.pt", "data.jsonl", "fit.pt", "report.json")]
-            save_checkpoint(source, Chimera(ChimeraConfig.preset("tiny")))
+            save_checkpoint(source, Blue(BlueConfig.preset("tiny")))
             make_data(["--checkpoint", str(source), "--output", str(data), "--examples", "32",
                        "--batch-size", "16", "--min-history", "32", "--missing-rate", "0.4",
                        "--mask-probability", "1"])
@@ -42,7 +42,7 @@ class ForecastAdapterCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkpoint, report = root / "model.pt", root / "report.json"
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset("tiny")))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset("tiny")))
             original = checkpoint.read_bytes()
             common = [sys.executable, "tools/benchmark_missing_gate.py", "--checkpoint", str(checkpoint),
                       "--train-batches", "7", "--test-batches", "1", "--batch-size", "4"]
@@ -63,7 +63,7 @@ class ForecastAdapterCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
             checkpoint, output = root / "model.pt", root / "study"
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset("tiny")))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset("tiny")))
             args = ["--checkpoint", str(checkpoint), "--output-dir", str(output),
                     "--case", "history8_missing30", "--modalities", "series", "text+image+series",
                     "--calibration-batches", "2", "--test-batches", "2", "--batch-size", "8", "--threads", "2"]
@@ -85,9 +85,9 @@ class ForecastAdapterCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
             source, data, output, report = [root / name for name in ("base.pt", "data.jsonl", "fit.pt", "report.json")]
-            config = ChimeraConfig.preset("tiny")
+            config = BlueConfig.preset("tiny")
             torch.manual_seed(62)
-            original = Chimera(config)
+            original = Blue(config)
             save_checkpoint(source, original, step=7, trainer={"validation_state": {"best_step": None,
                                                                                    "best_loss": float("inf")}})
             source_sha = file_sha256(source)

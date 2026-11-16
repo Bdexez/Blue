@@ -11,14 +11,14 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.data import synthetic_batch
-from chimera.evaluation import evaluate
-from chimera.probability_metrics import ProbabilityMetrics
-from chimera.series_classifier import SeriesClassifier, fit_series_classifier
-from chimera.series_probability import (SeriesProbabilityCalibration, fit_series_probability, log_probabilities)
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.data import synthetic_batch
+from blue.evaluation import evaluate
+from blue.probability_metrics import ProbabilityMetrics
+from blue.series_classifier import SeriesClassifier, fit_series_classifier
+from blue.series_probability import (SeriesProbabilityCalibration, fit_series_probability, log_probabilities)
+from blue.training import save_checkpoint
 
 
 class SeriesProbabilityTests(unittest.TestCase):
@@ -48,7 +48,7 @@ class SeriesProbabilityTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = replace(ChimeraConfig.preset("tiny"), num_classes=2, series_features=2)
+                self.config = replace(BlueConfig.preset("tiny"), num_classes=2, series_features=2)
 
         class StubClassifier:
             amp = "none"
@@ -102,9 +102,9 @@ class SeriesProbabilityTests(unittest.TestCase):
             log_probabilities(torch.tensor([[float("nan"), 1.]]))
 
     def test_model_fit_preserves_state_and_ignores_unlabeled_batches(self):
-        config = replace(ChimeraConfig.preset("tiny"), temporal_statistics=True)
+        config = replace(BlueConfig.preset("tiny"), temporal_statistics=True)
         torch.manual_seed(328)
-        model = Chimera(config).train()
+        model = Blue(config).train()
         training = synthetic_batch(config, batch_size=128, seed=503)
         training = {k: v for k, v in training.items() if k in ("series", "series_mask", "class_labels")}
         classifier = fit_series_classifier(model, [training], checkpoint_sha256="a" * 64, dataset_sha256="b" * 64)
@@ -125,8 +125,8 @@ class SeriesProbabilityTests(unittest.TestCase):
         self.assertAlmostEqual(fitted.inverse_temperature, other.inverse_temperature, delta=1e-4)
 
     def test_bf16_fit_and_evaluation_use_same_precision(self):
-        config = ChimeraConfig.preset("tiny")
-        model = Chimera(config)
+        config = BlueConfig.preset("tiny")
+        model = Blue(config)
         train = synthetic_batch(config, batch_size=128, seed=508)
         train = {k: v for k, v in train.items() if k in ("series", "series_mask", "class_labels")}
         head = fit_series_classifier(model, [train], amp="bf16", checkpoint_sha256="a" * 64)
@@ -145,11 +145,11 @@ class SeriesProbabilityTests(unittest.TestCase):
     def test_cli_separates_data_binds_files_and_preserves_predictions(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), temporal_statistics=True)
+            config = replace(BlueConfig.preset("tiny"), temporal_statistics=True)
             checkpoint, head, calibration = root / "model.pt", root / "head.json", root / "temperature.json"
             train, tuning, test = root / "train.jsonl", root / "calibration.jsonl", root / "test.jsonl"
             report, predictions = root / "report.json", root / "predictions.jsonl"
-            save_checkpoint(checkpoint, Chimera(config))
+            save_checkpoint(checkpoint, Blue(config))
             for path, count, seed in ((train, 128, 505), (tuning, 64, 506), (test, 24, 507)):
                 batch = synthetic_batch(config, batch_size=count, seed=seed)
                 path.write_text("\n".join(json.dumps(dict(series=batch["series"][i].tolist(),
@@ -214,7 +214,7 @@ class SeriesProbabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkpoint, report = root / "model.pt", root / "report.json"
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset("tiny")))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset("tiny")))
             original = checkpoint.read_bytes()
             common = [sys.executable, "tools/benchmark_series_probability.py", "--checkpoint", str(checkpoint),
                       "--train-batches", "12", "--calibration-batches", "2", "--test-batches", "1",

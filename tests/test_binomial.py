@@ -3,10 +3,10 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.binomial import wilson_interval
-from chimera.data import synthetic_batch
-from chimera.evaluation import evaluate
+from blue import Blue, BlueConfig
+from blue.binomial import wilson_interval
+from blue.data import synthetic_batch
+from blue.evaluation import evaluate
 
 
 class BinomialIntervalTests(unittest.TestCase):
@@ -28,8 +28,8 @@ class BinomialIntervalTests(unittest.TestCase):
                 wilson_interval(*args)
 
     def test_base_accuracy_and_no_labels(self):
-        config = replace(ChimeraConfig.preset('tiny'), num_classes=3)
-        model = Chimera(config)
+        config = replace(BlueConfig.preset('tiny'), num_classes=3)
+        model = Blue(config)
         batch = synthetic_batch(config, batch_size=24, seed=213)
         batch = {k: v for k, v in batch.items() if k in ('series', 'series_mask', 'class_labels')}
         plain = evaluate(model, [batch])

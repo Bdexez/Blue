@@ -7,11 +7,11 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.calibration import (ForecastCalibration, conformity_scores, file_sha256, fit_calibration,
+from blue import Blue, BlueConfig
+from blue.calibration import (ForecastCalibration, conformity_scores, file_sha256, fit_calibration,
                                  tail_conformity_scores)
-from chimera.data import synthetic_batch
-from chimera.evaluation import evaluate
+from blue.data import synthetic_batch
+from blue.evaluation import evaluate
 
 
 class CalibrationTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class CalibrationTests(unittest.TestCase):
         torch.set_num_threads(2)
 
     def test_model_fitting_is_batch_invariant_and_restores_mode_without_changing_weights(self):
-        model = Chimera(ChimeraConfig.preset("tiny")).train()
+        model = Blue(BlueConfig.preset("tiny")).train()
         batch = synthetic_batch(model.config, batch_size=10, seed=128)
         weights = {key: value.clone() for key, value in model.state_dict().items()}
         rng = torch.get_rng_state().clone()
@@ -125,7 +125,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(above, .1, delta=.025)
 
     def test_mixed_precision_calibration_cannot_be_reused_with_another_precision(self):
-        model = Chimera(ChimeraConfig.preset("tiny")).train()
+        model = Blue(BlueConfig.preset("tiny")).train()
         batch = synthetic_batch(model.config, batch_size=8, seed=195)
         fitted = fit_calibration(model, [batch], amp="bf16")
         restored = ForecastCalibration.from_dict(json.loads(json.dumps(fitted.to_dict())))
@@ -137,7 +137,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertIsNotNone(report["calibrated_interval_coverage"])
 
     def test_evaluation_preserves_point_metrics_and_weights_missing_targets_correctly(self):
-        model = Chimera(ChimeraConfig.preset("tiny")).train()
+        model = Blue(BlueConfig.preset("tiny")).train()
         fitted = fit_calibration(model, [synthetic_batch(model.config, batch_size=12, seed=190)])
         batch = synthetic_batch(model.config, batch_size=7, seed=191)
         batch["forecast_targets"][1:3] = float("nan")
@@ -174,7 +174,7 @@ class CalibrationTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=1, series_features=1)
+                self.config = replace(BlueConfig.preset("tiny"), forecast_horizon=1, series_features=1)
 
             def forward(self, series, **kwargs):
                 forecast = series.new_tensor([0., 1., 2.]).expand(series.size(0), 1, 1, 3)
@@ -201,7 +201,7 @@ class CalibrationTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=2, series_features=3)
+                self.config = replace(BlueConfig.preset("tiny"), forecast_horizon=2, series_features=3)
 
             def forward(self, series, **kwargs):
                 forecast = series.new_tensor([-1., 0., 1.]).expand(series.size(0), 2, 3, 3)
@@ -269,7 +269,7 @@ class CalibrationTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=1, series_features=1,
+                self.config = replace(BlueConfig.preset("tiny"), forecast_horizon=1, series_features=1,
                                       quantiles=(0.5,))
 
             def forward(self, series, **kwargs):
@@ -294,7 +294,7 @@ class CalibrationTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=1, series_features=1)
+                self.config = replace(BlueConfig.preset("tiny"), forecast_horizon=1, series_features=1)
 
             def forward(self, series, **kwargs):
                 forecast = series.new_tensor([-60000, 60000, 60000]).expand(series.size(0), 1, 1, 3)
@@ -373,7 +373,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertGreater(joint_width, marginal_width)
 
     def test_joint_fitting_is_batch_invariant_with_missing_trajectories(self):
-        model = Chimera(ChimeraConfig.preset("tiny")).train()
+        model = Blue(BlueConfig.preset("tiny")).train()
         batch = synthetic_batch(model.config, batch_size=12, seed=1231)
         batch["forecast_targets"][:2, 0, 0] = float("nan")
         chunks = [{key: value[section] for key, value in batch.items()}
@@ -397,7 +397,7 @@ class CalibrationTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=2, series_features=2)
+                self.config = replace(BlueConfig.preset("tiny"), forecast_horizon=2, series_features=2)
 
             def forward(self, series, **kwargs):
                 forecast = series.new_tensor([-1., 0., 1.]).expand(series.size(0), 2, 2, 3)
@@ -493,7 +493,7 @@ class CalibrationTests(unittest.TestCase):
                                          checkpoint_sha256=file_sha256(checkpoint))
             restored = ForecastCalibration.from_dict(json.loads(json.dumps(fitted.to_dict())))
             restored.validate_checkpoint(checkpoint)
-            config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=1, series_features=1)
+            config = replace(BlueConfig.preset("tiny"), forecast_horizon=1, series_features=1)
             restored.validate(config, {"series": torch.ones(1)})
             with self.assertRaisesRegex(ValueError, "modalités"):
                 restored.validate(config, {"series": torch.ones(1), "images": torch.ones(1)})

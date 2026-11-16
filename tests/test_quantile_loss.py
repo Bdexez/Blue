@@ -2,8 +2,8 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.losses import quantile_pinball_loss
+from blue import Blue, BlueConfig
+from blue.losses import quantile_pinball_loss
 
 
 class QuantileLossTests(unittest.TestCase):
@@ -83,8 +83,8 @@ class QuantileLossTests(unittest.TestCase):
         self.assertEqual(predictions.grad.count_nonzero().item(), 0)
 
     def test_autocast_forecasting_uses_unrounded_quantiles(self):
-        config = ChimeraConfig.preset("tiny")
-        model = Chimera(config).train()
+        config = BlueConfig.preset("tiny")
+        model = Blue(config).train()
         images = torch.rand(2, config.image_channels, config.image_size, config.image_size)
         targets = torch.ones(2, config.forecast_horizon, config.series_features)
         with torch.autocast("cpu", dtype=torch.bfloat16):

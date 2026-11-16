@@ -18,8 +18,8 @@ sys.path.insert(0, str(ROOT))
 
 import torch
 
-from chimera.data import synthetic_batch
-from chimera.training import load_checkpoint
+from blue.data import synthetic_batch
+from blue.training import load_checkpoint
 from benchmark import measure
 
 
@@ -48,7 +48,7 @@ def main():
         for policy in ("dropout", "balanced"):
             directory = output / f"{policy}-{seed}"
             directory.mkdir()
-            command = [sys.executable, "-m", "chimera", "--threads", str(args.threads),
+            command = [sys.executable, "-m", "blue", "--threads", str(args.threads),
                        "train", "--preset", "tiny", "--seed", str(seed), "--steps", str(args.steps),
                        "--batch-size", str(args.batch_size), "--lr", str(args.lr),
                        "--modality-dropout", str(args.modality_dropout), "--modality-policy", policy,

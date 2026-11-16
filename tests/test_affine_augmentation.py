@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from chimera.augmentation import SeriesAffineAugmentation
+from blue.augmentation import SeriesAffineAugmentation
 
 
 class AffineAugmentationTests(unittest.TestCase):

@@ -13,13 +13,13 @@ from unittest.mock import patch
 import torch
 from torch import distributed as dist
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.training import load_checkpoint
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.training import load_checkpoint
 
 
 def make_data(root):
-    config = replace(ChimeraConfig.preset('tiny'), image_size=8, patch_size=4, dropout=.1,
+    config = replace(BlueConfig.preset('tiny'), image_size=8, patch_size=4, dropout=.1,
                      alignment_scope='global', alignment_text_view='isolated')
     path = root / 'config.json'
     config.save(path)
@@ -49,7 +49,7 @@ class MixedModalityTrainingTests(unittest.TestCase):
                       '--steps', '3', '--batch-size', '2', '--mixed-modalities', '--modality-dropout', '0']
             with self.assertRaisesRegex(ValueError, 'nécessite le mode class'):
                 main(common + ['--alignment-cross-class-views', '--output', str(root / 'invalid')])
-            config = ChimeraConfig.load(config_path)
+            config = BlueConfig.load(config_path)
             replace(config, alignment_mode='class').save(config_path)
             full, split = root / 'full-class', root / 'split-class'
             main(common + ['--alignment-cross-class-views', '--output', str(full)])
@@ -101,7 +101,7 @@ class MixedModalityTrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
             config, data = make_data(root)
-            original = Chimera.forward
+            original = Blue.forward
             seen = []
             def record(model, *args, **kwargs):
                 if model.training:
@@ -110,7 +110,7 @@ class MixedModalityTrainingTests(unittest.TestCase):
                 return original(model, *args, **kwargs)
             common = ['--threads', '2', 'train', '--config', str(config), '--data', str(data), '--steps', '2',
                       '--batch-size', '2', '--mixed-modalities', '--modality-dropout', '0']
-            with patch.object(Chimera, 'forward', record):
+            with patch.object(Blue, 'forward', record):
                 main(common + ['--output', str(root / 'enabled')])
                 self.assertEqual(len(seen), 2)
                 self.assertTrue(all(value is not None and value.dtype == torch.long for value in seen))
@@ -197,7 +197,7 @@ class MixedModalityTrainingTests(unittest.TestCase):
             root = Path(directory)
             config, data = make_data(root)
             command = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=2',
-                       '-m', 'chimera', '--threads', '1', 'train', '--config', str(config), '--data', str(data),
+                       '-m', 'blue', '--threads', '1', 'train', '--config', str(config), '--data', str(data),
                        '--steps', '4', '--batch-size', '2', '--accumulation', '2', '--loss-normalization', 'observed',
                        '--mixed-modalities', '--no-shuffle', '--modality-dropout', '0', '--output', str(root / 'ddp')]
             env = dict(os.environ)

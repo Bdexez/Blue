@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.training import save_checkpoint
 
 
 class ClassRetrievalRelevanceTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class ClassRetrievalRelevanceTests(unittest.TestCase):
         self.relevance, self.report = self.root / 'relevance.jsonl', self.root / 'report.json'
         self.checkpoint = self.root / 'model.pt'
         torch.manual_seed(902)
-        save_checkpoint(self.checkpoint, Chimera(ChimeraConfig.preset('tiny')).eval())
+        save_checkpoint(self.checkpoint, Blue(BlueConfig.preset('tiny')).eval())
         series = [[1., 2., 3.], [2., 1., 3.]]
         self.records = [dict(text='zero', series=series, class_label=0),
                         dict(series=series, class_label=0), dict(text='autre zero', class_label=0),
@@ -69,7 +69,7 @@ class ClassRetrievalRelevanceTests(unittest.TestCase):
     def test_reuse_for_new_checkpoint_but_reject_mixed_checkpoints(self):
         second_checkpoint, second_vectors = self.root / 'second.pt', self.root / 'second.jsonl'
         torch.manual_seed(903)
-        save_checkpoint(second_checkpoint, Chimera(ChimeraConfig.preset('tiny')).eval())
+        save_checkpoint(second_checkpoint, Blue(BlueConfig.preset('tiny')).eval())
         with redirect_stdout(io.StringIO()):
             main(self.args + ['--exclude-self'])
             previous = self.relevance.read_text()
@@ -155,7 +155,7 @@ class ClassRetrievalRelevanceTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'ne correspond pas'):
             main(args)
         self.assertEqual(self.relevance.read_text(), 'précédent')
-        with patch('chimera.retrieval_relevance.file_sha256', return_value='changed'):
+        with patch('blue.retrieval_relevance.file_sha256', return_value='changed'):
             with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'modifié'):
                 main(self.args)
         self.assertEqual(self.relevance.read_text(), 'précédent')

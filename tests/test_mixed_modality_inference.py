@@ -8,12 +8,12 @@ import unittest
 import torch
 from torch.utils.data import DataLoader
 
-from chimera import Chimera
-from chimera.cli import main
-from chimera.data import JointDataset, collate_records
-from chimera.evaluation import evaluate
-from chimera.modality_batch_sampler import OrderedModalityBatchSampler
-from chimera.training import save_checkpoint
+from blue import Blue
+from blue.cli import main
+from blue.data import JointDataset, collate_records
+from blue.evaluation import evaluate
+from blue.modality_batch_sampler import OrderedModalityBatchSampler
+from blue.training import save_checkpoint
 from tests.test_mixed_modality_training import make_data
 
 
@@ -23,10 +23,10 @@ class MixedModalityInferenceTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.config_path, self.data = make_data(self.root)
-        from chimera import ChimeraConfig
-        self.config = ChimeraConfig.load(self.config_path)
+        from blue import BlueConfig
+        self.config = BlueConfig.load(self.config_path)
         torch.manual_seed(123)
-        self.model = Chimera(self.config).eval()
+        self.model = Blue(self.config).eval()
         self.checkpoint = self.root / 'model.pt'
         save_checkpoint(self.checkpoint, self.model)
         self.dataset = JointDataset(self.data, self.config, allow_mixed=True)

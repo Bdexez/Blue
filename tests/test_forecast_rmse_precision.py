@@ -4,8 +4,8 @@ import unittest
 
 import torch
 
-from chimera.evaluation import evaluate
-from chimera.streaming_rmse import StreamingRMSE
+from blue.evaluation import evaluate
+from blue.streaming_rmse import StreamingRMSE
 
 
 class ConstantForecast(torch.nn.Module):

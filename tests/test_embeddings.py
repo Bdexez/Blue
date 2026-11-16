@@ -11,11 +11,11 @@ from unittest.mock import patch
 import torch
 from torch.nn import functional as F
 
-from chimera import Chimera, ChimeraConfig
-from chimera.calibration import file_sha256
-from chimera.cli import main
-from chimera.data import synthetic_batch
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.calibration import file_sha256
+from blue.cli import main
+from blue.data import synthetic_batch
+from blue.training import save_checkpoint
 
 
 class EmbeddingTests(unittest.TestCase):
@@ -25,8 +25,8 @@ class EmbeddingTests(unittest.TestCase):
 
     def setUp(self):
         torch.manual_seed(481)
-        self.config = replace(ChimeraConfig.preset('tiny'), alignment_text_view='isolated')
-        self.model = Chimera(self.config).eval()
+        self.config = replace(BlueConfig.preset('tiny'), alignment_text_view='isolated')
+        self.model = Blue(self.config).eval()
         self.batch = {k: v for k, v in synthetic_batch(self.config, batch_size=3, seed=482).items()
                       if k in ('input_ids', 'attention_mask', 'images', 'series', 'series_mask')}
 
@@ -110,7 +110,7 @@ class EmbeddingTests(unittest.TestCase):
                 for name in left['vectors']:
                     torch.testing.assert_close(torch.tensor(left['vectors'][name]), torch.tensor(right['vectors'][name]), rtol=1e-4, atol=1e-5)
             original = out.read_text()
-            with patch('chimera.cli.file_sha256', side_effect=[file_sha256(checkpoint), 'changed']):
+            with patch('blue.cli.file_sha256', side_effect=[file_sha256(checkpoint), 'changed']):
                 with self.assertRaisesRegex(ValueError, 'checkpoint a changé'):
                     main(args + ['--output', str(out)])
             self.assertEqual(out.read_text(), original)

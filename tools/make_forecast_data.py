@@ -11,10 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera.augmentation import SeriesAffineAugmentation, SeriesAugmentation
-from chimera.cli import prediction_stream
-from chimera.config import ChimeraConfig
-from chimera.data import JointDataset, synthetic_batch
+from blue.augmentation import SeriesAffineAugmentation, SeriesAugmentation
+from blue.cli import prediction_stream
+from blue.config import BlueConfig
+from blue.data import JointDataset, synthetic_batch
 
 
 def main(argv=None):
@@ -39,7 +39,7 @@ def main(argv=None):
     if Path(args.output).resolve() == Path(args.checkpoint).resolve():
         parser.error("La sortie doit être distincte du checkpoint")
     payload = torch.load(args.checkpoint, map_location="cpu", weights_only=True, mmap=True)
-    config = ChimeraConfig.from_dict(payload["config"])
+    config = BlueConfig.from_dict(payload["config"])
     del payload
     augmentation = SeriesAugmentation(crop_probability=1, min_history=args.min_history,
                                       missing_rate=args.missing_rate, mask_probability=args.mask_probability)

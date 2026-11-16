@@ -7,8 +7,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from chimera import ByteTokenizer, ChimeraConfig
-from chimera.data import synthetic_batch
+from blue import ByteTokenizer, BlueConfig
+from blue.data import synthetic_batch
 
 
 def main():
@@ -21,7 +21,7 @@ def main():
     args = parser.parse_args()
     if min(args.train_examples, args.validation_examples) < 1:
         parser.error("Les nombres d'exemples doivent être > 0")
-    config = ChimeraConfig.load(args.config) if args.config else ChimeraConfig.preset(args.preset)
+    config = BlueConfig.load(args.config) if args.config else BlueConfig.preset(args.preset)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     for filename, count, offset in (("train.jsonl", args.train_examples, 0),

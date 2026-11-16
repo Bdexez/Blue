@@ -6,10 +6,10 @@ import unittest
 import torch
 from torch import nn
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.modules import SparseMoE
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.modules import SparseMoE
+from blue.training import load_checkpoint, save_checkpoint
 
 
 class Negate(nn.Module):
@@ -30,7 +30,7 @@ class Top1RouterTests(unittest.TestCase):
     def test_task_loss_teaches_router_to_choose_the_useful_expert(self):
         results = {}
         for mode in ("normalized", "probability"):
-            config = replace(ChimeraConfig.preset("tiny"), n_experts=2, top_k=1, top1_gate=mode)
+            config = replace(BlueConfig.preset("tiny"), n_experts=2, top_k=1, top1_gate=mode)
             block = SparseMoE(config)
             block.experts = nn.ModuleList([nn.Identity(), Negate()])
             block.shared = Zero()
@@ -59,9 +59,9 @@ class Top1RouterTests(unittest.TestCase):
         gradients = {}
         for mode in ("normalized", "probability"):
             torch.manual_seed(99)
-            config = replace(ChimeraConfig.preset("tiny"), n_experts=2, top_k=1, top1_gate=mode,
+            config = replace(BlueConfig.preset("tiny"), n_experts=2, top_k=1, top1_gate=mode,
                              balance_weight=0, router_z_weight=0)
-            model = Chimera(config)
+            model = Blue(config)
             with torch.autocast("cpu", dtype=torch.bfloat16):
                 output = model(series=torch.randn(4, 8, 3), class_labels=torch.tensor([0, 1, 2, 3]))
             output.loss.backward()
@@ -71,8 +71,8 @@ class Top1RouterTests(unittest.TestCase):
 
     def test_checkpoint_compatibility_and_configuration_validation(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = replace(ChimeraConfig.preset("tiny"), n_experts=2, top_k=1)
-            model = Chimera(config).eval()
+            config = replace(BlueConfig.preset("tiny"), n_experts=2, top_k=1)
+            model = Blue(config).eval()
             path = Path(directory) / "legacy.pt"
             save_checkpoint(path, model)
             payload = torch.load(path, weights_only=True)

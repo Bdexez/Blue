@@ -9,11 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera.calibration import file_sha256
-from chimera.cli import prediction_stream, same_file
-from chimera.evaluation import evaluate
-from chimera.forecast_adapter import fit_forecast_adapter
-from chimera.training import load_checkpoint
+from blue.calibration import file_sha256
+from blue.cli import prediction_stream, same_file
+from blue.evaluation import evaluate
+from blue.forecast_adapter import fit_forecast_adapter
+from blue.training import load_checkpoint
 from tools.benchmark_robustness import CASES, stress_batches
 
 

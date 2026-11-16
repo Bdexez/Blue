@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
+from blue import Blue, BlueConfig
 
 
 class GenerationSamplingTests(unittest.TestCase):
@@ -13,7 +13,7 @@ class GenerationSamplingTests(unittest.TestCase):
         torch.set_num_threads(2)
 
     def test_extreme_finite_logits_and_small_temperatures_remain_sampleable(self):
-        model = Chimera(ChimeraConfig.preset("tiny")).train()
+        model = Blue(BlueConfig.preset("tiny")).train()
         scores = torch.full((1, 1, model.config.vocab_size), -3e38)
         scores[..., 4], scores[..., 5] = 3e38, 2e38
         fake_output = SimpleNamespace(logits=scores, cache=object())
@@ -29,7 +29,7 @@ class GenerationSamplingTests(unittest.TestCase):
             self.assertEqual(generated[0, -1].item(), 4)
 
     def test_tied_logits_remain_sampleable_at_subnormal_temperature(self):
-        model = Chimera(ChimeraConfig.preset("tiny"))
+        model = Blue(BlueConfig.preset("tiny"))
         scores = torch.full((1, 1, model.config.vocab_size), -1.0)
         scores[..., 4], scores[..., 5] = 0, 0
         fake_output = SimpleNamespace(logits=scores, cache=object())
@@ -40,7 +40,7 @@ class GenerationSamplingTests(unittest.TestCase):
         self.assertEqual(set(outputs), {4, 5})
 
     def test_nonfinite_maximum_is_reported_and_mode_restored(self):
-        model = Chimera(ChimeraConfig.preset("tiny")).train()
+        model = Blue(BlueConfig.preset("tiny")).train()
         scores = torch.zeros(1, 1, model.config.vocab_size)
         scores[..., 4] = float("inf")
         with patch.object(model, "forward", return_value=SimpleNamespace(logits=scores, cache=object())):
@@ -49,7 +49,7 @@ class GenerationSamplingTests(unittest.TestCase):
         self.assertTrue(model.training)
 
     def test_normal_temperature_preserves_sampling_distribution(self):
-        model = Chimera(ChimeraConfig.preset("tiny"))
+        model = Blue(BlueConfig.preset("tiny"))
         scores = torch.full((1, 1, model.config.vocab_size), -3.0)
         scores[..., 4], scores[..., 5], scores[..., 6] = 1.5, -0.25, 0.9
         expected_scores = scores[:, -1].clone()
@@ -62,7 +62,7 @@ class GenerationSamplingTests(unittest.TestCase):
             return probability.argmax(-1, keepdim=True)
 
         with patch.object(model, "forward", return_value=SimpleNamespace(logits=scores, cache=object())):
-            with patch("chimera.model.torch.multinomial", side_effect=choose):
+            with patch("blue.model.torch.multinomial", side_effect=choose):
                 model.generate(torch.tensor([[1]]), max_new_tokens=1, temperature=0.7,
                                top_k=0, top_p=1, eos_id=None)
         torch.testing.assert_close(probabilities[0], expected, rtol=1e-6, atol=1e-8)

@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import torch
 
-from chimera.modalities import MODALITIES, balanced_modalities, has_observed_targets, keep_modalities
-from chimera.training import drop_modalities
+from blue.modalities import MODALITIES, balanced_modalities, has_observed_targets, keep_modalities
+from blue.training import drop_modalities
 
 
 class ModalityTests(unittest.TestCase):
@@ -74,7 +74,7 @@ class ModalityTests(unittest.TestCase):
         expected = {subset for n in range(1, 4) for subset in itertools.combinations(MODALITIES, n)
                     if "input_ids" in subset}
         self.assertEqual({self.signature(balanced_modalities(batch, i)) for i in range(4)}, expected)
-        with patch("chimera.training.random.random", side_effect=(0.0, 1.0, 1.0)):
+        with patch("blue.training.random.random", side_effect=(0.0, 1.0, 1.0)):
             self.assertIn("input_ids", drop_modalities(batch, 0.5))
         batch["labels"].fill_(-100)
         self.assertFalse(has_observed_targets(batch))

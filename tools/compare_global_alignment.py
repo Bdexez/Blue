@@ -16,10 +16,10 @@ sys.path.insert(0, str(ROOT))
 import torch
 from torch.nn import functional as F
 
-from chimera.calibration import file_sha256
-from chimera.cli import prediction_stream
-from chimera.data import synthetic_batch
-from chimera.training import load_checkpoint
+from blue.calibration import file_sha256
+from blue.cli import prediction_stream
+from blue.data import synthetic_batch
+from blue.training import load_checkpoint
 
 
 def measure(model, *, seed, batches, batch_size):
@@ -103,7 +103,7 @@ def main():
                                                   alignment_weight=args.alignment_weight))+'\n')
             directory = output / f'{scope}-{seed}'
             command = [sys.executable,'-m','torch.distributed.run','--standalone','--nproc-per-node=2',
-                       '-m','chimera','--threads',str(args.train_threads),'train','--init-from',str(checkpoint),
+                       '-m','blue','--threads',str(args.train_threads),'train','--init-from',str(checkpoint),
                        '--model-overrides',str(overrides),'--steps',str(args.steps),'--batch-size','1',
                        '--modality-dropout','0','--seed',str(seed),'--warmup',str(min(10,args.steps)),
                        '--lr',str(args.lr),'--eval-every',str(args.steps),'--save-every',str(args.steps),

@@ -8,9 +8,9 @@ import unittest
 import torch
 from torch import distributed as dist
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import JointDataset
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import JointDataset
+from blue.training import save_checkpoint
 from tools.compare_unpaired_class_alignment import audit_class_exposure
 
 
@@ -23,7 +23,7 @@ class CompareUnpairedClassAlignmentTests(unittest.TestCase):
                        dict(series=[[1., 1., 1.]], class_label=1)]
             def audit():
                 data.write_text(''.join(json.dumps(row) + '\n' for row in records))
-                dataset = JointDataset(data, ChimeraConfig.preset('tiny'), allow_mixed=True)
+                dataset = JointDataset(data, BlueConfig.preset('tiny'), allow_mixed=True)
                 return audit_class_exposure(dataset, batch_size=2, seed=3, steps=1)
             counts = audit()
             self.assertEqual(counts, dict(cross_modal_steps=1, shared_class_steps=1, contributing_steps=1,
@@ -44,7 +44,7 @@ class CompareUnpairedClassAlignmentTests(unittest.TestCase):
             root = Path(directory)
             checkpoint, output = root / 'parent.pt', root / 'study'
             torch.manual_seed(31)
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset('tiny')))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset('tiny')))
             script = Path(__file__).resolve().parents[1] / 'tools/compare_unpaired_class_alignment.py'
             command = [sys.executable, str(script), '--checkpoint', str(checkpoint), '--output-dir', str(output),
                        '--seeds', '17', '--steps', '2', '--train-examples-per-modality', '8', '--batch-size', '2',

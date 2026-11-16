@@ -11,18 +11,18 @@ from unittest.mock import patch
 
 import torch
 
-from chimera import ChimeraConfig
-from chimera.cli import main
-from chimera.data import JointDataset, collate_records
-from chimera.split_audit import audit_splits
-from chimera.temporal_splits import prepare_temporal_splits
+from blue import BlueConfig
+from blue.cli import main
+from blue.data import JointDataset, collate_records
+from blue.split_audit import audit_splits
+from blue.temporal_splits import prepare_temporal_splits
 
 
 class TemporalSplitTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.config = replace(ChimeraConfig.preset("tiny"), series_features=2, forecast_horizon=2)
+        cls.config = replace(BlueConfig.preset("tiny"), series_features=2, forecast_horizon=2)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -120,7 +120,7 @@ class TemporalSplitTests(unittest.TestCase):
             if len(calls) == 2:
                 raise OSError("simulated failure")
             return real_link(*args, **kwargs)
-        with patch("chimera.temporal_splits.os.link", fail_second), self.assertRaisesRegex(OSError, "simulated"):
+        with patch("blue.temporal_splits.os.link", fail_second), self.assertRaisesRegex(OSError, "simulated"):
             prepare_temporal_splits(source, output, self.config, history=3, train_end=10, validation_end=21, calibration_end=32)
         self.assertFalse(output.exists())
         self.assertTrue(source.exists())
@@ -130,7 +130,7 @@ class TemporalSplitTests(unittest.TestCase):
             Path(dst).write_text("created concurrently")
             return real_link(src, dst)
 
-        with patch("chimera.temporal_splits.os.link", create_conflicting_file), self.assertRaises(FileExistsError):
+        with patch("blue.temporal_splits.os.link", create_conflicting_file), self.assertRaises(FileExistsError):
             prepare_temporal_splits(source, concurrent, self.config, history=3, train_end=10,
                                     validation_end=21, calibration_end=32)
         self.assertEqual((concurrent / "train.jsonl").read_text(), "created concurrently")

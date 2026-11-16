@@ -9,21 +9,21 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.binomial import wilson_interval
-from chimera.cli import main
-from chimera.data import synthetic_batch
-from chimera.training import save_checkpoint
-from chimera.series_gate import SeriesGate, fit_series_gate, gate_features
-from chimera.series_classifier import fit_series_classifier
-from chimera.evaluation import evaluate
+from blue import Blue, BlueConfig
+from blue.binomial import wilson_interval
+from blue.cli import main
+from blue.data import synthetic_batch
+from blue.training import save_checkpoint
+from blue.series_gate import SeriesGate, fit_series_gate, gate_features
+from blue.series_classifier import fit_series_classifier
+from blue.evaluation import evaluate
 
 
 class StubModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(()))
-        self.config = replace(ChimeraConfig.preset('tiny'), series_features=1, num_classes=2)
+        self.config = replace(BlueConfig.preset('tiny'), series_features=1, num_classes=2)
 
     def forward(self, *, series, series_mask=None):
         logits = torch.tensor([1., 0.], device=series.device).expand(series.size(0), -1)
@@ -117,8 +117,8 @@ class SeriesGateTests(unittest.TestCase):
 
 
     def test_bf16_gate_and_unlabeled_evaluation(self):
-        config = ChimeraConfig.preset('tiny')
-        model = Chimera(config).train()
+        config = BlueConfig.preset('tiny')
+        model = Blue(config).train()
         def batch(seed):
             return {key:value for key,value in synthetic_batch(config, batch_size=64, seed=seed).items()
                     if key in ('series','series_mask','class_labels')}
@@ -148,11 +148,11 @@ class SeriesGateTests(unittest.TestCase):
     def test_cli_fit_predict_evaluate_and_file_protection(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
-            config = ChimeraConfig.preset('tiny')
+            config = BlueConfig.preset('tiny')
             checkpoint, head, gate = (root / name for name in ('model.pt', 'head.json', 'gate.json'))
             train, fitting, validation, test = (root / (name + '.jsonl') for name in ('train', 'fit', 'validation', 'test'))
             report, predictions = root / 'report.json', root / 'predictions.jsonl'
-            save_checkpoint(checkpoint, Chimera(config))
+            save_checkpoint(checkpoint, Blue(config))
             for path, n, seed in ((train,128,951), (fitting,96,952), (validation,64,953), (test,24,954)):
                 data = synthetic_batch(config, batch_size=n, seed=seed)
                 path.write_text('\n'.join(json.dumps(dict(series=data['series'][i].tolist(),
