@@ -1,4 +1,4 @@
-# Validation de CHIMERA
+# Validation de BLUE
 
 Mesures effectuées le 11 novembre 2026 sur CPU, avec Python 3.14.8 et PyTorch 2.15.0+cpu. Aucun GPU utilisable n'est disponible sur cette machine.
 
@@ -46,7 +46,7 @@ Elle vérifie aussi la causalité du texte, l'équivalence entre calcul complet 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python tools/benchmark.py --checkpoint runs/workstation/latest.pt
-.venv/bin/python -m chimera demo --checkpoint runs/workstation/model.pt
+.venv/bin/python -m blue demo --checkpoint runs/workstation/model.pt
 ```
 
 Le checkpoint complet, destiné à la reprise, est [latest.pt](runs/workstation/latest.pt). Les [poids d'inférence](runs/workstation/model.pt) occupent **2.20 Go** et se chargent avec la même API. Le fichier d'inférence ne contient pas l'optimiseur ; utiliser le checkpoint complet pour reprendre l'entraînement.

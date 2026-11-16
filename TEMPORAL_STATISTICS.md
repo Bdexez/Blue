@@ -16,7 +16,7 @@ La projection linéaire de `6 × variables + 1` valeurs est ajoutée aux tokens 
 
 ```bash
 # Activer la projection sans changer les poids des pertes
-.venv/bin/python -m chimera train \
+.venv/bin/python -m blue train \
   --init-from runs/workstation-robust/model.pt \
   --model-overrides configs/temporal-statistics-overrides.json \
   --steps 100 --lr 0.00006 --output runs/statistics-example
@@ -36,7 +36,7 @@ Les deux branches partent de `runs/workstation-robust/model.pt`. Elles exécuten
 
 ```bash
 # Branche avec statistiques
-.venv/bin/python -m chimera --threads 8 train \
+.venv/bin/python -m blue --threads 8 train \
   --init-from runs/workstation-robust/model.pt \
   --model-overrides configs/temporal-statistics-forecast-overrides.json \
   --steps 180 --seed 2718 --batch-size 8 --lr 0.00006 --warmup 10 \

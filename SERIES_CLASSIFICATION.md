@@ -11,17 +11,17 @@ La standardisation supprime les informations de niveau et d'échelle : elle peut
 Préparer un JSONL de séries contenant `class_label`, distinct des jeux de sélection et de test. Les lignes non étiquetées sont ignorées ; chaque classe de la configuration doit posséder au moins un exemple étiqueté. Les autres modalités sont refusées pour éviter de laisser croire que la tête les exploite.
 
 ```bash
-.venv/bin/python -m chimera refine-series-classifier \
+.venv/bin/python -m blue refine-series-classifier \
   --checkpoint runs/joint-affine-pilot/control/latest.pt \
   --data data/series-head-train.jsonl --ridge 0.001 --scale-floor 1e-4 \
   --output runs/series-classifier.json
 
-.venv/bin/python -m chimera evaluate \
+.venv/bin/python -m blue evaluate \
   --checkpoint runs/joint-affine-pilot/control/latest.pt \
   --data data/series-head-test.jsonl --series-classifier runs/series-classifier.json \
   --output runs/series-head-evaluation.json
 
-.venv/bin/python -m chimera predict \
+.venv/bin/python -m blue predict \
   --checkpoint runs/joint-affine-pilot/control/latest.pt \
   --data data/new-series.jsonl --series-classifier runs/series-classifier.json \
   --output runs/series-head-predictions.jsonl
@@ -36,7 +36,7 @@ La prédiction conserve `class_id`, `class_probabilities` et `forecast` du modè
 `--missing-rate` et `--mask-probability` permettent de masquer des valeurs uniquement pendant l'ajustement de la tête. Le tirage utilise un générateur dédié ; les cibles et autres données ne sont pas modifiées. La seed, les paramètres de masquage, le device et, pour la commande CLI, la taille des lots sont enregistrés. La reproduction dépend aussi de l'ordre des exemples, du découpage en lots et de l'environnement PyTorch. Les anciens fichiers de tête version 1 restent lisibles ; les caractéristiques de forme ou l'augmentation utilisent le format version 2.
 
 ```bash
-.venv/bin/python -m chimera refine-series-classifier \
+.venv/bin/python -m blue refine-series-classifier \
   --checkpoint runs/joint-affine-pilot/control/latest.pt --data data/series-head-train.jsonl \
   --shape-context 16 --missing-rate 0.3 --mask-probability 0.5 --augmentation-seed 49000000 \
   --output runs/series-shape-classifier.json
@@ -59,12 +59,12 @@ Ces comparaisons exactes ne détectent pas toutes les fuites : notamment, deux f
 L'ajustement ne conserve pas les historiques, mais stocke les scores des exemples étiquetés pour chercher la température : sa mémoire croît avec le produit du nombre d'exemples et du nombre de classes.
 
 ```bash
-.venv/bin/python -m chimera calibrate-series-probability \
+.venv/bin/python -m blue calibrate-series-probability \
   --checkpoint runs/joint-affine-pilot/control/latest.pt \
   --series-classifier runs/series-classifier.json --data data/series-probability-calibration.jsonl \
   --classifier-data data/series-head-train.jsonl --output runs/series-probability.json
 
-.venv/bin/python -m chimera evaluate \
+.venv/bin/python -m blue evaluate \
   --checkpoint runs/joint-affine-pilot/control/latest.pt --data data/series-head-test.jsonl \
   --series-classifier runs/series-classifier.json --series-probability runs/series-probability.json \
   --output runs/series-probability-evaluation.json
@@ -144,14 +144,14 @@ La forme améliore la tête moyenne sur plusieurs conditions, mais régresse de 
 Une tête temporelle figée peut produire un ensemble de classes plutôt qu'une seule réponse. Prévoir un jeu supplémentaire, réservé à cette étape et distinct de ceux utilisés pour ajuster la tête et, le cas échéant, la température :
 
 ```bash
-.venv/bin/python -m chimera.cli calibrate-series-set \
+.venv/bin/python -m blue.cli calibrate-series-set \
   --checkpoint model.pt --series-classifier head.json --series-probability temperature.json \
   --data ensemble-calibration.jsonl --coverage 0.9 --method aps --output ensemble.json \
   --classifier-data head-train.jsonl --probability-data temperature-calibration.jsonl
-.venv/bin/python -m chimera.cli predict \
+.venv/bin/python -m blue.cli predict \
   --checkpoint model.pt --series-classifier head.json --series-probability temperature.json \
   --series-set ensemble.json --data test.jsonl --output predictions.jsonl
-.venv/bin/python -m chimera.cli evaluate \
+.venv/bin/python -m blue.cli evaluate \
   --checkpoint model.pt --series-classifier head.json --series-probability temperature.json \
   --series-set ensemble.json --data test.jsonl --output report.json \
   --classifier-data head-train.jsonl --probability-data temperature-calibration.jsonl \
@@ -209,13 +209,13 @@ Une porte facultative choisit, pour chaque historique, la classe du modèle d'or
 Prévoir quatre jeux distincts : ajustement de la tête, ajustement de la porte, sélection de la porte, puis test final. Les jeux d'ajustement et de validation de la porte doivent représenter les conditions d'utilisation visées ; il est possible d'y inclure des transformations dont l'étiquette reste valide. La commande choisit l'époque maximisant le gain d'accuracy sur le jeu de validation. Si aucune époque ne dépasse le modèle de base sur cette validation, elle enregistre une porte qui choisit toujours le modèle de base. La sélection sur plusieurs époques peut elle-même surajuster la validation : mesurer ensuite le résultat sur un test indépendant.
 
 ```bash
-.venv/bin/python -m chimera refine-series-gate \
+.venv/bin/python -m blue refine-series-gate \
   --checkpoint model.pt --series-classifier head.json --data gate-train.jsonl \
   --validation-data gate-validation.jsonl --classifier-data head-train.jsonl \
   --audit-series --output gate.json
-.venv/bin/python -m chimera predict --checkpoint model.pt --series-classifier head.json \
+.venv/bin/python -m blue predict --checkpoint model.pt --series-classifier head.json \
   --series-gate gate.json --data test.jsonl --output predictions.jsonl
-.venv/bin/python -m chimera evaluate --checkpoint model.pt --series-classifier head.json \
+.venv/bin/python -m blue evaluate --checkpoint model.pt --series-classifier head.json \
   --series-gate gate.json --data test.jsonl --classifier-data head-train.jsonl \
   --gate-data gate-train.jsonl --gate-validation-data gate-validation.jsonl --output report.json
 ```
@@ -253,14 +253,14 @@ La porte améliore fortement certains décalages, mais régresse sur les donnée
 Une protection facultative relève le seuil de la porte pour limiter les cas où elle choisit une tête erronée alors que le modèle de base avait raison. Elle utilise un **cinquième jeu étiqueté**, réservé à cette calibration et représentatif de la distribution à protéger :
 
 ```bash
-.venv/bin/python -m chimera calibrate-series-gate-guard \
+.venv/bin/python -m blue calibrate-series-gate-guard \
   --checkpoint model.pt --series-classifier head.json --series-gate gate.json \
   --data reference.jsonl --max-harm 0.01 --output guard.json \
   --classifier-data head-train.jsonl --gate-data gate-train.jsonl \
   --gate-validation-data gate-validation.jsonl
-.venv/bin/python -m chimera predict --checkpoint model.pt --series-classifier head.json \
+.venv/bin/python -m blue predict --checkpoint model.pt --series-classifier head.json \
   --series-gate gate.json --series-gate-guard guard.json --data test.jsonl --output predictions.jsonl
-.venv/bin/python -m chimera evaluate --checkpoint model.pt --series-classifier head.json \
+.venv/bin/python -m blue evaluate --checkpoint model.pt --series-classifier head.json \
   --series-gate gate.json --series-gate-guard guard.json --data test.jsonl \
   --classifier-data head-train.jsonl --gate-data gate-train.jsonl \
   --gate-validation-data gate-validation.jsonl --guard-data reference.jsonl --output report.json

@@ -30,7 +30,7 @@ Le dossier de sortie doit être vide. Le protocole conserve les commandes, les c
 Le checkpoint local de 549 485 298 paramètres, entraîné pendant 240 étapes, reçoit 140 étapes supplémentaires avec une exposition équilibrée, un taux principal de 0.0001, un échauffement de 10 étapes et des lots de 8. Le planning et AdamW repartent de zéro. La seed d'entraînement reste 42 : ces données synthétiques réutilisent les exemples du premier entraînement, avec une nouvelle répartition des modalités. Les jeux de mesure sont distincts.
 
 ```bash
-.venv/bin/python -m chimera --threads 8 train \
+.venv/bin/python -m blue --threads 8 train \
   --init-from runs/workstation/model.pt --steps 140 --batch-size 8 \
   --lr 0.0001 --warmup 10 --modality-policy balanced \
   --eval-every 140 --save-every 140 --output runs/workstation-refined
@@ -88,7 +88,7 @@ Pour un fine-tuning depuis un checkpoint existant :
 
 ```bash
 .venv/bin/python -m torch.distributed.run --standalone --nproc-per-node=2 \
-  -m chimera --threads 1 train --init-from model.pt \
+  -m blue --threads 1 train --init-from model.pt \
   --model-overrides configs/global-alignment-overrides.json \
   --batch-size 1 --steps 100 --output runs/global-alignment
 ```
@@ -200,7 +200,7 @@ Par défaut, la représentation textuelle utilisée par la perte d'alignement es
 L'option `alignment_text_view: "isolated"` calcule une seconde vue du texte avec les mêmes embeddings, le même décodeur et un contexte nul appris, sans lui fournir l'image ni la série de l'exemple. Cette vue sert uniquement à la perte d'alignement ; les logits de texte, les classes et les prévisions sont calculés par le passage multimodal habituel. À poids fixés, changer l'image ou la série ne change donc pas la vue textuelle isolée. Les gradients de cette vue mettent à jour les paramètres partagés, si bien que les prédictions peuvent évoluer après entraînement.
 
 ```bash
-.venv/bin/python -m chimera train --init-from model.pt \
+.venv/bin/python -m blue train --init-from model.pt \
   --model-overrides configs/isolated-text-alignment-overrides.json \
   --steps 100 --output runs/isolated-text-alignment
 ```
