@@ -17,6 +17,7 @@ import torch
 from chimera.calibration import file_sha256
 from chimera.cli import prediction_stream
 from chimera.data import JointDataset, synthetic_batch
+from chimera.modality_batch_sampler import ModalityBatchSampler
 from chimera.tokenizer import ByteTokenizer
 from chimera.training import load_checkpoint
 from tools.compare_shared_modality_batches import exposure, measure
@@ -37,6 +38,50 @@ def write_data(path, config, *, count, text_seed, series_seed):
                        future=series['forecast_targets'][index].tolist(),
                        class_label=series['class_labels'][index].item())
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
+
+
+def audit_class_exposure(dataset, *, batch_size, seed, steps):
+    """Compter les positifs et négatifs admissibles des lots distribués synthétiques."""
+    records = [dataset.read_record(index) for index in range(len(dataset))]
+    for record in records:
+        label = record.get('class_label', -100)
+        if (('text' in record) == ('series' in record) or 'image' in record or 'image_path' in record
+                or type(label) is not int or not (label == -100 or 0 <= label < dataset.config.num_classes)):
+            raise ValueError('L’audit exige des lignes texte ou série seules et des classes valides')
+    samplers = [ModalityBatchSampler(dataset, batch_size, num_replicas=2, rank=rank, seed=seed)
+                for rank in range(2)]
+    counts = dict(cross_modal_steps=0, shared_class_steps=0, contributing_steps=0,
+                  steps_with_negative_pairs=0, eligible_text_views=0, eligible_series_views=0,
+                  positive_pairs=0, negative_pairs=0)
+    for epoch_start in range(0, steps, len(samplers[0])):
+        epoch = epoch_start // len(samplers[0])
+        for sampler in samplers:
+            sampler.set_epoch(epoch)
+        ranks = [list(sampler) for sampler in samplers]
+        for offset in range(min(len(samplers[0]), steps - epoch_start)):
+            indices = [index for rank in ranks for index in rank[offset]]
+            texts = [records[index].get('class_label', -100) for index in indices if 'text' in records[index]]
+            series = [records[index].get('class_label', -100) for index in indices if 'series' in records[index]]
+            if not texts or not series:
+                continue
+            counts['cross_modal_steps'] += 1
+            shared = (set(texts) & set(series)) - {-100}
+            if not shared:
+                continue
+            counts['shared_class_steps'] += 1
+            left = [label for label in texts if label in shared]
+            right = [label for label in series if label in shared]
+            if max(len(left), len(right)) < 2:
+                continue
+            positives = sum(a == b for a in left for b in right)
+            negatives = len(left) * len(right) - positives
+            counts['contributing_steps'] += 1
+            counts['steps_with_negative_pairs'] += int(negatives > 0)
+            counts['eligible_text_views'] += len(left)
+            counts['eligible_series_views'] += len(right)
+            counts['positive_pairs'] += positives
+            counts['negative_pairs'] += negatives
+    return counts
 
 
 def main():
@@ -90,6 +135,7 @@ def main():
         env.pop(name, None)
     runs = []
     for seed in args.seeds:
+        class_exposure = audit_class_exposure(dataset, batch_size=args.batch_size, seed=seed, steps=args.steps)
         for mode in ('control', 'class'):
             if file_sha256(checkpoint) != checkpoint_sha or file_sha256(data) != data_sha:
                 raise ValueError('Le checkpoint ou les données ont changé pendant la comparaison')
@@ -120,6 +166,7 @@ def main():
             row = dict(seed=seed, mode=mode, step=payload['step'], checkpoint_sha256=file_sha256(trained_path),
                        elapsed_seconds=elapsed, exposure=exposure(dataset, batch_size=args.batch_size,
                                                                    seed=seed, steps=args.steps, shared=False),
+                       class_exposure=class_exposure,
                        nonzero_alignment_steps=sum(item.get('alignment', 0.) > 1e-8 for item in logs), metrics=metrics)
             runs.append(row)
             print(json.dumps(dict(event='evaluated', **row)), flush=True)

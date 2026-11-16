@@ -9,10 +9,35 @@ import torch
 from torch import distributed as dist
 
 from chimera import Chimera, ChimeraConfig
+from chimera.data import JointDataset
 from chimera.training import save_checkpoint
+from tools.compare_unpaired_class_alignment import audit_class_exposure
 
 
 class CompareUnpairedClassAlignmentTests(unittest.TestCase):
+    def test_class_exposure_counts_actual_pairs_and_unknowns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / 'data.jsonl'
+            records = [dict(text='zero', class_label=0), dict(text='one', class_label=1),
+                       dict(series=[[0., 0., 0.]], class_label=0),
+                       dict(series=[[1., 1., 1.]], class_label=1)]
+            def audit():
+                data.write_text(''.join(json.dumps(row) + '\n' for row in records))
+                dataset = JointDataset(data, ChimeraConfig.preset('tiny'), allow_mixed=True)
+                return audit_class_exposure(dataset, batch_size=2, seed=3, steps=1)
+            counts = audit()
+            self.assertEqual(counts, dict(cross_modal_steps=1, shared_class_steps=1, contributing_steps=1,
+                                          steps_with_negative_pairs=1, eligible_text_views=2,
+                                          eligible_series_views=2, positive_pairs=2, negative_pairs=2))
+            records[1]['class_label'] = -100
+            counts = audit()
+            self.assertEqual(counts['shared_class_steps'], 1)
+            self.assertEqual(counts['contributing_steps'], 0)
+            self.assertEqual(counts['negative_pairs'], 0)
+            records[0]['series'] = [[0., 0., 0.]]
+            with self.assertRaisesRegex(ValueError, 'texte ou série seules'):
+                audit()
+
     @unittest.skipUnless(dist.is_available() and dist.is_gloo_available(), 'Gloo indisponible')
     def test_study_compares_modes_on_disjoint_sources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -31,6 +56,7 @@ class CompareUnpairedClassAlignmentTests(unittest.TestCase):
             rows = {row['mode']: row for row in report['runs']}
             self.assertEqual(set(rows), {'control', 'class'})
             self.assertEqual(rows['control']['nonzero_alignment_steps'], 0)
+            self.assertEqual(rows['control']['class_exposure'], rows['class']['class_exposure'])
             for row in rows.values():
                 self.assertEqual(row['step'], 2)
                 self.assertEqual(row['exposure']['sample_views'], 8)
