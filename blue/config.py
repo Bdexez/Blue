@@ -23,6 +23,7 @@ class BlueConfig:
     rope_scaling_type: str = "none"
     rope_scaling_factor: float = 1.0
     rope_original_max_seq_len: int | None = None
+    differential_attention: bool = False
     dropout: float = 0.0
     norm_eps: float = 1e-6
     stable_rms_norm: bool = False
@@ -77,6 +78,10 @@ class BlueConfig:
             raise ValueError("vocab_size doit être >= 260 pour le tokenizer UTF-8")
         if self.d_model % self.n_heads or (self.d_model // self.n_heads) % 2:
             raise ValueError("d_model / n_heads doit être un entier pair (RoPE)")
+        if type(self.differential_attention) is not bool:
+            raise ValueError("differential_attention doit être booléen")
+        if self.differential_attention and (self.d_model // self.n_heads) % 4:
+            raise ValueError("differential_attention nécessite d_model / n_heads divisible par 4")
         if self.d_model % 4 or self.n_heads % self.n_kv_heads:
             raise ValueError("d_model doit être divisible par 4 et n_heads par n_kv_heads")
         if self.top_k > self.n_experts:
