@@ -101,32 +101,57 @@ class LayerCache:
 
 
 class GroupedQueryAttention(nn.Module):
-    def __init__(self, config: BlueConfig, *, causal=True, window=0):
+    def __init__(self, config: BlueConfig, *, causal=True, window=0, layer_index=0):
         super().__init__()
         self.n_heads, self.n_kv_heads = config.n_heads, config.n_kv_heads
         self.head_dim = config.d_model // config.n_heads
         self.causal, self.window = causal, window
         self.dropout = config.dropout
+        self.differential = config.differential_attention
         self.q = nn.Linear(config.d_model, config.d_model, bias=False)
         self.kv = nn.Linear(config.d_model, 2 * self.n_kv_heads * self.head_dim, bias=False)
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
-        self.q_norm = RMSNorm(self.head_dim, config.norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, config.norm_eps)
+        rope_dim = self.head_dim // 2 if self.differential else self.head_dim
+        self.q_norm = RMSNorm(rope_dim, config.norm_eps)
+        self.k_norm = RMSNorm(rope_dim, config.norm_eps)
         self.rope = RotaryEmbedding(
-            self.head_dim, config.rope_theta,
+            rope_dim, config.rope_theta,
             scaling_type=config.rope_scaling_type,
             scaling_factor=config.rope_scaling_factor,
             original_max_seq_len=config.rope_original_max_seq_len,
             max_seq_len=config.max_seq_len,
         )
+        if self.differential:
+            self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_index)
+            self.lambda_q1 = nn.Parameter(torch.empty(rope_dim))
+            self.lambda_k1 = nn.Parameter(torch.empty(rope_dim))
+            self.lambda_q2 = nn.Parameter(torch.empty(rope_dim))
+            self.lambda_k2 = nn.Parameter(torch.empty(rope_dim))
+            self.sub_norm = RMSNorm(self.head_dim, config.norm_eps)
+            nn.init.normal_(self.lambda_q1, std=0.1)
+            nn.init.normal_(self.lambda_k1, std=0.1)
+            nn.init.normal_(self.lambda_q2, std=0.1)
+            nn.init.normal_(self.lambda_k2, std=0.1)
 
     def forward(self, x, valid, *, offset=0, cache=None, use_cache=False):
         b, t, _ = x.shape
-        q = self.q(x).view(b, t, self.n_heads, self.head_dim).transpose(1, 2)
-        k, v = self.kv(x).view(b, t, 2, self.n_kv_heads, self.head_dim).unbind(2)
-        k, v = k.transpose(1, 2), v.transpose(1, 2)
-        q = self.rope(self.q_norm(q), offset)
-        k = self.rope(self.k_norm(k), offset)
+        if self.differential:
+            sub = self.head_dim // 2
+            q1, q2 = self.q(x).view(b, t, self.n_heads, 2, sub).unbind(3)
+            q1 = self.rope(self.q_norm(q1.transpose(1, 2)), offset)
+            q2 = self.rope(self.q_norm(q2.transpose(1, 2)), offset)
+            k, v = self.kv(x).view(b, t, 2, self.n_kv_heads, self.head_dim).unbind(2)
+            k1, k2 = k.view(b, t, self.n_kv_heads, 2, sub).unbind(3)
+            k1 = self.rope(self.k_norm(k1.transpose(1, 2)), offset)
+            k2 = self.rope(self.k_norm(k2.transpose(1, 2)), offset)
+            k = torch.cat((k1, k2), dim=-1)
+            v = v.transpose(1, 2)
+        else:
+            q = self.q(x).view(b, t, self.n_heads, self.head_dim).transpose(1, 2)
+            k, v = self.kv(x).view(b, t, 2, self.n_kv_heads, self.head_dim).unbind(2)
+            k, v = k.transpose(1, 2), v.transpose(1, 2)
+            q = self.rope(self.q_norm(q), offset)
+            k = self.rope(self.k_norm(k), offset)
         if cache is not None:
             k, v = torch.cat((cache.key, k), -2), torch.cat((cache.value, v), -2)
             key_valid = torch.cat((cache.valid, valid), -1)
@@ -147,11 +172,26 @@ class GroupedQueryAttention(nn.Module):
             if self.window:
                 allowed = allowed & (key_pos[None, :] > query_pos[:, None] - self.window)
             mask = allowed[None, None, :, :] & key_valid[:, None, None, :]
-        y = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, is_causal=is_causal,
-            dropout_p=self.dropout if self.training else 0.0,
-            enable_gqa=self.n_heads != self.n_kv_heads,
-        )
+        dropout_p = self.dropout if self.training else 0.0
+        gqa = self.n_heads != self.n_kv_heads
+        if self.differential:
+            k1_all, k2_all = k.chunk(2, dim=-1)
+            a1 = F.scaled_dot_product_attention(
+                q1, k1_all, v, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, enable_gqa=gqa,
+            )
+            a2 = F.scaled_dot_product_attention(
+                q2, k2_all, v, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, enable_gqa=gqa,
+            )
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                dot1 = (self.lambda_q1.float() * self.lambda_k1.float()).sum().clamp(-10.0, 10.0)
+                dot2 = (self.lambda_q2.float() * self.lambda_k2.float()).sum().clamp(-10.0, 10.0)
+                lam = (dot1.exp() - dot2.exp() + self.lambda_init).to(a1.dtype)
+            y = self.sub_norm(a1 - lam * a2) * (1.0 - self.lambda_init)
+        else:
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, is_causal=is_causal,
+                dropout_p=dropout_p, enable_gqa=gqa,
+            )
         y = y.transpose(1, 2).contiguous().view(b, t, -1)
         if use_cache and self.window and k.size(-2) > self.window - 1:
             begin = k.size(-2) - (self.window - 1)
@@ -251,10 +291,10 @@ class SparseMoE(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, layer_index=0):
         super().__init__()
         self.norm1, self.norm2 = RMSNorm(config.d_model), RMSNorm(config.d_model)
-        self.attn = GroupedQueryAttention(config, causal=False)
+        self.attn = GroupedQueryAttention(config, causal=False, layer_index=layer_index)
         self.ffn = SwiGLU(config.d_model, config.hidden_dim)
         self.dropout = nn.Dropout(config.dropout)
 
@@ -273,7 +313,7 @@ class VisionEncoder(nn.Module):
         self.patch = nn.Conv2d(d // 2, d, config.patch_size, stride=config.patch_size)
         grid = config.image_size // config.patch_size
         self.position = nn.Parameter(torch.empty(1, grid * grid, d))
-        self.blocks = nn.ModuleList([EncoderBlock(config) for _ in range(config.vision_layers)])
+        self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.vision_layers)])
         self.norm = RMSNorm(d, config.norm_eps)
 
     def forward(self, images):
@@ -291,7 +331,7 @@ class TemporalEncoder(nn.Module):
         super().__init__()
         self.proj = nn.Linear(2 * config.series_features, config.d_model)
         self.conv = GatedCausalConv(config.d_model, config.conv_kernel)
-        self.blocks = nn.ModuleList([EncoderBlock(config) for _ in range(config.temporal_layers)])
+        self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.temporal_layers)])
         self.norm = RMSNorm(config.d_model, config.norm_eps)
         self.forecast_context = config.forecast_context
         self.statistics_relative = config.temporal_statistics_relative
@@ -368,7 +408,7 @@ class LatentResampler(nn.Module):
         self.null_context = nn.Parameter(torch.empty(1, 1, config.d_model))
         self.norms = nn.ModuleList([RMSNorm(config.d_model) for _ in range(config.resampler_layers)])
         self.cross = nn.ModuleList([CrossAttention(config) for _ in range(config.resampler_layers)])
-        self.blocks = nn.ModuleList([EncoderBlock(config) for _ in range(config.resampler_layers)])
+        self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.resampler_layers)])
 
     def forward(self, contexts, masks, batch_size):
         null = self.null_context.expand(batch_size, -1, -1)
@@ -391,7 +431,7 @@ class DecoderBlock(nn.Module):
         self.norm2 = RMSNorm(config.d_model, config.norm_eps)
         self.norm3 = RMSNorm(config.d_model, config.norm_eps)
         window = 0 if (index + 1) % config.global_every == 0 else config.sliding_window
-        self.attn = GroupedQueryAttention(config, window=window)
+        self.attn = GroupedQueryAttention(config, window=window, layer_index=index)
         self.conv = GatedCausalConv(config.d_model, config.conv_kernel)
         self.mix_gate = nn.Parameter(torch.zeros(config.d_model))
         self.cross = CrossAttention(config)
