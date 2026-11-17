@@ -30,7 +30,7 @@ Sur les 4 096 exemples, **3 931** ont un historique de moins de 32 pas et contri
   --output runs/affine-refinement/train.jsonl --seed 80000 \
   --augmentation-seed 1080000 --affine-seed 2080000 --affine-probability 0.5
 
-.venv/bin/python -m chimera --threads 8 refine-forecast \
+.venv/bin/python -m blue --threads 8 refine-forecast \
   --checkpoint runs/workstation-statistics/model.pt \
   --data runs/affine-refinement/train.jsonl --batch-size 64 --relative-features \
   --output runs/workstation-affine-relative/model.pt \

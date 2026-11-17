@@ -7,7 +7,7 @@ L'option de configuration `stable_rms_norm: true` active, pour toutes les couche
 Le défaut reste `false`, sans nouveau paramètre dans le checkpoint. Pour exporter un checkpoint d'inférence distinct avec l'option activée :
 
 ```bash
-.venv/bin/python -m chimera export --checkpoint model.pt \
+.venv/bin/python -m blue export --checkpoint model.pt \
   --output model-stable.pt --stable-rms-norm
 ```
 

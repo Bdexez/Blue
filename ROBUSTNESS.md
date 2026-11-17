@@ -15,7 +15,7 @@ Avec une probabilité de troncature de 0.5, une probabilité de masquage de 0.5 
 Les deux perturbations utilisent des générateurs dédiés, indexés par la seed et l'index global du micro-lot. Elles ne consomment pas le RNG du dropout du réseau. La partition DDP utilise des index distincts par rang. Les réglages sont sauvegardés dans le checkpoint, restaurés lorsqu'ils sont omis à la reprise et vérifiés lorsqu'ils sont explicitement fournis. Changer ces réglages nécessite un nouvel entraînement avec `--init-from`.
 
 ```bash
-.venv/bin/python -m chimera --threads 8 train \
+.venv/bin/python -m blue --threads 8 train \
   --init-from runs/workstation-refined/model.pt \
   --steps 180 --seed 314 --batch-size 8 --lr 0.00006 --warmup 10 \
   --modality-policy balanced --series-crop-probability 0.5 \
@@ -33,7 +33,7 @@ Le budget en étapes et exemples est identique ; l'information observée diffèr
 
 ```bash
 # Construire le témoin avec le même budget et les mêmes exemples
-.venv/bin/python -m chimera --threads 8 train \
+.venv/bin/python -m blue --threads 8 train \
   --init-from runs/workstation-refined/model.pt \
   --steps 180 --seed 314 --batch-size 8 --lr 0.00006 --warmup 10 \
   --modality-policy balanced --save-every 180 --eval-every 180 \

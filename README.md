@@ -1,8 +1,8 @@
-# CHIMERA
+# BLUE
 
 Un réseau PyTorch qui réunit les quatre usages demandés : modèle multimodal, génération de texte, vision et prévision de séries temporelles. Les trois modalités partagent un décodeur à mélange d'experts et peuvent être utilisées seules, par paires ou ensemble.
 
-La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. CHIMERA fournit une architecture réellement entraînable, des configurations allant de **739 506 à 588 945 015 026 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
+La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. BLUE fournit une architecture réellement entraînable, des configurations allant de **739 506 à 588 945 015 026 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
 
 Le checkpoint livré apprend sur des signaux synthétiques associés à des images de motifs et à de courtes descriptions. Il sert à démontrer l'apprentissage conjoint. Ce n'est pas un assistant préentraîné ni un modèle déjà performant sur des photos ou des textes quelconques. La complexité seule ne garantit pas la qualité.
 
@@ -35,16 +35,16 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 
 # Exécuter les trois entrées et les trois sorties
-.venv/bin/python -m chimera demo
+.venv/bin/python -m blue demo
 
 # Utiliser les poids entraînés localement
-.venv/bin/python -m chimera demo --checkpoint runs/workstation/model.pt
+.venv/bin/python -m blue demo --checkpoint runs/workstation/model.pt
 
 # Poids affinés pour les historiques complets, conservés localement
-.venv/bin/python -m chimera demo --checkpoint runs/workstation-robust-control/model.pt
+.venv/bin/python -m blue demo --checkpoint runs/workstation-robust-control/model.pt
 
 # Vérifier l'architecture sans allouer ses poids
-.venv/bin/python -m chimera inspect --all
+.venv/bin/python -m blue inspect --all
 
 # Vérifier le fonctionnement et les gradients
 .venv/bin/python -m unittest discover -s tests -v
@@ -110,17 +110,17 @@ Les experts partagés s'ajoutent aux experts routés : un pour tous les presets,
 Les fichiers de [configuration](configs/) permettent de modifier dimensions, profondeur, experts, variables, classes, horizon et quantiles. Ils ne plafonnent pas artificiellement la taille. Inspecter un fichier personnalisé :
 
 ```bash
-.venv/bin/python -m chimera inspect --config configs/workstation.json
+.venv/bin/python -m blue inspect --config configs/workstation.json
 ```
 
 ## Entraînement conjoint
 
 ```bash
 # Vérification rapide sur CPU
-.venv/bin/python -m chimera train --preset tiny --steps 100 --output runs/tiny
+.venv/bin/python -m blue train --preset tiny --steps 100 --output runs/tiny
 
 # Exécution utilisée pour le modèle livré
-.venv/bin/python -m chimera --threads 4 train \
+.venv/bin/python -m blue --threads 4 train \
   --preset workstation --steps 240 --batch-size 8 --warmup 20 \
   --lr 0.0002 --modality-dropout 0.3 \
   --output runs/workstation --log-every 20 --save-every 60
@@ -132,51 +132,51 @@ Les fichiers de [configuration](configs/) permettent de modifier dimensions, pro
 .venv/bin/python tools/make_dataset.py --preset tiny --output runs/data
 
 # Entraîner sur ses propres données et valider sur un fichier distinct
-.venv/bin/python -m chimera train --preset tiny --steps 100 \
+.venv/bin/python -m blue train --preset tiny --steps 100 \
   --data runs/data/train.jsonl --val-data runs/data/validation.jsonl \
   --eval-every 10 --patience 5 --min-delta 0.001 --output runs/custom
 
 # Entraîner sur votre fichier mixed.jsonl dont les modalités varient selon les lignes
-.venv/bin/python -m chimera train --preset tiny --steps 100 \
+.venv/bin/python -m blue train --preset tiny --steps 100 \
   --data runs/data/mixed.jsonl --mixed-modalities \
   --loss-normalization observed --output runs/mixed
 
 # Mesurer le meilleur modèle sur un fichier indépendant
-.venv/bin/python -m chimera evaluate --checkpoint runs/custom/best.pt \
+.venv/bin/python -m blue evaluate --checkpoint runs/custom/best.pt \
   --data runs/data/validation.jsonl --output runs/custom/quality.json
 
 # Classer, prévoir et générer sur un fichier de nouvelles entrées
-.venv/bin/python -m chimera predict --checkpoint runs/custom/best.pt \
+.venv/bin/python -m blue predict --checkpoint runs/custom/best.pt \
   --data runs/data/validation.jsonl --max-new-tokens 24 \
   --output runs/custom/predictions.jsonl
 
 # Extraire les vecteurs contrastifs pour comparer les modalités
-.venv/bin/python -m chimera embed --checkpoint runs/custom/best.pt \
+.venv/bin/python -m blue embed --checkpoint runs/custom/best.pt \
   --data runs/data/validation.jsonl --batch-size 4 \
   --output runs/custom/embeddings.jsonl
 
 # Rechercher les séries les plus proches de chaque texte
-.venv/bin/python -m chimera search-embeddings \
+.venv/bin/python -m blue search-embeddings \
   --queries runs/custom/embeddings.jsonl --query-modality text \
   --candidates runs/custom/embeddings.jsonl --candidate-modality series \
   --top-k 5 --exclude-self --output runs/custom/neighbors.jsonl
 
 # Construire des jugements : toutes les séries de même classe sont pertinentes
-.venv/bin/python -m chimera prepare-class-relevance \
+.venv/bin/python -m blue prepare-class-relevance \
   --query-data runs/data/validation.jsonl --candidate-data runs/data/validation.jsonl \
   --queries runs/custom/embeddings.jsonl --query-modality text \
   --candidates runs/custom/embeddings.jsonl --candidate-modality series \
   --exclude-self --output runs/custom/relevance.jsonl
 
 # Évaluer avec des annotations de pertinence fournies séparément
-.venv/bin/python -m chimera evaluate-retrieval \
+.venv/bin/python -m blue evaluate-retrieval \
   --queries runs/custom/embeddings.jsonl --query-modality text \
   --candidates runs/custom/embeddings.jsonl --candidate-modality series \
   --relevance runs/custom/relevance.jsonl --top-k 5 --exclude-self \
   --output runs/custom/retrieval-quality.json
 
 # Exporter les poids seuls pour réduire la taille et la mémoire de chargement
-.venv/bin/python -m chimera export --checkpoint runs/custom/best.pt \
+.venv/bin/python -m blue export --checkpoint runs/custom/best.pt \
   --output runs/custom/model.pt
 ```
 
@@ -217,9 +217,9 @@ Les fichiers d'entraînement sont mélangés de façon reproductible à chaque �
 Reprise exacte sur un processus, en conservant les mêmes arguments de planning et de données :
 
 ```bash
-.venv/bin/python -m chimera train --preset tiny --steps 100 \
+.venv/bin/python -m blue train --preset tiny --steps 100 \
   --stop-after 40 --output runs/resumable
-.venv/bin/python -m chimera train --preset tiny --steps 100 \
+.venv/bin/python -m blue train --preset tiny --steps 100 \
   --resume runs/resumable/latest.pt --output runs/resumable
 ```
 
@@ -230,7 +230,7 @@ Le lecteur indexé contrôle aussi l'identité et les métadonnées du JSONL lor
 Pour adapter des poids existants avec un nouvel optimiseur, un nouveau planning et de nouvelles données :
 
 ```bash
-.venv/bin/python -m chimera train --init-from runs/custom/model.pt \
+.venv/bin/python -m blue train --init-from runs/custom/model.pt \
   --data adaptation/train.jsonl --val-data adaptation/validation.jsonl \
   --steps 100 --lr 0.0001 --output runs/adaptation
 ```
@@ -241,12 +241,12 @@ Entraînement distribué DDP :
 
 ```bash
 # Deux processus CPU ; chemin vérifié localement
-.venv/bin/torchrun --standalone --nproc-per-node=2 -m chimera --threads 1 train \
+.venv/bin/torchrun --standalone --nproc-per-node=2 -m blue --threads 1 train \
   --preset tiny --steps 3 --batch-size 2 --warmup 1 --accumulation 2 \
   --output runs/ddp-smoke --log-every 1
 
 # Exemple de deux GPU avec PyTorch CUDA installé
-.venv/bin/torchrun --standalone --nproc-per-node=2 -m chimera train \
+.venv/bin/torchrun --standalone --nproc-per-node=2 -m blue train \
   --preset small --device cuda --amp bf16 --steps 1000 --output runs/gpu
 ```
 
@@ -298,7 +298,7 @@ Les textes longs sont tronqués à `max_seq_len` en conservant EOS. Les historiq
 Pour construire des fenêtres de séries sans réutiliser de positions entre entraînement, validation, calibration et test, `prepare-series` lit un JSONL contenant une série complète par ligne. Chaque objet contient un `series_id` unique, chaîne non vide ou entier, et `values`, tableau chronologique de vecteurs numériques ou `null`. Chaque vecteur doit avoir le nombre de variables de la configuration ; les valeurs numériques doivent être finies et représentables en FP32.
 
 ```bash
-.venv/bin/python -m chimera prepare-series \
+.venv/bin/python -m blue prepare-series \
   --input data/series.jsonl --output-dir data/chronological-splits \
   --config configs/tiny.json --history 32 --stride 12 --gap 12 \
   --train-end 1000 --validation-end 1300 --calibration-end 1600
@@ -313,7 +313,7 @@ Ces indices suivent l'ordre fourni : le programme ne vérifie ni les horodatages
 Avant l'entraînement ou la calibration, comparer les jeux pour repérer des exemples dont les champs choisis sont identiques, même si les lignes sont réordonnées ou le JSON reformaté :
 
 ```bash
-.venv/bin/python -m chimera audit-splits \
+.venv/bin/python -m blue audit-splits \
   --split train=data/train.jsonl --split calibration=data/calibration.jsonl --split test=data/test.jsonl \
   --fields series future --output runs/split-audit.json --fail-on-overlap
 ```
@@ -330,10 +330,10 @@ Utiliser directement les tenseurs :
 
 ```python
 import torch
-from chimera import ByteTokenizer, Chimera, ChimeraConfig
+from blue import ByteTokenizer, Blue, BlueConfig
 
-config = ChimeraConfig.preset("tiny")
-model = Chimera(config)
+config = BlueConfig.preset("tiny")
+model = Blue(config)
 tokenizer = ByteTokenizer()
 tokens = torch.tensor([tokenizer.encode("Décris ce signal.")])
 
@@ -368,7 +368,7 @@ Le rapport inclut aussi `expert_usage`, la part des sélections de chaque expert
 Génération avec cache clé/valeur **et** état de convolution :
 
 ```bash
-.venv/bin/python -m chimera generate --checkpoint runs/workstation/model.pt \
+.venv/bin/python -m blue generate --checkpoint runs/workstation/model.pt \
   --prompt "Signal de classe " --max-new-tokens 32 --temperature 0
 ```
 
@@ -380,9 +380,9 @@ Pour l'échantillonnage, les logits sont centrés avant la division par la temp�
 
 ## Fichiers utiles
 
-- [Modèle et pertes](chimera/model.py), [briques du réseau](chimera/modules.py), [configuration](chimera/config.py).
-- [Entraînement et sauvegardes](chimera/training.py), [données](chimera/data.py), [CLI](chimera/cli.py).
-- [Tests](tests/test_chimera.py), [protocole de mesure](tools/benchmark.py), [comptages exacts](artifacts/architectures.json).
+- [Modèle et pertes](blue/model.py), [briques du réseau](blue/modules.py), [configuration](blue/config.py).
+- [Entraînement et sauvegardes](blue/training.py), [données](blue/data.py), [CLI](blue/cli.py).
+- [Tests](tests/test_blue.py), [protocole de mesure](tools/benchmark.py), [comptages exacts](artifacts/architectures.json).
 - [Rapport de validation](VALIDATION.md).
 - [Améliorations et mesures de mémoire](IMPROVEMENTS.md), [profilage reproductible](tools/profile_runtime.py).
 - [CI Python 3.11 et 3.14](.github/workflows/tests.yml) : tests, inspection des presets et vérification DDP à chaque push ou pull request.

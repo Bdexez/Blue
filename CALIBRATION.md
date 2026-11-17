@@ -12,18 +12,18 @@ Pour partir de séries chronologiques brutes, [`prepare-series`](README.md#donn�
 
 ```bash
 # Ajuster sur des exemples réservés à la calibration
-.venv/bin/python -m chimera --threads 8 calibrate \
+.venv/bin/python -m blue --threads 8 calibrate \
   --checkpoint runs/workstation-refined/model.pt \
   --data data/calibration.jsonl --coverage 0.8 \
   --output runs/forecast-calibration.json
 
 # Mesurer sur un autre fichier
-.venv/bin/python -m chimera --threads 8 evaluate \
+.venv/bin/python -m blue --threads 8 evaluate \
   --checkpoint runs/workstation-refined/model.pt --data data/test.jsonl \
   --calibration runs/forecast-calibration.json --output runs/calibrated-evaluation.json
 
 # Ajouter les intervalles aux prédictions
-.venv/bin/python -m chimera --threads 8 predict \
+.venv/bin/python -m blue --threads 8 predict \
   --checkpoint runs/workstation-refined/model.pt --data data/new-cases.jsonl \
   --calibration runs/forecast-calibration.json --output runs/calibrated-predictions.jsonl
 ```
@@ -51,7 +51,7 @@ Sous échangeabilité, les probabilités marginales de manquer par le bas et par
 Chaque rang doit être fini : à 80 % avec `f=0.5`, il faut au moins neuf exemples observés par coordonnée, ou neuf trajectoires complètes en mode joint. Une fraction plus extrême peut demander plus de données ; un effectif insuffisant produit une erreur avant écriture. Les fichiers à deux corrections utilisent le format version 4 ; les versions 1 à 3 restent lisibles. Les sorties indiquent `calibrated_lower_tail_fraction` lorsque cette option est active.
 
 ```bash
-.venv/bin/python -m chimera calibrate --checkpoint runs/workstation-refined/model.pt \
+.venv/bin/python -m blue calibrate --checkpoint runs/workstation-refined/model.pt \
   --data data/calibration.jsonl --coverage 0.8 --lower-tail-fraction 0.5 \
   --output runs/two-tail-calibration.json
 ```
@@ -63,7 +63,7 @@ Par défaut, `--scope marginal` conserve une portée marginale par cible, sous �
 Seules les trajectoires dont toutes les cibles sont finies contribuent à cet ajustement ; l'effectif commun est enregistré dans `counts`. La garantie de couverture simultanée suppose notamment un modèle fixé avant calibration et l'échangeabilité des trajectoires complètes de calibration avec les trajectoires futures concernées. L'exclusion de cibles manquantes ne garantit pas ces hypothèses si leur présence dépend des valeurs ; aucune garantie n'est revendiquée pour une population différente ou une série temporelle non échangeable. Le fichier joint sans normalisation utilise le format version 2 ; les fichiers marginaux version 1 restent lisibles.
 
 ```bash
-.venv/bin/python -m chimera calibrate --checkpoint runs/workstation-refined/model.pt \
+.venv/bin/python -m blue calibrate --checkpoint runs/workstation-refined/model.pt \
   --data data/calibration.jsonl --coverage 0.8 --scope joint --output runs/joint-calibration.json
 ```
 
@@ -72,7 +72,7 @@ Pour des variables d'unités très différentes, `--scope joint --score-scale wi
 Le plancher `--scale-floor` est strictement positif et vaut `1e-6` par défaut. Choisir une valeur adaptée aux unités si les largeurs prédites peuvent être très petites. Tant que le plancher n'est pas actif, le résultat de calibration suit les changements positifs d'unité appliqués aux prévisions et aux cibles ; lorsqu'il est actif, cette propriété peut ne plus tenir. Les fichiers correspondants utilisent le format version 3 et enregistrent le plancher. Les sorties indiquent `calibrated_score_scale` et, pour cette option, `calibrated_scale_floor`.
 
 ```bash
-.venv/bin/python -m chimera calibrate --checkpoint runs/workstation-refined/model.pt \
+.venv/bin/python -m blue calibrate --checkpoint runs/workstation-refined/model.pt \
   --data data/calibration.jsonl --coverage 0.8 --scope joint --score-scale width \
   --scale-floor 1e-6 --output runs/joint-width-calibration.json
 ```

@@ -45,7 +45,7 @@ Les parts par expert, ratios de charge maximale, écarts-types et effectifs pour
 Pour affiner un checkpoint existant avec ce mode :
 
 ```bash
-.venv/bin/python -m chimera train \
+.venv/bin/python -m blue train \
   --init-from runs/workstation/model.pt \
   --model-overrides configs/top1-probability-overrides.json \
   --steps 100 --output runs/top1-refinement

@@ -19,7 +19,7 @@ Le défaut `forecast_adapter_context: 0` désactive le module. Son activation de
 À l'ajustement, seules les variables dont la porte est strictement positive et dont la cible est finie contribuent à la régression de chaque horizon. Changer ce réglage sur un checkpoint existant réinitialise l'adaptateur lorsque la sémantique de sa branche change ; les autres poids sont conservés. Le défaut `false` conserve le comportement historique. La commande suivante active cette porte et ajuste de nouveaux coefficients :
 
 ```bash
-.venv/bin/python -m chimera refine-forecast \
+.venv/bin/python -m blue refine-forecast \
   --checkpoint runs/joint-affine-pilot/control/latest.pt --data data/ajustement.jsonl \
   --context 8 --missing-gate --output runs/forecast-missing-gate.pt
 ```
@@ -55,7 +55,7 @@ L'option `--separate-missing` ajoute une deuxième projection de 396 paramètres
 L'ajustement ridge calcule des statistiques et des coefficients séparés pour les deux branches. Si une branche ne reçoit aucun exemple utilisable, ses coefficients sont conservés et le rapport indique `fitted: false`. Si elle reçoit des données mais aucune cible pour un horizon, l'opération échoue avant toute modification. Passer d'une porte de longueur existante à ces deux branches conserve la projection de longueur lorsque contexte et caractéristiques sont identiques ; la nouvelle projection est initialisée à zéro. Passer depuis la porte partagée précédente réinitialise les deux projections, dont les rôles ont changé. Une calibration des intervalles doit être réajustée pour le nouveau checkpoint.
 
 ```bash
-.venv/bin/python -m chimera refine-forecast \
+.venv/bin/python -m blue refine-forecast \
   --checkpoint runs/joint-affine-pilot/control/latest.pt --data data/ajustement.jsonl \
   --context 8 --separate-missing --output runs/forecast-separate-missing.pt
 ```
@@ -87,14 +87,14 @@ Dans cet essai, la branche longue améliore les historiques masqués et la branc
 Chaque ligne contient `series` et `future`. Les historiques peuvent avoir des longueurs différentes et contenir `null` pour les valeurs absentes. D'autres modalités sont acceptées si elles sont présentes dans tout le fichier, comme pour les autres commandes JSONL.
 
 ```bash
-.venv/bin/python -m chimera --threads 8 refine-forecast \
+.venv/bin/python -m blue --threads 8 refine-forecast \
   --checkpoint runs/workstation-statistics/model.pt \
   --data runs/forecast-refinement/train.jsonl \
   --context 8 --ridge 0.001 --batch-size 64 \
   --output runs/workstation-forecast-refined/model.pt \
   --report runs/workstation-forecast-refined/fit.json
 
-.venv/bin/python -m chimera predict \
+.venv/bin/python -m blue predict \
   --checkpoint runs/workstation-forecast-refined/model.pt \
   --data runs/forecast-refinement/train.jsonl --output runs/forecast-predictions.jsonl
 ```
@@ -180,7 +180,7 @@ La cible vaut 80 %. La calibration élargit les intervalles et diminue le score 
 # et --output-dir runs/forecast-calibration-missing30
 
 # Prédire avec un fichier JSONL de séries de huit pas de la même distribution
-.venv/bin/python -m chimera predict \
+.venv/bin/python -m blue predict \
   --checkpoint runs/workstation-forecast-refined/model.pt --data mon-test-8-pas.jsonl \
   --calibration runs/forecast-calibration-history8/series.json --output predictions.jsonl
 ```
