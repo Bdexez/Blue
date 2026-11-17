@@ -7,6 +7,7 @@ from torch import distributed as dist
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 
+from .audio import AudioEncoder
 from .config import BlueConfig
 from .distributed_alignment import distributed_alignment_loss
 from .losses import quantile_pinball_loss, symmetric_contrastive_loss
@@ -60,7 +61,9 @@ class Blue(nn.Module):
         self.embedding = nn.Embedding(config.vocab_size, d)
         self.vision = VisionEncoder(config)
         self.temporal = TemporalEncoder(config)
+        self.audio = AudioEncoder(config) if config.audio_enabled else None
         self.modality = nn.Parameter(torch.empty(2, d))
+        self.audio_modality = nn.Parameter(torch.empty(d)) if config.audio_enabled else None
         self.resampler = LatentResampler(config)
         self.task_queries = nn.Parameter(torch.empty(1, 2, d))
         self.blocks = nn.ModuleList([DecoderBlock(config, i) for i in range(config.n_layers)])
@@ -85,6 +88,7 @@ class Blue(nn.Module):
         self.classifier = nn.Linear(d, config.num_classes)
         self.forecaster = QuantileForecastHead(config)
         self.alignment = nn.ModuleList([nn.Linear(d, d, bias=False) for _ in range(3)])
+        self.audio_alignment = nn.Linear(d, d, bias=False) if config.audio_enabled else None
         self.forecast_adapter = ForecastAdapter(config) if config.forecast_adapter_context else None
         self.apply(self._initialize)
         if config.stable_rms_norm:
@@ -105,6 +109,10 @@ class Blue(nn.Module):
         for parameter in (self.modality, self.task_queries, self.resampler.latents,
                           self.resampler.null_context, self.vision.position):
             nn.init.normal_(parameter, std=0.02)
+        if self.audio_modality is not None:
+            nn.init.normal_(self.audio_modality, std=0.02)
+        if self.audio is not None and self.audio.spectral is not None:
+            self.audio.spectral.reset_spectral_parameters()
         if self.reasoning_gate is not None:
             nn.init.constant_(self.reasoning_gate, -1.0)
         for block in self.blocks:
@@ -146,7 +154,8 @@ class Blue(nn.Module):
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
 
-    def _validate(self, input_ids, images, series, attention_mask, series_mask, cache, reasoning_steps=None):
+    def _validate(self, input_ids, images, series, attention_mask, series_mask, cache,
+                  reasoning_steps=None, audio=None, audio_mask=None):
         c = self.config
         if reasoning_steps is not None:
             if type(reasoning_steps) is not int or reasoning_steps < 1:
@@ -154,9 +163,9 @@ class Blue(nn.Module):
             if c.latent_reasoning_steps == 1 and reasoning_steps != 1:
                 raise ValueError("reasoning_steps > 1 nécessite latent_reasoning_steps > 1 dans la configuration")
         effective_steps = c.latent_reasoning_steps if reasoning_steps is None else reasoning_steps
-        tensors = [x for x in (input_ids, images, series) if x is not None]
+        tensors = [x for x in (input_ids, images, series, audio) if x is not None]
         if not tensors:
-            raise ValueError("Au moins une modalité est requise : texte, images ou séries")
+            raise ValueError("Au moins une modalité est requise : texte, images, séries ou audio")
         batch = tensors[0].size(0)
         if batch < 1 or any(x.size(0) != batch for x in tensors):
             raise ValueError("Les modalités doivent partager un batch non vide")
@@ -185,10 +194,24 @@ class Blue(nn.Module):
                 raise ValueError("series doit être flottant et respecter max_series_len")
         elif series_mask is not None:
             raise ValueError("series_mask nécessite series")
-        for mask, data, name in ((attention_mask, input_ids, "attention_mask"),
-                                 (series_mask, series, "series_mask")):
+        if audio is not None:
+            if self.audio is None:
+                raise ValueError("audio nécessite audio_enabled=True dans la configuration")
+            if audio.ndim != 3 or audio.size(1) != c.audio_channels:
+                raise ValueError("audio doit avoir la forme [B, audio_channels, L]")
+            if not audio.is_floating_point() or not 1 <= audio.size(2) <= c.max_audio_len:
+                raise ValueError("audio doit être flottant et respecter max_audio_len")
+            if not torch.isfinite(audio).all():
+                raise ValueError("audio doit contenir des nombres flottants finis")
+        elif audio_mask is not None:
+            raise ValueError("audio_mask nécessite audio")
+        for mask, data, name, expected_shape in (
+            (attention_mask, input_ids, "attention_mask", None if input_ids is None else input_ids.shape[:2]),
+            (series_mask, series, "series_mask", None if series is None else series.shape[:2]),
+            (audio_mask, audio, "audio_mask", None if audio is None else (audio.size(0), audio.size(2))),
+        ):
             if mask is not None:
-                if mask.shape != data.shape[:2] or mask.device != device:
+                if mask.shape != expected_shape or mask.device != device:
                     raise ValueError(f"{name} doit partager la forme [B, T] et le device des données")
                 if not ((mask == 0) | (mask == 1)).all():
                     raise ValueError(f"{name} doit être binaire")
@@ -197,7 +220,7 @@ class Blue(nn.Module):
         if cache is not None:
             if self.training:
                 raise ValueError("Le cache est réservé à l'inférence en mode eval()")
-            if images is not None or series is not None:
+            if images is not None or series is not None or audio is not None:
                 raise ValueError("Le contexte multimodal est déjà dans le cache ; ne pas le réinjecter")
             if len(cache.layers) != c.n_layers * effective_steps or cache.latents.size(0) != batch:
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
@@ -215,14 +238,20 @@ class Blue(nn.Module):
                 raise ValueError("Positions incohérentes dans le cache")
         return batch
 
-    def encode_modalities(self, *, input_ids=None, images=None, series=None, attention_mask=None, series_mask=None):
+    def _project_alignment(self, index: int, value: torch.Tensor) -> torch.Tensor:
+        proj = self.audio_alignment if index == 3 else self.alignment[index]
+        return F.normalize(proj(value).float(), dim=-1)
+
+    def encode_modalities(self, *, input_ids=None, images=None, series=None, audio=None,
+                          attention_mask=None, series_mask=None, audio_mask=None):
         """Représentations contrastives indépendantes de chaque modalité fournie.
 
         Le texte utilise toujours le contexte nul, même si l'alignement a été
         entraîné en mode joint. Le mode train/eval et les gradients restent ceux
         choisis par l'appelant.
         """
-        self._validate(input_ids, images, series, attention_mask, series_mask, None)
+        self._validate(input_ids, images, series, attention_mask, series_mask, None,
+                       audio=audio, audio_mask=audio_mask)
         representations = {}
         if input_ids is not None:
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
@@ -237,9 +266,15 @@ class Blue(nn.Module):
             tokens, mask, *_ = self.temporal(series, valid)
             pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
             representations['series'] = (1, pooled)
+        if audio is not None:
+            valid = (torch.ones((audio.size(0), audio.size(2)), device=audio.device, dtype=torch.bool)
+                     if audio_mask is None else audio_mask.bool())
+            tokens, mask = self.audio(audio, valid)
+            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
+            representations['audio'] = (3, pooled)
         result = {}
         for name, (index, value) in representations.items():
-            vector = F.normalize(self.alignment[index](value).float(), dim=-1)
+            vector = self._project_alignment(index, value)
             if not torch.isfinite(vector).all():
                 raise FloatingPointError("Les représentations contrastives doivent être finies")
             result[name] = vector
@@ -311,12 +346,13 @@ class Blue(nn.Module):
         return hidden[torch.arange(batch, device=hidden.device), last]
 
     def forward(
-        self, input_ids=None, *, images=None, series=None, attention_mask=None,
-        series_mask=None, labels=None, class_labels=None, forecast_targets=None, alignment_ids=None,
+        self, input_ids=None, *, images=None, series=None, audio=None, attention_mask=None,
+        series_mask=None, audio_mask=None, labels=None, class_labels=None, forecast_targets=None, alignment_ids=None,
         alignment_cross_rank_views=False, alignment_cross_class_views=False,
         cache: ModelCache | None = None, use_cache=False, reasoning_steps: int | None = None,
     ) -> BlueOutput:
-        batch = self._validate(input_ids, images, series, attention_mask, series_mask, cache, reasoning_steps)
+        batch = self._validate(input_ids, images, series, attention_mask, series_mask, cache,
+                               reasoning_steps, audio=audio, audio_mask=audio_mask)
         distributed_alignment = (self.config.alignment_scope == "global" and self.training and dist.is_available()
                                  and dist.is_initialized() and dist.get_world_size() > 1)
         if type(alignment_cross_rank_views) is not bool and not distributed_alignment:
@@ -370,6 +406,15 @@ class Blue(nn.Module):
                 pooled_series = (series_tokens * temporal_valid.unsqueeze(-1)).sum(1)
                 pooled_series = pooled_series / temporal_valid.sum(1, keepdim=True).clamp_min(1)
                 align_vectors.append((1, pooled_series))
+            if audio is not None:
+                audio_mask = (torch.ones((audio.size(0), audio.size(2)), device=audio.device, dtype=torch.bool)
+                              if audio_mask is None else audio_mask.bool())
+                audio_tokens, audio_valid = self.audio(audio, audio_mask)
+                contexts.append(audio_tokens + self.audio_modality)
+                masks.append(audio_valid)
+                pooled_audio = (audio_tokens * audio_valid.unsqueeze(-1)).sum(1)
+                pooled_audio = pooled_audio / audio_valid.sum(1, keepdim=True).clamp_min(1)
+                align_vectors.append((3, pooled_audio))
             latents = self.resampler(contexts, masks, batch)
         else:
             latents, mean, scale = cache.latents, cache.series_mean, cache.series_scale
@@ -448,15 +493,16 @@ class Blue(nn.Module):
             if self._alignment_group is None or self._alignment_world is not dist.group.WORLD:
                 self._alignment_group = dist.new_group()
                 self._alignment_world = dist.group.WORLD
-            vectors = {i: F.normalize(self.alignment[i](v).float(), dim=-1) for i, v in align_vectors}
+            vectors = {i: self._project_alignment(i, v) for i, v in align_vectors}
             losses["alignment"] = distributed_alignment_loss(vectors, class_labels, c.alignment_temperature,
                                                               c.alignment_mode, group=self._alignment_group,
                                                               text_view=c.alignment_text_view, sample_ids=alignment_ids,
                                                               cross_rank_views=alignment_cross_rank_views,
-                                                              cross_class_views=alignment_cross_class_views)
+                                                              cross_class_views=alignment_cross_class_views,
+                                                              num_modalities=4 if c.audio_enabled else 3)
             total = total + c.alignment_weight * losses["alignment"]
         elif len(align_vectors) > 1 and batch > 1:
-            vectors = [F.normalize(self.alignment[i](v).float(), dim=-1) for i, v in align_vectors]
+            vectors = [self._project_alignment(i, v) for i, v in align_vectors]
             contrastive = []
             for i in range(len(vectors)):
                 for j in range(i + 1, len(vectors)):
