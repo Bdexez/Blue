@@ -37,6 +37,7 @@ class BlueConfig:
     image_channels: int = 3
     patch_size: int = 8
     vision_layers: int = 2
+    vision_rope_2d: bool = False
     series_features: int = 3
     max_series_len: int = 256
     temporal_layers: int = 2
@@ -121,6 +122,16 @@ class BlueConfig:
             raise ValueError("router_bias_update_rate doit être fini et positif ou nul")
         if self.image_size % self.patch_size:
             raise ValueError("image_size doit être divisible par patch_size")
+        if type(self.vision_rope_2d) is not bool:
+            raise ValueError("vision_rope_2d doit être booléen")
+        if self.vision_rope_2d:
+            rope_dim = self.d_model // self.n_heads
+            if self.kv_lora_rank > 0:
+                rope_dim //= 2
+            if self.differential_attention:
+                rope_dim //= 2
+            if rope_dim < 4 or rope_dim % 4:
+                raise ValueError("vision_rope_2d nécessite une dimension rotative par tête divisible par 4")
         if (type(self.forecast_adapter_context) is not int
                 or not 0 <= self.forecast_adapter_context <= self.forecast_context):
             raise ValueError("forecast_adapter_context doit être un entier entre 0 et forecast_context")
