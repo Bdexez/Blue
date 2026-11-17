@@ -91,6 +91,42 @@ class RotaryEmbedding(nn.Module):
         return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
 
 
+class RotaryEmbedding2D(RotaryEmbedding):
+    """Positions rotatives axiales 2D (hauteur et largeur) pour grille de patches."""
+
+    def __init__(self, head_dim, theta, grid_size):
+        if head_dim % 4:
+            raise ValueError("RotaryEmbedding2D nécessite head_dim divisible par 4")
+        self.grid_size = grid_size
+        super().__init__(head_dim, theta)
+
+    def frequencies(self, device=None):
+        half = self.head_dim // 2
+        exponent = torch.arange(0, half, 2, dtype=torch.float32, device=device) / half
+        return 1.0 / (self.theta ** exponent)
+
+    def forward(self, x, offset=0):
+        # x: [B, H, G*G, D] ; première moitié en coordonnée verticale, seconde en horizontale.
+        if offset != 0 or x.size(-2) != self.grid_size * self.grid_size:
+            raise ValueError("RotaryEmbedding2D attend une grille complète de patches sans décalage")
+        half = self.head_dim // 2
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            coords = torch.arange(self.grid_size, device=x.device, dtype=torch.float32)
+            rows = coords.repeat_interleave(self.grid_size)
+            cols = coords.repeat(self.grid_size)
+            freq = self.inv_freq.float()
+            phase_y = torch.outer(rows, freq)
+            phase_x = torch.outer(cols, freq)
+            cos_y, sin_y = phase_y.cos().to(x.dtype), phase_y.sin().to(x.dtype)
+            cos_x, sin_x = phase_x.cos().to(x.dtype), phase_x.sin().to(x.dtype)
+        y_part, x_part = x[..., :half], x[..., half:]
+        y_even, y_odd = y_part[..., 0::2], y_part[..., 1::2]
+        x_even, x_odd = x_part[..., 0::2], x_part[..., 1::2]
+        rot_y = torch.stack((y_even * cos_y - y_odd * sin_y, y_even * sin_y + y_odd * cos_y), dim=-1).flatten(-2)
+        rot_x = torch.stack((x_even * cos_x - x_odd * sin_x, x_even * sin_x + x_odd * cos_x), dim=-1).flatten(-2)
+        return torch.cat((rot_y, rot_x), dim=-1)
+
+
 @dataclass
 class LayerCache:
     key: torch.Tensor
@@ -104,7 +140,7 @@ class LayerCache:
 
 
 class GroupedQueryAttention(nn.Module):
-    def __init__(self, config: BlueConfig, *, causal=True, window=0, layer_index=0):
+    def __init__(self, config: BlueConfig, *, causal=True, window=0, layer_index=0, grid_size=None):
         super().__init__()
         self.n_heads, self.n_kv_heads = config.n_heads, config.n_kv_heads
         self.head_dim = config.d_model // config.n_heads
@@ -140,13 +176,16 @@ class GroupedQueryAttention(nn.Module):
             diff_dim = rope_dim
             self.q_norm = RMSNorm(rope_dim, config.norm_eps)
             self.k_norm = RMSNorm(rope_dim, config.norm_eps)
-        self.rope = RotaryEmbedding(
-            rope_dim, config.rope_theta,
-            scaling_type=config.rope_scaling_type,
-            scaling_factor=config.rope_scaling_factor,
-            original_max_seq_len=config.rope_original_max_seq_len,
-            max_seq_len=config.max_seq_len,
-        )
+        if grid_size is not None:
+            self.rope = RotaryEmbedding2D(rope_dim, config.rope_theta, grid_size)
+        else:
+            self.rope = RotaryEmbedding(
+                rope_dim, config.rope_theta,
+                scaling_type=config.rope_scaling_type,
+                scaling_factor=config.rope_scaling_factor,
+                original_max_seq_len=config.rope_original_max_seq_len,
+                max_seq_len=config.max_seq_len,
+            )
         if self.differential:
             self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_index)
             self.lambda_q1 = nn.Parameter(torch.empty(diff_dim))
@@ -383,10 +422,10 @@ class SparseMoE(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, config, layer_index=0):
+    def __init__(self, config, layer_index=0, *, grid_size=None):
         super().__init__()
         self.norm1, self.norm2 = RMSNorm(config.d_model), RMSNorm(config.d_model)
-        self.attn = GroupedQueryAttention(config, causal=False, layer_index=layer_index)
+        self.attn = GroupedQueryAttention(config, causal=False, layer_index=layer_index, grid_size=grid_size)
         self.ffn = SwiGLU(config.d_model, config.hidden_dim)
         self.dropout = nn.Dropout(config.dropout)
 
@@ -405,7 +444,8 @@ class VisionEncoder(nn.Module):
         self.patch = nn.Conv2d(d // 2, d, config.patch_size, stride=config.patch_size)
         grid = config.image_size // config.patch_size
         self.position = nn.Parameter(torch.empty(1, grid * grid, d))
-        self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.vision_layers)])
+        rope_grid = grid if config.vision_rope_2d else None
+        self.blocks = nn.ModuleList([EncoderBlock(config, i, grid_size=rope_grid) for i in range(config.vision_layers)])
         self.norm = RMSNorm(d, config.norm_eps)
 
     def forward(self, images):
