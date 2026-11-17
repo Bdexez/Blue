@@ -30,6 +30,7 @@ class BlueConfig:
     ssm_state_dim: int = 0
     ssm_heads: int | None = None
     residual_streams: int = 1
+    latent_reasoning_steps: int = 1
     dropout: float = 0.0
     norm_eps: float = 1e-6
     stable_rms_norm: bool = False
@@ -109,6 +110,8 @@ class BlueConfig:
                 raise ValueError("d_model doit être divisible par ssm_heads")
         if type(self.residual_streams) is not int or self.residual_streams < 1:
             raise ValueError("residual_streams doit être un entier strictement positif")
+        if type(self.latent_reasoning_steps) is not int or self.latent_reasoning_steps < 1:
+            raise ValueError("latent_reasoning_steps doit être un entier strictement positif")
         if self.d_model % 4 or self.n_heads % self.n_kv_heads:
             raise ValueError("d_model doit être divisible par 4 et n_heads par n_kv_heads")
         if self.top_k > self.n_experts:
