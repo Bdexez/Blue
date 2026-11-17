@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .config import BlueConfig
+from .hyper_connections import ManifoldHyperConnection
 from .ssm import GatedDeltaNet
 from .temporal_precision import temporal_work_dtype
 
@@ -537,9 +538,23 @@ class DecoderBlock(nn.Module):
         self.cross_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         self.moe = SparseMoE(config)
         self.dropout = nn.Dropout(config.dropout)
+        self.residual_streams = config.residual_streams
+        if config.residual_streams > 1:
+            self.hc_attn = ManifoldHyperConnection(config.d_model, config.residual_streams,
+                                                   norm_cls=RMSNorm, norm_eps=config.norm_eps)
+            self.hc_cross = ManifoldHyperConnection(config.d_model, config.residual_streams,
+                                                    norm_cls=RMSNorm, norm_eps=config.norm_eps)
+            self.hc_moe = ManifoldHyperConnection(config.d_model, config.residual_streams,
+                                                  norm_cls=RMSNorm, norm_eps=config.norm_eps)
+        else:
+            self.hc_attn = self.hc_cross = self.hc_moe = None
 
     def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False):
-        h = self.norm1(x)
+        if self.hc_attn is not None:
+            h_pre, h_post, h_res = self.hc_attn.routing_weights(x)
+            h = self.norm1(self.hc_attn.combine_input(x, h_pre))
+        else:
+            h = self.norm1(x)
         attention, (k, v, key_valid) = self.attn(h, valid, offset=offset, cache=cache, use_cache=use_cache)
         local, conv_state = self.conv(h, valid, None if cache is None else cache.conv_state)
         mixed = attention + torch.sigmoid(self.mix_gate) * local
@@ -547,14 +562,29 @@ class DecoderBlock(nn.Module):
         if self.ssm is not None:
             recurrent, ssm_state = self.ssm(h, valid, None if cache is None else cache.ssm_state)
             mixed = mixed + torch.sigmoid(self.ssm_gate) * recurrent
-        x = x + self.dropout(mixed)
+        if self.hc_attn is not None:
+            x = self.hc_attn.update_streams(x, self.dropout(mixed), h_post, h_res)
+        else:
+            x = x + self.dropout(mixed)
         if cache is not None and cache.context_key is not None:
             context_kv = cache.context_key, cache.context_value
         else:
             context_kv = self.cross.project_context(context)
-        x = x + self.dropout(torch.sigmoid(self.cross_gate) * self.cross(self.norm2(x), projected=context_kv))
-        update, balance, z_loss, usage = self.moe(self.norm3(x), valid)
-        x = (x + self.dropout(update)) * valid.unsqueeze(-1)
+        if self.hc_cross is not None:
+            c_pre, c_post, c_res = self.hc_cross.routing_weights(x)
+            cross_in = self.norm2(self.hc_cross.combine_input(x, c_pre))
+            cross_out = self.dropout(torch.sigmoid(self.cross_gate) * self.cross(cross_in, projected=context_kv))
+            x = self.hc_cross.update_streams(x, cross_out, c_post, c_res)
+        else:
+            x = x + self.dropout(torch.sigmoid(self.cross_gate) * self.cross(self.norm2(x), projected=context_kv))
+        if self.hc_moe is not None:
+            m_pre, m_post, m_res = self.hc_moe.routing_weights(x)
+            moe_in = self.norm3(self.hc_moe.combine_input(x, m_pre))
+            update, balance, z_loss, usage = self.moe(moe_in, valid)
+            x = self.hc_moe.update_streams(x, self.dropout(update), m_post, m_res) * valid[:, :, None, None]
+        else:
+            update, balance, z_loss, usage = self.moe(self.norm3(x), valid)
+            x = (x + self.dropout(update)) * valid.unsqueeze(-1)
         next_cache = (LayerCache(k, v, key_valid, conv_state, offset + x.size(1) - k.size(-2),
                                  *context_kv, ssm_state=ssm_state)
                       if use_cache else None)
