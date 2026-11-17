@@ -324,11 +324,27 @@ class SparseMoE(nn.Module):
         super().__init__()
         self.n_experts, self.top_k = config.n_experts, config.top_k
         self.top1_gate = config.top1_gate
+        self.router_bias_update_rate = config.router_bias_update_rate
         self.router = nn.Linear(config.d_model, config.n_experts, bias=False)
         self.experts = nn.ModuleList([
             SwiGLU(config.d_model, config.hidden_dim) for _ in range(config.n_experts)
         ])
         self.shared = SwiGLU(config.d_model, config.hidden_dim * config.shared_experts)
+        self.shared_gate = nn.Linear(config.d_model, 1, bias=False) if config.shared_expert_gate else None
+        if config.router_bias_update_rate > 0:
+            self.register_buffer("expert_bias", torch.zeros(config.n_experts, dtype=torch.float32))
+        else:
+            self.expert_bias = None
+
+    @torch.no_grad()
+    def update_expert_bias(self, usage: torch.Tensor):
+        """Mise à jour sans gradient du biais d'équilibrage (DeepSeek-V3)."""
+        if self.expert_bias is None or self.router_bias_update_rate <= 0:
+            return
+        target = 1.0 / self.n_experts
+        error = target - usage.to(device=self.expert_bias.device, dtype=self.expert_bias.dtype)
+        self.expert_bias.add_(self.router_bias_update_rate * torch.sign(error))
+        self.expert_bias.sub_(self.expert_bias.mean())
 
     def forward(self, x, valid):
         flat = x.reshape(-1, x.size(-1))
@@ -341,10 +357,16 @@ class SparseMoE(nn.Module):
         with torch.autocast(device_type=tokens.device.type, enabled=False):
             scores = F.linear(tokens.float(), self.router.weight.float())
             probs = scores.softmax(-1)
-        weights, selected = probs.topk(self.top_k, dim=-1)
+            if self.expert_bias is not None:
+                _, selected = (probs + self.expert_bias.float()).topk(self.top_k, dim=-1)
+                weights = probs.gather(-1, selected)
+            else:
+                weights, selected = probs.topk(self.top_k, dim=-1)
         if self.top_k != 1 or self.top1_gate == "normalized":
-            weights = weights / weights.sum(-1, keepdim=True)
+            weights = weights / weights.sum(-1, keepdim=True).clamp_min(1e-12)
         mixed = self.shared(tokens)
+        if self.shared_gate is not None:
+            mixed = mixed * torch.sigmoid(self.shared_gate(tokens)).to(mixed.dtype)
         for expert_id, expert in enumerate(self.experts):
             rows, slots = torch.where(selected == expert_id)
             # Un expert vide reste un graphe valide, sans traitement de tokens inutiles.

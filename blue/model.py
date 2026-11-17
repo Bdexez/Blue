@@ -112,6 +112,16 @@ class Blue(nn.Module):
         self._alignment_group = None
         self._alignment_world = None
 
+    @torch.no_grad()
+    def update_router_biases(self, expert_usage: torch.Tensor):
+        """Mettre à jour les biais d'équilibrage MoE sans perte auxiliaire."""
+        if self.config.router_bias_update_rate <= 0:
+            return
+        if expert_usage.shape != (self.config.n_layers, self.config.n_experts):
+            raise ValueError("expert_usage doit avoir la forme [n_layers, n_experts]")
+        for index, block in enumerate(self.blocks):
+            block.moe.update_expert_bias(expert_usage[index])
+
     @staticmethod
     def _initialize(module):
         if isinstance(module, (nn.Linear, nn.Embedding, nn.Conv1d, nn.Conv2d)):
