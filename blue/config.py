@@ -20,6 +20,9 @@ class BlueConfig:
     global_every: int = 4
     conv_kernel: int = 5
     rope_theta: float = 10000.0
+    rope_scaling_type: str = "none"
+    rope_scaling_factor: float = 1.0
+    rope_original_max_seq_len: int | None = None
     dropout: float = 0.0
     norm_eps: float = 1e-6
     stable_rms_norm: bool = False
@@ -91,6 +94,20 @@ class BlueConfig:
             raise ValueError("dropout doit appartenir à [0, 1[")
         if not math.isfinite(self.rope_theta) or self.rope_theta <= 1:
             raise ValueError("rope_theta doit être fini et > 1")
+        if self.rope_scaling_type not in ("none", "linear", "ntk", "yarn"):
+            raise ValueError("rope_scaling_type doit être none, linear, ntk ou yarn")
+        if not math.isfinite(self.rope_scaling_factor) or self.rope_scaling_factor < 1.0:
+            raise ValueError("rope_scaling_factor doit être fini et >= 1")
+        if self.rope_scaling_type == "none" and self.rope_scaling_factor != 1.0:
+            raise ValueError("rope_scaling_factor > 1 nécessite rope_scaling_type != none")
+        if self.rope_scaling_type != "none" and self.rope_scaling_factor <= 1.0:
+            raise ValueError("rope_scaling_type != none nécessite rope_scaling_factor > 1")
+        if self.rope_original_max_seq_len is not None:
+            if (type(self.rope_original_max_seq_len) is not int
+                    or not 1 <= self.rope_original_max_seq_len <= self.max_seq_len):
+                raise ValueError("rope_original_max_seq_len doit être un entier dans [1, max_seq_len]")
+            if self.rope_scaling_type != "yarn":
+                raise ValueError("rope_original_max_seq_len nécessite rope_scaling_type yarn")
         if not math.isfinite(self.norm_eps) or self.norm_eps <= 0:
             raise ValueError("norm_eps doit être fini et > 0")
         if type(self.stable_rms_norm) is not bool:
