@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .config import BlueConfig
+from .ssm import GatedDeltaNet
 from .temporal_precision import temporal_work_dtype
 
 
@@ -98,6 +99,7 @@ class LayerCache:
     start_pos: int = 0
     context_key: torch.Tensor | None = None
     context_value: torch.Tensor | None = None
+    ssm_state: torch.Tensor | None = None
 
 
 class GroupedQueryAttention(nn.Module):
@@ -501,6 +503,14 @@ class DecoderBlock(nn.Module):
         self.attn = GroupedQueryAttention(config, window=window, layer_index=index)
         self.conv = GatedCausalConv(config.d_model, config.conv_kernel)
         self.mix_gate = nn.Parameter(torch.zeros(config.d_model))
+        if config.ssm_state_dim > 0:
+            ssm_heads = config.n_heads if config.ssm_heads is None else config.ssm_heads
+            self.ssm = GatedDeltaNet(config.d_model, config.ssm_state_dim, ssm_heads,
+                                     norm_cls=RMSNorm, norm_eps=config.norm_eps)
+            self.ssm_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
+        else:
+            self.ssm = None
+            self.ssm_gate = None
         self.cross = CrossAttention(config)
         self.cross_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         self.moe = SparseMoE(config)
@@ -510,7 +520,12 @@ class DecoderBlock(nn.Module):
         h = self.norm1(x)
         attention, (k, v, key_valid) = self.attn(h, valid, offset=offset, cache=cache, use_cache=use_cache)
         local, conv_state = self.conv(h, valid, None if cache is None else cache.conv_state)
-        x = x + self.dropout(attention + torch.sigmoid(self.mix_gate) * local)
+        mixed = attention + torch.sigmoid(self.mix_gate) * local
+        ssm_state = None
+        if self.ssm is not None:
+            recurrent, ssm_state = self.ssm(h, valid, None if cache is None else cache.ssm_state)
+            mixed = mixed + torch.sigmoid(self.ssm_gate) * recurrent
+        x = x + self.dropout(mixed)
         if cache is not None and cache.context_key is not None:
             context_kv = cache.context_key, cache.context_value
         else:
@@ -518,7 +533,8 @@ class DecoderBlock(nn.Module):
         x = x + self.dropout(torch.sigmoid(self.cross_gate) * self.cross(self.norm2(x), projected=context_kv))
         update, balance, z_loss, usage = self.moe(self.norm3(x), valid)
         x = (x + self.dropout(update)) * valid.unsqueeze(-1)
-        next_cache = (LayerCache(k, v, key_valid, conv_state, offset + x.size(1) - k.size(-2), *context_kv)
+        next_cache = (LayerCache(k, v, key_valid, conv_state, offset + x.size(1) - k.size(-2),
+                                 *context_kv, ssm_state=ssm_state)
                       if use_cache else None)
         return x, balance, z_loss, usage, next_cache
 
