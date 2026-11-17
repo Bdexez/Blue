@@ -7,7 +7,7 @@ from torch import distributed as dist
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 
-from .config import ChimeraConfig
+from .config import BlueConfig
 from .distributed_alignment import distributed_alignment_loss
 from .losses import quantile_pinball_loss, symmetric_contrastive_loss
 from .forecast_adapter import ForecastAdapter, ForecastAdapterContext
@@ -29,7 +29,7 @@ class ModelCache:
 
 
 @dataclass
-class ChimeraOutput:
+class BlueOutput:
     logits: torch.Tensor | None
     classification_logits: torch.Tensor
     forecast: torch.Tensor
@@ -48,10 +48,10 @@ def masked_cross_entropy(logits, labels):
     return values.sum() / (labels != -100).sum().clamp_min(1)
 
 
-class Chimera(nn.Module):
+class Blue(nn.Module):
     """Réseau conjoint : génération causale, classification, prévision probabiliste."""
 
-    def __init__(self, config: ChimeraConfig):
+    def __init__(self, config: BlueConfig):
         super().__init__()
         self.config = config
         self._alignment_group = None
@@ -228,7 +228,7 @@ class Chimera(nn.Module):
         series_mask=None, labels=None, class_labels=None, forecast_targets=None, alignment_ids=None,
         alignment_cross_rank_views=False, alignment_cross_class_views=False,
         cache: ModelCache | None = None, use_cache=False,
-    ) -> ChimeraOutput:
+    ) -> BlueOutput:
         batch = self._validate(input_ids, images, series, attention_mask, series_mask, cache)
         distributed_alignment = (self.config.alignment_scope == "global" and self.training and dist.is_available()
                                  and dist.is_initialized() and dist.get_world_size() > 1)
@@ -397,7 +397,7 @@ class Chimera(nn.Module):
             total = total + c.alignment_weight * losses["alignment"]
         next_cache = (ModelCache(next_layers, latents, offset + hidden.size(1), mean, scale, baseline, adapter_context)
                       if use_cache else None)
-        return ChimeraOutput(logits, class_logits, forecast, total if supervised else None,
+        return BlueOutput(logits, class_logits, forecast, total if supervised else None,
                              losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum())
 
     @torch.inference_mode()
