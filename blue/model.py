@@ -168,7 +168,8 @@ class Blue(nn.Module):
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
             if cache.offset < 1 or any(
                 layer.start_pos < 0 or layer.start_pos + layer.key.size(-2) != cache.offset
-                or layer.key.shape != layer.value.shape
+                or (layer.key.shape != layer.value.shape if not c.kv_lora_rank
+                    else layer.key.shape[:3] != layer.value.shape[:3])
                 or layer.key.size(0) != batch
                 or layer.valid.shape != (batch, layer.key.size(-2))
                 for layer in cache.layers
