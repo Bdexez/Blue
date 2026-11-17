@@ -84,6 +84,8 @@ class Blue(nn.Module):
         nn.init.zeros_(self.temporal.forecast_skip.weight)
         if self.temporal.statistics_proj is not None:
             nn.init.zeros_(self.temporal.statistics_proj.weight)
+        if self.temporal.spectral is not None:
+            self.temporal.spectral.reset_spectral_parameters()
         if self.forecast_adapter is not None:
             nn.init.zeros_(self.forecast_adapter.proj.weight)
             nn.init.zeros_(self.forecast_adapter.proj.bias)

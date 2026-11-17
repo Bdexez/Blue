@@ -9,6 +9,7 @@ from torch.nn import functional as F
 
 from .config import BlueConfig
 from .hyper_connections import ManifoldHyperConnection
+from .spectral import SpectralTemporalMixer
 from .ssm import GatedDeltaNet
 from .temporal_precision import temporal_work_dtype
 
@@ -463,6 +464,8 @@ class TemporalEncoder(nn.Module):
         super().__init__()
         self.proj = nn.Linear(2 * config.series_features, config.d_model)
         self.conv = GatedCausalConv(config.d_model, config.conv_kernel)
+        self.spectral = (SpectralTemporalMixer(config.d_model, norm_cls=RMSNorm, norm_eps=config.norm_eps)
+                         if config.temporal_spectral_mixing else None)
         self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.temporal_layers)])
         self.norm = RMSNorm(config.d_model, config.norm_eps)
         self.forecast_context = config.forecast_context
@@ -518,6 +521,8 @@ class TemporalEncoder(nn.Module):
             x = x + self.statistics_proj(statistics.to(self.statistics_proj.weight.dtype))[:, None]
         x = x * valid.unsqueeze(-1)
         x = x + self.conv(x, valid)[0]
+        if self.spectral is not None:
+            x = x + self.spectral(x, valid)
         for block in self.blocks:
             x = block(x, valid)
         # Connexion temporelle directe : partir de la persistance puis apprendre
