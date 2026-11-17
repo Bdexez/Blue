@@ -94,6 +94,8 @@ class Blue(nn.Module):
                           self.resampler.null_context, self.vision.position):
             nn.init.normal_(parameter, std=0.02)
         for block in self.blocks:
+            if block.ssm is not None:
+                block.ssm.reset_gate_biases()
             for expert in [*block.moe.experts, block.moe.shared]:
                 nn.init.normal_(expert.down.weight, std=0.02 / math.sqrt(2 * config.n_layers))
 
@@ -166,12 +168,15 @@ class Blue(nn.Module):
                 raise ValueError("Le contexte multimodal est déjà dans le cache ; ne pas le réinjecter")
             if len(cache.layers) != c.n_layers or cache.latents.size(0) != batch:
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
+            ssm_heads = c.n_heads if c.ssm_heads is None else c.ssm_heads
+            ssm_shape = (batch, ssm_heads, c.ssm_state_dim, c.d_model // ssm_heads) if c.ssm_state_dim else None
             if cache.offset < 1 or any(
                 layer.start_pos < 0 or layer.start_pos + layer.key.size(-2) != cache.offset
                 or (layer.key.shape != layer.value.shape if not c.kv_lora_rank
                     else layer.key.shape[:3] != layer.value.shape[:3])
                 or layer.key.size(0) != batch
                 or layer.valid.shape != (batch, layer.key.size(-2))
+                or (ssm_shape is not None and (layer.ssm_state is None or layer.ssm_state.shape != ssm_shape))
                 for layer in cache.layers
             ):
                 raise ValueError("Positions incohérentes dans le cache")
