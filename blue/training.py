@@ -149,7 +149,8 @@ def learning_rate(step, total_steps, peak, warmup):
 
 def drop_modalities(batch, probability, *, prediction_steps=1):
     """Apprendre aussi avec des modalités absentes, sans supprimer toutes les entrées."""
-    names = [name for name in MODALITIES if name in batch]
+    available = (*MODALITIES, "audio") if "audio" in batch else MODALITIES
+    names = [name for name in available if name in batch]
     kept = [name for name in names if random.random() >= probability]
     if not kept:
         kept = [random.choice(names)]

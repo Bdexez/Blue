@@ -21,9 +21,9 @@ class ModalityBatchSampler(Sampler):
         self.seed, self.shuffle, self.epoch = seed, shuffle, 0
         self.shared_across_ranks = shared_across_ranks
         self.shared_interval = shared_interval
-        self.groups = [array('Q') for _ in range(8)]
+        self.groups = [array('Q') for _ in range(16)]
         for index, signature in enumerate(dataset.signatures):
-            if not 1 <= signature <= 7:
+            if not 1 <= signature <= 15:
                 raise ValueError('Signature de modalités invalide')
             self.groups[signature].append(index)
         self.global_batches = sum((len(group) + batch_size - 1) // batch_size for group in self.groups)

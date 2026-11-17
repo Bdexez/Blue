@@ -28,7 +28,7 @@ def has_observed_targets(batch, *, prediction_steps=1):
 def keep_modalities(batch, names):
     """Conserver les cibles de sortie et retirer les masques des entrées omises."""
     result = batch.copy()
-    for name in MODALITIES:
+    for name in (*MODALITIES, "audio"):
         if name in result and name not in names:
             del result[name]
             if name == "input_ids":
@@ -36,6 +36,8 @@ def keep_modalities(batch, names):
                 result.pop("labels", None)
             elif name == "series":
                 result.pop("series_mask", None)
+            elif name == "audio":
+                result.pop("audio_mask", None)
     return result
 
 
@@ -47,11 +49,12 @@ def balanced_modalities(batch, index, seed=0, *, prediction_steps=1):
     """
     if type(index) is not int or index < 0:
         raise ValueError("L'index de modalités doit être un entier positif ou nul")
-    names = [name for name in MODALITIES if name in batch]
+    available_modalities = (*MODALITIES, "audio") if "audio" in batch else MODALITIES
+    names = [name for name in available_modalities if name in batch]
     # Seule la suppression du texte peut retirer une cible ; évaluer les deux
     # possibilités une fois pour éviter des synchronisations GPU par sous-ensemble.
     with_text = has_observed_targets(batch, prediction_steps=prediction_steps)
-    without_text = has_observed_targets(keep_modalities(batch, ("images", "series")),
+    without_text = has_observed_targets(keep_modalities(batch, ("images", "series", "audio")),
                                         prediction_steps=prediction_steps)
     choices = [subset for count in range(1, len(names) + 1)
                for subset in itertools.combinations(names, count)
