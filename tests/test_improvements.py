@@ -14,23 +14,23 @@ from unittest.mock import patch
 import torch
 from torch.utils.data import DataLoader
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main, prediction_stream
-from chimera.data import JointDataset, collate_records, synthetic_batch
-from chimera.training import evaluate, load_checkpoint, save_checkpoint, step_optimizer
+from blue import Blue, BlueConfig
+from blue.cli import main, prediction_stream
+from blue.data import JointDataset, collate_records, synthetic_batch
+from blue.training import evaluate, load_checkpoint, save_checkpoint, step_optimizer
 
 
 class ImprovementTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.config = ChimeraConfig.preset("tiny")
+        cls.config = BlueConfig.preset("tiny")
 
     def setUp(self):
         torch.manual_seed(23)
 
     def test_bounded_cache_matches_irregular_chunks_with_padding(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         ids = torch.randint(4, 260, (2, 97))
         valid = torch.ones_like(ids, dtype=torch.bool)
         valid[0, :5] = False
@@ -54,7 +54,7 @@ class ImprovementTests(unittest.TestCase):
             torch.testing.assert_close(out.forecast, full.forecast, rtol=2e-5, atol=2e-6)
 
     def test_window_and_convolution_of_one_allow_empty_states(self):
-        model = Chimera(replace(self.config, sliding_window=1, conv_kernel=1, n_kv_heads=1)).eval()
+        model = Blue(replace(self.config, sliding_window=1, conv_kernel=1, n_kv_heads=1)).eval()
         ids = torch.randint(4, 260, (1, 40))
         with torch.inference_mode():
             full = model(ids).logits
@@ -65,7 +65,7 @@ class ImprovementTests(unittest.TestCase):
         self.assertEqual(second.cache.layers[0].conv_state.size(-1), 0)
 
     def test_context_projected_only_once_per_decoder_layer(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         counts = [0] * self.config.n_layers
         hooks = []
         for index, block in enumerate(model.blocks):
@@ -84,7 +84,7 @@ class ImprovementTests(unittest.TestCase):
     def test_mapped_checkpoint_materializes_buffers_and_preserves_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.pt"
-            original = Chimera(self.config).eval()
+            original = Blue(self.config).eval()
             save_checkpoint(path, original)
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             loaded, _ = load_checkpoint(path)
@@ -215,7 +215,7 @@ class ImprovementTests(unittest.TestCase):
                 JointDataset(path, self.config)[0]
 
     def test_losses_and_forecast_metrics_ignore_missing_targets_per_batch(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         batch = synthetic_batch(self.config, batch_size=5, seed=900)
         batch["class_labels"][1:4] = -100
         batch["forecast_targets"][1:4] = float("nan")
@@ -232,7 +232,7 @@ class ImprovementTests(unittest.TestCase):
 
     def test_observed_validation_loss_weights_targets_across_batches(self):
         config = replace(self.config, alignment_weight=0, balance_weight=0, router_z_weight=0)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         batch = synthetic_batch(config, batch_size=6, seed=2039)
         batch["forecast_targets"][0] += 30
         batch["forecast_targets"][1:4] = float("nan")
@@ -248,7 +248,7 @@ class ImprovementTests(unittest.TestCase):
         self.assertGreater(abs(full["loss"] - split["loss"]), 1)
 
     def test_observed_validation_loss_includes_reported_auxiliary_terms(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         batch = synthetic_batch(self.config, batch_size=3, seed=2040)
         report = evaluate(model, [batch])
         weights = {"text": "text_weight", "classification": "classification_weight",
@@ -262,7 +262,7 @@ class ImprovementTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = ChimeraConfig.preset("tiny")
+                self.config = BlueConfig.preset("tiny")
 
             def forward(self, input_ids, attention_mask):
                 usage = torch.tensor([[1., 0.]]) if input_ids[0, 0] == 1 else torch.tensor([[0., 1.]])
@@ -277,7 +277,7 @@ class ImprovementTests(unittest.TestCase):
         self.assertAlmostEqual(report["expert_effective_count"][0], 1.7547653506033232)
 
     def test_expert_usage_is_batch_invariant_and_ignores_padding(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         batch = synthetic_batch(self.config, batch_size=4, seed=9001)
         batch["attention_mask"][0, -8:] = False
         batch["attention_mask"][1, -4:] = False
@@ -293,7 +293,7 @@ class ImprovementTests(unittest.TestCase):
 
     def test_training_expert_usage_covers_every_microbatch(self):
         captured = []
-        forward = Chimera.forward
+        forward = Blue.forward
 
         def capture(model, *args, **kwargs):
             output = forward(model, *args, **kwargs)
@@ -305,7 +305,7 @@ class ImprovementTests(unittest.TestCase):
             root = Path(directory)
             data = root / "data.jsonl"
             data.write_text("\n".join(json.dumps(dict(text=text)) for text in ("x", "longer", "a longer sentence")))
-            with patch.object(Chimera, "forward", capture):
+            with patch.object(Blue, "forward", capture):
                 main(["--threads", "2", "train", "--steps", "1", "--batch-size", "1", "--accumulation", "3",
                       "--data", str(data), "--no-shuffle", "--modality-dropout", "0", "--output", str(root / "run")])
             report = json.loads((root / "run/metrics.jsonl").read_text())
@@ -320,7 +320,7 @@ class ImprovementTests(unittest.TestCase):
         batch["labels"].fill_(-100)
         batch["class_labels"].fill_(-100)
         batch["forecast_targets"].fill_(float("nan"))
-        report = evaluate(Chimera(self.config), [batch])
+        report = evaluate(Blue(self.config), [batch])
         self.assertIsNone(report["text"])
         self.assertIsNone(report["multi_token"])
         self.assertIsNone(report["classification"])
@@ -331,7 +331,7 @@ class ImprovementTests(unittest.TestCase):
         self.assertIsNone(report["observed_loss"])
 
     def test_evaluation_counts_observed_auxiliary_text_targets(self):
-        model = Chimera(self.config)
+        model = Blue(self.config)
         batch = dict(input_ids=torch.tensor([[1, 0, 7]]), labels=torch.tensor([[-100, -100, 7]]),
                      attention_mask=torch.tensor([[1, 0, 1]]))
         report = evaluate(model, [batch])
@@ -345,7 +345,7 @@ class ImprovementTests(unittest.TestCase):
         self.assertIsNone(short["observed_loss"])
 
     def test_auxiliary_text_metric_weights_targets_per_horizon_across_batches(self):
-        model = Chimera(replace(self.config, prediction_steps=5)).eval()
+        model = Blue(replace(self.config, prediction_steps=5)).eval()
         ids = torch.tensor([[1, 4, 5, 0, 0, 0], [1, 8, 9, 10, 11, 12]])
         mask = torch.tensor([[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 1]], dtype=torch.bool)
         batch = dict(input_ids=ids, labels=ids.clone(), attention_mask=mask)
@@ -390,11 +390,11 @@ class ImprovementTests(unittest.TestCase):
             path = root / "model.pt"
             existing = root / "model.pt.tmp"
             existing.write_bytes(b"unrelated")
-            model = Chimera(self.config)
+            model = Blue(self.config)
             save_checkpoint(path, model, step=1)
             original = path.read_bytes()
             self.assertEqual(existing.read_bytes(), b"unrelated")
-            with patch("chimera.training.torch.save", side_effect=RuntimeError("interrupted")):
+            with patch("blue.training.torch.save", side_effect=RuntimeError("interrupted")):
                 with self.assertRaisesRegex(RuntimeError, "interrupted"):
                     save_checkpoint(path, model, step=2)
             self.assertEqual(path.read_bytes(), original)
@@ -446,7 +446,7 @@ class ImprovementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
             path = root / "source.pt"
-            save_checkpoint(path, Chimera(self.config), step=7, trainer={"seed": 123})
+            save_checkpoint(path, Blue(self.config), step=7, trainer={"seed": 123})
             data = root / "data.jsonl"
             data.write_text('{"text": "Signal", "class_label": 2}\n')
             output = root / "predictions.jsonl"

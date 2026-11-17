@@ -10,10 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera.data import evaluation_data_signature, synthetic_batch
-from chimera.evaluation import evaluate
-from chimera.modalities import keep_modalities
-from chimera.training import load_checkpoint
+from blue.data import evaluation_data_signature, synthetic_batch
+from blue.evaluation import evaluate
+from blue.modalities import keep_modalities
+from blue.training import load_checkpoint
 
 
 CASES = dict(complete=(32, 0.0), history16=(16, 0.0), history8=(8, 0.0),

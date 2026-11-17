@@ -5,10 +5,10 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.forecast_adapter import fit_forecast_adapter
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.forecast_adapter import fit_forecast_adapter
+from blue.training import load_checkpoint, save_checkpoint
 
 
 class ForecastAdapterTests(unittest.TestCase):
@@ -20,8 +20,8 @@ class ForecastAdapterTests(unittest.TestCase):
         torch.manual_seed(39)
 
     def test_relative_context_is_translation_invariant_and_tracks_missing_value_age(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8, forecast_adapter_relative=True)
-        model = Chimera(config).eval()
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8, forecast_adapter_relative=True)
+        model = Blue(config).eval()
         batch = synthetic_batch(config, batch_size=2, seed=704)
         series = batch["series"][:, -8:].clone()
         valid = batch["series_mask"][:, -8:]
@@ -39,9 +39,9 @@ class ForecastAdapterTests(unittest.TestCase):
             replace(config, forecast_adapter_relative=1)
 
     def test_missing_gate_acts_per_variable_and_respects_empty_history_and_padding(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8,
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8,
                          forecast_adapter_missing_gate=True)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         with torch.no_grad():
             model.forecast_adapter.proj.weight.zero_()
             model.forecast_adapter.proj.bias.fill_(1)
@@ -68,9 +68,9 @@ class ForecastAdapterTests(unittest.TestCase):
             replace(config, forecast_adapter_missing_gate=1)
 
     def test_missing_gate_fits_only_active_variables_and_preserves_clean_forecast(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8,
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8,
                          forecast_adapter_missing_gate=True)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         training = synthetic_batch(config, batch_size=16, seed=750)
         training["series"][:, :8, 0] = float("nan")
         training["series"][:, :, 1] = float("nan")
@@ -90,8 +90,8 @@ class ForecastAdapterTests(unittest.TestCase):
     def test_changing_missing_gate_resets_only_adapter(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "base.pt"
-            config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8)
-            original = Chimera(config)
+            config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8)
+            original = Blue(config)
             torch.nn.init.normal_(original.forecast_adapter.proj.weight)
             save_checkpoint(path, original)
             changed, _ = load_checkpoint(path, overrides={"forecast_adapter_missing_gate": True})
@@ -107,10 +107,10 @@ class ForecastAdapterTests(unittest.TestCase):
             self.assertEqual(restored.forecast_adapter.proj.bias.count_nonzero().item(), 0)
 
     def test_missing_gate_supports_cached_context_and_bf16_training(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8,
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8,
                          forecast_adapter_relative=True, forecast_adapter_missing_gate=True,
                          gradient_checkpointing=True)
-        model = Chimera(config)
+        model = Blue(config)
         torch.nn.init.normal_(model.forecast_adapter.proj.weight, std=0.03)
         batch = synthetic_batch(config, batch_size=3, seed=752)
         batch["series"][:, ::3, 0] = float("nan")
@@ -130,9 +130,9 @@ class ForecastAdapterTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(model.forecast_adapter.proj.weight.grad).all())
 
     def test_separate_missing_fits_independently_and_preserves_short_predictions(self):
-        base = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8)
-        length_model = Chimera(base).eval()
-        separate = Chimera(replace(base, forecast_adapter_missing_gate=True,
+        base = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8)
+        length_model = Blue(base).eval()
+        separate = Blue(replace(base, forecast_adapter_missing_gate=True,
                                    forecast_adapter_separate_missing=True)).eval()
         missing = separate.load_state_dict(length_model.state_dict(), strict=False)
         self.assertEqual(set(missing.missing_keys), {"forecast_adapter.missing_proj.weight",
@@ -160,9 +160,9 @@ class ForecastAdapterTests(unittest.TestCase):
         self.assertFalse(torch.equal(long_a.forecast, long_b.forecast))
 
     def test_separate_missing_preserves_unfitted_branch_and_fails_atomically(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8,
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8,
                          forecast_adapter_missing_gate=True, forecast_adapter_separate_missing=True)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         short = synthetic_batch(config, batch_size=12, seed=773)
         short["series"], short["series_mask"] = short["series"][:, -8:], short["series_mask"][:, -8:]
         long = synthetic_batch(config, batch_size=12, seed=774)
@@ -184,8 +184,8 @@ class ForecastAdapterTests(unittest.TestCase):
     def test_separate_missing_checkpoint_transfer_and_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.pt"
-            config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8)
-            original = Chimera(config).eval()
+            config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8)
+            original = Blue(config).eval()
             torch.nn.init.normal_(original.forecast_adapter.proj.weight, std=0.02)
             save_checkpoint(path, original)
             separate, _ = load_checkpoint(path, overrides={"forecast_adapter_missing_gate": True,
@@ -230,8 +230,8 @@ class ForecastAdapterTests(unittest.TestCase):
     def test_changing_feature_semantics_resets_only_adapter_and_roundtrips_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "absolute.pt"
-            config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8)
-            original = Chimera(config).eval()
+            config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8)
+            original = Blue(config).eval()
             torch.nn.init.normal_(original.forecast_adapter.proj.weight, std=0.02)
             save_checkpoint(path, original)
             relative, _ = load_checkpoint(path, overrides={"forecast_adapter_relative": True})
@@ -254,9 +254,9 @@ class ForecastAdapterTests(unittest.TestCase):
             torch.testing.assert_close(restored.forecast_adapter.proj.weight, relative.forecast_adapter.proj.weight)
 
     def test_zero_initialization_preserves_outputs_and_active_head_only_changes_short_forecasts(self):
-        config = ChimeraConfig.preset("tiny")
-        original = Chimera(config).eval()
-        adapted = Chimera(replace(config, forecast_adapter_context=8)).eval()
+        config = BlueConfig.preset("tiny")
+        original = Blue(config).eval()
+        adapted = Blue(replace(config, forecast_adapter_context=8)).eval()
         missing = adapted.load_state_dict(original.state_dict(), strict=False)
         self.assertEqual(set(missing.missing_keys), {"forecast_adapter.proj.weight", "forecast_adapter.proj.bias"})
         batch = synthetic_batch(config, batch_size=2, seed=1)
@@ -278,8 +278,8 @@ class ForecastAdapterTests(unittest.TestCase):
         torch.testing.assert_close(full_before.forecast, full_after.forecast, rtol=0, atol=0)
 
     def test_prepared_context_ignores_padding_holes_and_missing_features(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8)
-        model = Chimera(config).eval()
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8)
+        model = Blue(config).eval()
         torch.nn.init.normal_(model.forecast_adapter.proj.weight, std=0.02)
         batch = synthetic_batch(config, batch_size=2, seed=2)
         series = batch["series"][:, -6:].clone()
@@ -299,8 +299,8 @@ class ForecastAdapterTests(unittest.TestCase):
                 replace(config, forecast_adapter_context=value)
 
     def test_cached_generation_retains_adapter_context(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8, temporal_statistics=True)
-        model = Chimera(config).eval()
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8, temporal_statistics=True)
+        model = Blue(config).eval()
         torch.nn.init.normal_(model.forecast_adapter.proj.weight, std=0.1)
         batch = synthetic_batch(config, batch_size=2, seed=3)
         ids, series = batch["input_ids"][:, :9], batch["series"][:, -8:]
@@ -313,8 +313,8 @@ class ForecastAdapterTests(unittest.TestCase):
         torch.testing.assert_close(full.logits[:, 4:], second.logits, rtol=2e-5, atol=2e-6)
 
     def test_ridge_fit_improves_held_out_forecasts_changes_only_adapter_and_is_idempotent(self):
-        config = replace(ChimeraConfig.preset("tiny"), forecast_adapter_context=8, dropout=0.1)
-        model = Chimera(config)
+        config = replace(BlueConfig.preset("tiny"), forecast_adapter_context=8, dropout=0.1)
+        model = Blue(config)
         training = synthetic_batch(config, batch_size=128, seed=6001)
         validation = synthetic_batch(config, batch_size=64, seed=6002)
         for batch in (training, validation):
@@ -355,7 +355,7 @@ class ForecastAdapterTests(unittest.TestCase):
     def test_transfer_materializes_only_new_adapter_parameters_and_supports_bf16(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "base.pt"
-            original = Chimera(ChimeraConfig.preset("tiny"))
+            original = Blue(BlueConfig.preset("tiny"))
             save_checkpoint(path, original)
             loaded, _ = load_checkpoint(path, overrides={"forecast_adapter_context": 8})
             self.assertFalse(any(p.is_meta for p in loaded.parameters()))

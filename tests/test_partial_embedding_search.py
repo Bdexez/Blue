@@ -5,10 +5,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from chimera import Chimera
-from chimera.cli import main
-from chimera.embedding_search import search_embeddings
-from chimera.training import save_checkpoint
+from blue import Blue
+from blue.cli import main
+from blue.embedding_search import search_embeddings
+from blue.training import save_checkpoint
 from tests import test_embedding_search
 from tests.test_mixed_modality_training import make_data
 
@@ -67,9 +67,9 @@ class PartialEmbeddingSearchTests(unittest.TestCase):
             list(search_embeddings(self.query, self.candidate, 'text', 'series', skip_missing=True))
 
     def test_real_heterogeneous_extraction(self):
-        from chimera import ChimeraConfig
+        from blue import BlueConfig
         config_path, data = make_data(self.root)
-        model = Chimera(ChimeraConfig.load(config_path)).eval()
+        model = Blue(BlueConfig.load(config_path)).eval()
         checkpoint, embeddings = self.root / 'model.pt', self.root / 'vectors.jsonl'
         save_checkpoint(checkpoint, model)
         with redirect_stdout(io.StringIO()):

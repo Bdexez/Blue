@@ -5,8 +5,8 @@ import sys
 import tempfile
 import unittest
 
-from chimera import Chimera, ChimeraConfig
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.training import save_checkpoint
 
 
 class SeriesGateGuardBenchmarkTests(unittest.TestCase):
@@ -14,7 +14,7 @@ class SeriesGateGuardBenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkpoint, report = root / 'model.pt', root / 'report.json'
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset('tiny')))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset('tiny')))
             original = checkpoint.read_bytes()
             common = [sys.executable, 'tools/benchmark_series_gate_guard.py', '--checkpoint', str(checkpoint),
                       '--head-batches','12','--gate-batches','3','--validation-batches','2','--guard-batches','2',

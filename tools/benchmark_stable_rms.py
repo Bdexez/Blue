@@ -14,11 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 from torch.utils.benchmark import Timer
 
-from chimera.calibration import file_sha256
-from chimera.cli import prediction_stream, same_file
-from chimera.data import synthetic_batch
-from chimera.modules import RMSNorm
-from chimera.training import load_checkpoint
+from blue.calibration import file_sha256
+from blue.cli import prediction_stream, same_file
+from blue.data import synthetic_batch
+from blue.modules import RMSNorm
+from blue.training import load_checkpoint
 
 
 def main():

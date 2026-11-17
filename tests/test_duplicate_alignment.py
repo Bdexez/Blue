@@ -6,10 +6,10 @@ import unittest
 import torch
 from torch import distributed as dist
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.distributed_alignment import distributed_alignment_loss
-from chimera.losses import symmetric_contrastive_loss
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.distributed_alignment import distributed_alignment_loss
+from blue.losses import symmetric_contrastive_loss
 
 
 def distributed_worker(rank, group_file, output, partial):
@@ -54,9 +54,9 @@ class DuplicateAlignmentTests(unittest.TestCase):
         self.assertGreater(scores.grad[2, 3].item(), 0)
 
     def test_model_predictions_unchanged_and_identity_validation(self):
-        config = replace(ChimeraConfig.preset('tiny'), alignment_mode='paired')
+        config = replace(BlueConfig.preset('tiny'), alignment_mode='paired')
         torch.manual_seed(72)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         batch = synthetic_batch(config, batch_size=3, seed=73)
         with torch.no_grad():
             baseline = model(**batch)

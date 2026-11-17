@@ -12,15 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import JointDataset, synthetic_batch
-from chimera.training import load_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import JointDataset, synthetic_batch
+from blue.training import load_checkpoint
 
 
 def profile_cache():
     torch.manual_seed(42)
-    config = ChimeraConfig.preset("tiny")
-    model = Chimera(config).eval()
+    config = BlueConfig.preset("tiny")
+    model = Blue(config).eval()
     batch = synthetic_batch(config, batch_size=1, seed=7)
     ids = torch.randint(4, config.vocab_size, (1, 160))
     projections = [0] * config.n_layers
@@ -52,7 +52,7 @@ def profile_cache():
 def profile_dataset(path):
     tracemalloc.start()
     start = time.perf_counter()
-    dataset = JointDataset(path, ChimeraConfig.preset("tiny"))
+    dataset = JointDataset(path, BlueConfig.preset("tiny"))
     dataset[0]
     dataset[len(dataset) - 1]
     _, peak = tracemalloc.get_traced_memory()

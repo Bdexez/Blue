@@ -8,10 +8,10 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.training import save_checkpoint
-from chimera.embedding_search import search_embeddings
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.training import save_checkpoint
+from blue.embedding_search import search_embeddings
 
 
 class EmbeddingSearchTests(unittest.TestCase):
@@ -53,9 +53,9 @@ class EmbeddingSearchTests(unittest.TestCase):
         self.assertEqual(other[0]['matches'][0]['index'], 0)
 
     def test_end_to_end_with_real_extraction(self):
-        config = ChimeraConfig.preset('tiny')
+        config = BlueConfig.preset('tiny')
         checkpoint, data = self.root / 'model.pt', self.root / 'data.jsonl'
-        save_checkpoint(checkpoint, Chimera(config).eval())
+        save_checkpoint(checkpoint, Blue(config).eval())
         records = [dict(text=f'signal {i}', series=[[float(i + j)] * config.series_features for j in range(4)])
                    for i in range(3)]
         data.write_text(''.join(json.dumps(row) + '\n' for row in records))

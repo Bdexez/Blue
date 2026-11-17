@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.training import load_checkpoint, save_checkpoint
 
 
 class IsolatedTextAlignmentTests(unittest.TestCase):
@@ -17,10 +17,10 @@ class IsolatedTextAlignmentTests(unittest.TestCase):
         torch.set_num_threads(2)
 
     def setUp(self):
-        config = ChimeraConfig.preset('tiny')
+        config = BlueConfig.preset('tiny')
         torch.manual_seed(1711)
-        self.joint = Chimera(config).eval()
-        self.isolated = Chimera(replace(config, alignment_text_view='isolated')).eval()
+        self.joint = Blue(config).eval()
+        self.isolated = Blue(replace(config, alignment_text_view='isolated')).eval()
         self.isolated.load_state_dict(self.joint.state_dict(), strict=True)
         self.batch = synthetic_batch(config, batch_size=3, seed=1712)
         self.batch = {key:value for key,value in self.batch.items()
@@ -92,8 +92,8 @@ class IsolatedTextAlignmentTests(unittest.TestCase):
     def test_training_dropout_primary_outputs_checkpointing_and_cache(self):
         config = replace(self.joint.config, dropout=.1, gradient_checkpointing=True)
         torch.manual_seed(1720)
-        joint = Chimera(config).train()
-        isolated = Chimera(replace(config, alignment_text_view='isolated')).train()
+        joint = Blue(config).train()
+        isolated = Blue(replace(config, alignment_text_view='isolated')).train()
         isolated.load_state_dict(joint.state_dict())
         torch.manual_seed(1721)
         left = joint(**self.batch)
@@ -116,7 +116,7 @@ class IsolatedTextAlignmentTests(unittest.TestCase):
 
     def test_isolated_view_under_bf16_with_stable_norm(self):
         config = replace(self.joint.config, alignment_text_view='isolated', stable_rms_norm=True)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         model.load_state_dict(self.joint.state_dict())
         changed = dict(self.batch, images=self.batch['images'].roll(1,0),
                        series=self.batch['series'].roll(1,0), series_mask=self.batch['series_mask'].roll(1,0))
@@ -131,7 +131,7 @@ class IsolatedTextAlignmentTests(unittest.TestCase):
         config = self.joint.config
         old = config.to_dict()
         del old['alignment_text_view']
-        self.assertEqual(ChimeraConfig.from_dict(old).alignment_text_view,'joint')
+        self.assertEqual(BlueConfig.from_dict(old).alignment_text_view,'joint')
         with self.assertRaises(ValueError):
             replace(config,alignment_text_view='unknown')
         with tempfile.TemporaryDirectory() as directory:

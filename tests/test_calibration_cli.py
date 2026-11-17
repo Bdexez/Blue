@@ -10,20 +10,20 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.calibration import ForecastCalibration
-from chimera.cli import main
-from chimera.data import synthetic_batch
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.calibration import ForecastCalibration
+from blue.cli import main
+from blue.data import synthetic_batch
+from blue.training import save_checkpoint
 
 
 class CalibrationCliTests(unittest.TestCase):
     def test_tail_benchmark_keeps_data_and_noise_seeds_disjoint(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=2, series_features=1)
+            config = replace(BlueConfig.preset("tiny"), forecast_horizon=2, series_features=1)
             checkpoint, report = root / "model.pt", root / "report.json"
-            save_checkpoint(checkpoint, Chimera(config))
+            save_checkpoint(checkpoint, Blue(config))
             original = checkpoint.read_bytes()
             common = [sys.executable, "tools/benchmark_tail_calibration.py", "--checkpoint", str(checkpoint),
                       "--calibration-batches", "5", "--test-batches", "1", "--batch-size", "2"]
@@ -45,9 +45,9 @@ class CalibrationCliTests(unittest.TestCase):
     def test_joint_benchmark_rejects_overlapping_seeds_and_preserves_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=2, series_features=1)
+            config = replace(BlueConfig.preset("tiny"), forecast_horizon=2, series_features=1)
             checkpoint = root / "model.pt"
-            save_checkpoint(checkpoint, Chimera(config))
+            save_checkpoint(checkpoint, Blue(config))
             original = checkpoint.read_bytes()
             report = root / "report.json"
             common = [sys.executable, "tools/benchmark_joint_calibration.py", "--checkpoint", str(checkpoint),
@@ -73,9 +73,9 @@ class CalibrationCliTests(unittest.TestCase):
     def test_fit_evaluate_predict_and_reject_incompatible_or_destructive_outputs(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=2, series_features=1)
+            config = replace(BlueConfig.preset("tiny"), forecast_horizon=2, series_features=1)
             checkpoint = root / "model.pt"
-            save_checkpoint(checkpoint, Chimera(config))
+            save_checkpoint(checkpoint, Blue(config))
             calibration_data, test_data = root / "calibration.jsonl", root / "test.jsonl"
             for path, count, seed in ((calibration_data, 12, 1000), (test_data, 7, 1001)):
                 batch = synthetic_batch(config, batch_size=count, seed=seed)
@@ -175,7 +175,7 @@ class CalibrationCliTests(unittest.TestCase):
                   "--calibration", str(bf16_calibration), "--amp", "bf16", "--output", str(predictions)])
             self.assertEqual(len(predictions.read_text().splitlines()), 7)
             other = root / "other.pt"
-            save_checkpoint(other, Chimera(config))
+            save_checkpoint(other, Blue(config))
             with self.assertRaisesRegex(ValueError, "checkpoint"):
                 main(["predict", "--checkpoint", str(other), "--data", str(test_data),
                       "--calibration", str(calibration_path)])
@@ -199,9 +199,9 @@ class CalibrationCliTests(unittest.TestCase):
             self.skipTest("Pillow requis pour les images externes")
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), forecast_horizon=2, series_features=1)
+            config = replace(BlueConfig.preset("tiny"), forecast_horizon=2, series_features=1)
             checkpoint, calibration_path = root / "model.pt", root / "calibration.json"
-            save_checkpoint(checkpoint, Chimera(config))
+            save_checkpoint(checkpoint, Blue(config))
             original, copy = root / "original", root / "copy"
             original.mkdir()
             copy.mkdir()

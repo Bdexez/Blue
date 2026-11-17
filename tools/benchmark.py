@@ -14,10 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import inspect_config
-from chimera.data import evaluation_data_signature, synthetic_batch
-from chimera.training import evaluate, load_checkpoint, seed_everything
+from blue import Blue, BlueConfig
+from blue.cli import inspect_config
+from blue.data import evaluation_data_signature, synthetic_batch
+from blue.training import evaluate, load_checkpoint, seed_everything
 
 
 def filter_modalities(batch, names):
@@ -55,7 +55,7 @@ def main():
         parser.error("seed-start doit être >= 0")
     torch.set_num_threads(args.threads)
     payload = torch.load(args.checkpoint, map_location="cpu", weights_only=True, mmap=True)
-    config = ChimeraConfig.from_dict(payload["config"])
+    config = BlueConfig.from_dict(payload["config"])
     step = payload["step"]
     seed = payload.get("trainer", {}).get("seed", 42)
     initialization = payload.get("trainer", {}).get("initialization")
@@ -79,7 +79,7 @@ def main():
         del payload
     else:
         seed_everything(seed)
-        initial = Chimera(config)
+        initial = Blue(config)
     before = measure(initial, batches)
     del initial
     gc.collect()

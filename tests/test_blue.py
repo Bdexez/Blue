@@ -10,21 +10,21 @@ import unittest
 
 import torch
 
-from chimera import ByteTokenizer, Chimera, ChimeraConfig
-from chimera.cli import inspect_config, main
-from chimera.data import JointDataset, collate_records, synthetic_batch
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import ByteTokenizer, Blue, BlueConfig
+from blue.cli import inspect_config, main
+from blue.data import JointDataset, collate_records, synthetic_batch
+from blue.training import load_checkpoint, save_checkpoint
 
 
-class ChimeraTests(unittest.TestCase):
+class BlueTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.config = replace(ChimeraConfig.preset("tiny"), max_seq_len=128)
+        cls.config = replace(BlueConfig.preset("tiny"), max_seq_len=128)
 
     def setUp(self):
         torch.manual_seed(123)
-        self.model = Chimera(self.config)
+        self.model = Blue(self.config)
         self.batch = synthetic_batch(self.config, batch_size=3, seed=4)
 
     def inputs(self):
@@ -43,7 +43,7 @@ class ChimeraTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 replace(self.config, **changes)
         with self.assertRaises(ValueError):
-            ChimeraConfig.from_dict({"typo": 1})
+            BlueConfig.from_dict({"typo": 1})
 
     def test_all_seven_modality_combinations(self):
         self.model.eval()
@@ -122,7 +122,7 @@ class ChimeraTests(unittest.TestCase):
         torch.testing.assert_close(first.expert_usage, second.expert_usage)
 
     def test_auxiliary_text_loss_and_gradients_ignore_empty_padded_horizons(self):
-        model = Chimera(replace(self.config, prediction_steps=5)).eval()
+        model = Blue(replace(self.config, prediction_steps=5)).eval()
         ids = torch.tensor([[1, 23, 24]])
         attention = torch.ones_like(ids, dtype=torch.bool)
         plain = model(ids, attention_mask=attention, labels=ids)
@@ -191,7 +191,7 @@ class ChimeraTests(unittest.TestCase):
 
     def test_quantiles_never_cross(self):
         config = replace(self.config, quantiles=(0.01, 0.1, 0.5, 0.9, 0.99))
-        output = Chimera(config)(**self.batch)
+        output = Blue(config)(**self.batch)
         self.assertTrue((output.forecast[..., 1:] >= output.forecast[..., :-1]).all())
 
     def test_modalities_change_text_and_prediction(self):
@@ -216,7 +216,7 @@ class ChimeraTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(output.loss))
 
     def test_checkpointed_gradients_equal_regular(self):
-        other = Chimera(replace(self.config, gradient_checkpointing=True))
+        other = Blue(replace(self.config, gradient_checkpointing=True))
         other.load_state_dict(self.model.state_dict())
         first = self.model(**self.batch)
         second = other(**self.batch)
@@ -307,7 +307,7 @@ class ChimeraTests(unittest.TestCase):
             self.assertTrue(torch.isfinite(self.model(**collate_records([item])).loss))
 
     def test_jsonl_partially_labeled_records_train_and_evaluate(self):
-        from chimera.evaluation import evaluate
+        from blue.evaluation import evaluate
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "partial.jsonl"
@@ -414,7 +414,7 @@ class ChimeraTests(unittest.TestCase):
     def test_inspection_counts_tied_weights_once(self):
         report = inspect_config(self.config)
         self.assertEqual(report["parameters"], sum(p.numel() for p in self.model.parameters()))
-        self.assertGreater(inspect_config(ChimeraConfig.preset("ultra"))["parameters"], 500_000_000_000)
+        self.assertGreater(inspect_config(BlueConfig.preset("ultra"))["parameters"], 500_000_000_000)
 
     def test_generation_restores_mode_and_uses_modalities(self):
         self.model.train()

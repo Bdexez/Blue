@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from chimera.cli import main
-from chimera.split_audit import _index_intervals, _overlapping_rows, audit_splits, canonical
+from blue.cli import main
+from blue.split_audit import _index_intervals, _overlapping_rows, audit_splits, canonical
 
 
 class SplitAuditTests(unittest.TestCase):

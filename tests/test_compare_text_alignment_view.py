@@ -8,8 +8,8 @@ import unittest
 import torch
 from torch import distributed as dist
 
-from chimera import Chimera, ChimeraConfig
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.training import save_checkpoint
 
 
 @unittest.skipUnless(dist.is_available() and dist.is_gloo_available(), 'Gloo indisponible')
@@ -19,7 +19,7 @@ class CompareTextAlignmentViewTests(unittest.TestCase):
             root = Path(directory)
             checkpoint, output = root/'source.pt', root/'study'
             torch.manual_seed(41)
-            save_checkpoint(checkpoint,Chimera(ChimeraConfig.preset('tiny')))
+            save_checkpoint(checkpoint,Blue(BlueConfig.preset('tiny')))
             original = checkpoint.read_bytes()
             common = [sys.executable,'tools/compare_text_alignment_view.py','--checkpoint',str(checkpoint),
                       '--seeds','111000000','--steps','2','--test-batches','1','--test-batch-size','4']

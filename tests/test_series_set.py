@@ -10,13 +10,13 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.binomial import wilson_interval
-from chimera.cli import main
-from chimera.data import synthetic_batch
-from chimera.series_set import SeriesPredictionSet, class_scores, conformal_threshold, fit_series_set
-from chimera.series_classifier import fit_series_classifier
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.binomial import wilson_interval
+from blue.cli import main
+from blue.data import synthetic_batch
+from blue.series_set import SeriesPredictionSet, class_scores, conformal_threshold, fit_series_set
+from blue.series_classifier import fit_series_classifier
+from blue.training import save_checkpoint
 
 
 class SeriesSetTests(unittest.TestCase):
@@ -78,7 +78,7 @@ class SeriesSetTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.anchor = torch.nn.Parameter(torch.zeros(()))
-                self.config = replace(ChimeraConfig.preset('tiny'), num_classes=2, series_features=2)
+                self.config = replace(BlueConfig.preset('tiny'), num_classes=2, series_features=2)
         class StubHead:
             num_classes, amp = 2, 'none'
             checkpoint_sha256, dataset_sha256 = 'a'*64, 'b'*64
@@ -112,8 +112,8 @@ class SeriesSetTests(unittest.TestCase):
         self.assertTrue(model.training)
 
     def test_fit_state_and_batching(self):
-        config = ChimeraConfig.preset('tiny')
-        model = Chimera(config).train()
+        config = BlueConfig.preset('tiny')
+        model = Blue(config).train()
         def batch(seed):
             return {k:v for k,v in synthetic_batch(config, batch_size=64, seed=seed).items()
                     if k in ('series', 'series_mask', 'class_labels')}
@@ -141,11 +141,11 @@ class SeriesSetTests(unittest.TestCase):
     def test_cli_complete_pipeline_and_provenance(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
-            config = replace(ChimeraConfig.preset('tiny'), temporal_statistics=True)
+            config = replace(BlueConfig.preset('tiny'), temporal_statistics=True)
             checkpoint, head, temp, sets = (root / n for n in ('model.pt', 'head.json', 'temp.json', 'sets.json'))
             train, tuning, calib, test = (root / (n + '.jsonl') for n in ('train', 'tuning', 'calib', 'test'))
             report, predictions = root / 'report.json', root / 'predictions.jsonl'
-            save_checkpoint(checkpoint, Chimera(config))
+            save_checkpoint(checkpoint, Blue(config))
             for path, count, seed in ((train,128,521), (tuning,64,522), (calib,64,523), (test,24,524)):
                 batch = synthetic_batch(config, batch_size=count, seed=seed)
                 path.write_text('\n'.join(json.dumps(dict(series=batch['series'][i].tolist(),
@@ -267,7 +267,7 @@ class SeriesSetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkpoint, report = root / "model.pt", root / "report.json"
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset("tiny")))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset("tiny")))
             original = checkpoint.read_bytes()
             common = [sys.executable, "tools/benchmark_series_sets.py", "--checkpoint", str(checkpoint),
                       "--train-batches", "12", "--calibration-batches", "2", "--set-batches", "2",

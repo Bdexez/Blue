@@ -3,9 +3,9 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.augmentation import SeriesAugmentation
-from chimera.data import synthetic_batch
+from blue import Blue, BlueConfig
+from blue.augmentation import SeriesAugmentation
+from blue.data import synthetic_batch
 
 
 class AugmentationTests(unittest.TestCase):
@@ -14,7 +14,7 @@ class AugmentationTests(unittest.TestCase):
         torch.set_num_threads(2)
 
     def test_masked_training_crop_matches_a_physically_shorter_inference_history(self):
-        model = Chimera(ChimeraConfig.preset("tiny")).eval()
+        model = Blue(BlueConfig.preset("tiny")).eval()
         batch = synthetic_batch(model.config, batch_size=2, seed=33)
         cropped = SeriesAugmentation(crop_probability=1, min_history=8)(batch, index=2, seed=7)
         with torch.inference_mode():

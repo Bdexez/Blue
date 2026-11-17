@@ -10,9 +10,9 @@ import unittest
 import torch
 from torch import distributed as dist
 
-from chimera import ChimeraConfig
-from chimera.modalities import balanced_modalities
-from chimera.training import load_checkpoint
+from blue import BlueConfig
+from blue.modalities import balanced_modalities
+from blue.training import load_checkpoint
 
 
 class ComplementaryAlignmentTrainingTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class ComplementaryAlignmentTrainingTests(unittest.TestCase):
     def test_unpaired_records_align_by_class_without_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = replace(ChimeraConfig.preset('tiny'), alignment_scope='global', alignment_mode='class',
+            config = replace(BlueConfig.preset('tiny'), alignment_scope='global', alignment_mode='class',
                              alignment_text_view='isolated', dropout=0.)
             config_path, data = root / 'config.json', root / 'data.jsonl'
             config.save(config_path)
@@ -29,7 +29,7 @@ class ComplementaryAlignmentTrainingTests(unittest.TestCase):
                        for index in range(2)])
             data.write_text(''.join(json.dumps(row) + '\n' for row in rows))
             base = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=2',
-                    '-m', 'chimera', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
+                    '-m', 'blue', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
                     '--steps', '1', '--batch-size', '2', '--mixed-modalities', '--no-shuffle',
                     '--no-alignment-duplicate-positives', '--modality-dropout', '0',
                     '--loss-normalization', 'observed', '--seed', '0', '--log-every', '1']
@@ -63,7 +63,7 @@ class ComplementaryAlignmentTrainingTests(unittest.TestCase):
         self.assertNotIn('input_ids', selected[1])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = replace(ChimeraConfig.preset('tiny'), alignment_scope='global',
+            config = replace(BlueConfig.preset('tiny'), alignment_scope='global',
                              alignment_text_view='isolated', dropout=0.)
             config_path, data = root / 'config.json', root / 'data.jsonl'
             config.save(config_path)
@@ -71,7 +71,7 @@ class ComplementaryAlignmentTrainingTests(unittest.TestCase):
                          class_label=index) for index in range(2)]
             data.write_text(''.join(json.dumps(row) + '\n' for row in rows))
             base = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=2',
-                    '-m', 'chimera', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
+                    '-m', 'blue', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
                     '--steps', '1', '--batch-size', '2', '--mixed-modalities', '--modality-policy', 'balanced',
                     '--seed', '0', '--log-every', '1']
             env = dict(os.environ)

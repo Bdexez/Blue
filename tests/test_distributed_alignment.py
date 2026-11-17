@@ -13,12 +13,12 @@ import unittest
 import torch
 from torch import distributed as dist
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.distributed_alignment import distributed_alignment_loss
-from chimera.training import DistributedTrainingModel
-from chimera.observed_objective import target_counts
-from chimera.losses import symmetric_contrastive_loss
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.distributed_alignment import distributed_alignment_loss
+from blue.training import DistributedTrainingModel
+from blue.observed_objective import target_counts
+from blue.losses import symmetric_contrastive_loss
 
 
 LEFT = torch.tensor([[.8,.1,.3], [.2,.9,.4], [.1,.3,.9]], dtype=torch.float32)
@@ -104,7 +104,7 @@ def alignment_worker(rank, init_file, directory, scenario):
 
 
 def model_config(mode='paired', scope='global', view='joint', checkpointing=False):
-    return replace(ChimeraConfig.preset('tiny'), alignment_mode=mode, alignment_scope=scope,
+    return replace(BlueConfig.preset('tiny'), alignment_mode=mode, alignment_scope=scope,
                    alignment_text_view=view, gradient_checkpointing=checkpointing,
                    alignment_weight=1., balance_weight=0., router_z_weight=0., mtp_weight=0.,
                    text_weight=0., classification_weight=0., forecast_weight=0., dropout=0.)
@@ -126,7 +126,7 @@ def model_worker(rank, init_file, directory, scenario, mode):
         isolated = scenario in ('isolated','isolated_missing')
         config = model_config(mode,view='isolated' if isolated else 'joint',checkpointing=isolated)
         torch.manual_seed(712)
-        model = Chimera(config).train()
+        model = Blue(config).train()
         wrapped = DistributedDataParallel(DistributedTrainingModel(model), find_unused_parameters=True)
         batch = model_batch(config, n=4 if scenario == 'accumulate' else 3)
         if scenario == 'accumulate':
@@ -270,8 +270,8 @@ class DistributedAlignmentTests(unittest.TestCase):
         for mode in ('paired','class'):
             config = model_config(mode,scope='local')
             torch.manual_seed(714)
-            local = Chimera(config).train()
-            global_model = Chimera(replace(config, alignment_scope='global')).train()
+            local = Blue(config).train()
+            global_model = Blue(replace(config, alignment_scope='global')).train()
             global_model.load_state_dict(local.state_dict())
             batch = model_batch(config)
             left, right = local(**batch), global_model(**batch)
@@ -279,7 +279,7 @@ class DistributedAlignmentTests(unittest.TestCase):
             self.assertEqual(global_model._alignment_group,None)
         old = config.to_dict()
         del old['alignment_scope']
-        self.assertEqual(ChimeraConfig.from_dict(old).alignment_scope,'local')
+        self.assertEqual(BlueConfig.from_dict(old).alignment_scope,'local')
         for argument in ('alignment_cross_rank_views', 'alignment_cross_class_views'):
             with self.assertRaisesRegex(ValueError, 'doit être booléen'):
                 local(**model_batch(config), **{argument: 1})
@@ -319,7 +319,7 @@ class DistributedAlignmentTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 config = model_config(mode,scope='local')
                 torch.manual_seed(712)
-                reference = Chimera(config).train()
+                reference = Blue(config).train()
                 expected = reference(**model_batch(config))
                 expected.loss.backward()
                 results = self.model_results('complete',mode)
@@ -335,7 +335,7 @@ class DistributedAlignmentTests(unittest.TestCase):
     def test_ddp_mixed_modalities_and_no_global_pair(self):
         config = model_config(scope='local')
         torch.manual_seed(712)
-        reference = Chimera(config).train()
+        reference = Blue(config).train()
         batch = {key:value[:2] for key,value in model_batch(config).items()
                  if key not in ('input_ids','attention_mask')}
         expected = reference(**batch)
@@ -356,7 +356,7 @@ class DistributedAlignmentTests(unittest.TestCase):
     def test_ddp_isolated_text_with_shared_decoder_checkpointing(self):
         config = model_config('class',scope='local',view='isolated',checkpointing=True)
         torch.manual_seed(712)
-        reference = Chimera(config).train()
+        reference = Blue(config).train()
         batch = model_batch(config)
         expected = reference(**batch)
         expected.loss.backward()
@@ -370,7 +370,7 @@ class DistributedAlignmentTests(unittest.TestCase):
     def test_ddp_isolated_text_when_other_rank_has_only_series(self):
         config = model_config(scope='local',view='isolated',checkpointing=True)
         torch.manual_seed(712)
-        reference = Chimera(config).train()
+        reference = Blue(config).train()
         batch = {key:value[:2] for key,value in model_batch(config).items()}
         expected = reference(**batch)
         expected.loss.backward()
@@ -384,7 +384,7 @@ class DistributedAlignmentTests(unittest.TestCase):
     def test_ddp_global_alignment_with_unlabeled_rank(self):
         config = model_config('class',scope='local')
         torch.manual_seed(712)
-        reference = Chimera(config).train()
+        reference = Blue(config).train()
         batch = model_batch(config)
         batch['class_labels'][-1] = -100
         expected = reference(**batch)
@@ -399,7 +399,7 @@ class DistributedAlignmentTests(unittest.TestCase):
     def test_ddp_accumulation_compares_each_global_microbatch(self):
         config = model_config(scope='local')
         torch.manual_seed(712)
-        reference = Chimera(config).train()
+        reference = Blue(config).train()
         batch = model_batch(config,n=4)
         for section in (slice(0,2),slice(2,4)):
             (reference(**{key:value[section] for key,value in batch.items()}).loss / 2).backward()
@@ -414,10 +414,10 @@ class DistributedAlignmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / 'config.json'
-            replace(ChimeraConfig.preset('tiny'), alignment_scope='global', dropout=.1,
+            replace(BlueConfig.preset('tiny'), alignment_scope='global', dropout=.1,
                     gradient_checkpointing=True).save(config)
             common = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=2',
-                      '-m', 'chimera', '--threads', '1', 'train', '--config', str(config),
+                      '-m', 'blue', '--threads', '1', 'train', '--config', str(config),
                       '--steps','3','--batch-size','1','--accumulation','2','--eval-every','2',
                       '--modality-dropout','0','--seed','510','--loss-normalization','observed']
             env = dict(os.environ, OMP_NUM_THREADS='1')
@@ -444,10 +444,10 @@ class DistributedAlignmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root/'config.json'
-            replace(ChimeraConfig.preset('tiny'), alignment_scope='global', alignment_text_view='isolated',
+            replace(BlueConfig.preset('tiny'), alignment_scope='global', alignment_text_view='isolated',
                     dropout=.1, gradient_checkpointing=True).save(config)
             common = [sys.executable,'-m','torch.distributed.run','--standalone','--nproc-per-node=2',
-                      '-m','chimera','--threads','1','train','--config',str(config),'--steps','2',
+                      '-m','blue','--threads','1','train','--config',str(config),'--steps','2',
                       '--batch-size','1','--accumulation','2','--eval-every','2',
                       '--modality-dropout','0','--seed','511','--loss-normalization','observed']
             env = dict(os.environ,OMP_NUM_THREADS='1')

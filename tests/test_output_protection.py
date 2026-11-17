@@ -7,9 +7,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.training import save_checkpoint
 
 
 @unittest.skipUnless(importlib.util.find_spec("PIL"), "Installer l'extra vision pour tester PNG/JPEG")
@@ -28,7 +28,7 @@ class OutputProtectionTests(unittest.TestCase):
             data = root / "data.jsonl"
             data.write_text(json.dumps(dict(image_path=image.name, class_label=1)))
             checkpoint = root / "model.pt"
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset("tiny")))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset("tiny")))
             for command in ("predict", "embed", "evaluate", "calibrate", "refine-forecast"):
                 for destination in (image, hardlink, symlink):
                     with self.subTest(command=command, destination=destination), self.assertRaises(SystemExit):

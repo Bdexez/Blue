@@ -7,8 +7,8 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.training import save_checkpoint
 
 
 class StableRMSBenchmarkTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class StableRMSBenchmarkTests(unittest.TestCase):
             root = Path(directory)
             checkpoint, report = root / 'model.pt', root / 'report.json'
             torch.manual_seed(488)
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset('tiny')))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset('tiny')))
             original = checkpoint.read_bytes()
             common = [sys.executable,'tools/benchmark_stable_rms.py','--checkpoint',str(checkpoint),
                       '--batch-size','2','--repeats','1','--min-run-time','.01']

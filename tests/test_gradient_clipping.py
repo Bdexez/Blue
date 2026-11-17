@@ -8,8 +8,8 @@ import torch
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from chimera.gradient_clipping import clip_grad_norm
-from chimera.training import step_optimizer
+from blue.gradient_clipping import clip_grad_norm
+from blue.training import step_optimizer
 
 
 def distributed_worker(rank, init_file, output_dir):
@@ -36,7 +36,7 @@ class GradientClippingTests(unittest.TestCase):
         first.grad = torch.tensor([2., -3., 4.])
         second.grad = first.grad.clone()
         expected = torch.nn.utils.clip_grad_norm_([first], 0.7, error_if_nonfinite=True)
-        with patch('chimera.gradient_clipping.math.hypot', side_effect=AssertionError('repli inattendu')):
+        with patch('blue.gradient_clipping.math.hypot', side_effect=AssertionError('repli inattendu')):
             actual = clip_grad_norm([second], 0.7)
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         torch.testing.assert_close(first.grad, second.grad, rtol=0, atol=0)

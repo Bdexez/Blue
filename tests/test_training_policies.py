@@ -8,18 +8,18 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.training import load_checkpoint, save_checkpoint
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.training import load_checkpoint, save_checkpoint
 
 
 class TrainingPolicyTests(unittest.TestCase):
     def test_finetuning_uses_source_weights_but_fresh_optimizer_and_schedule(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), num_classes=4)
+            config = replace(BlueConfig.preset("tiny"), num_classes=4)
             torch.manual_seed(71)
-            model = Chimera(config)
+            model = Blue(config)
             source = root / "source.pt"
             optimizer = torch.optim.AdamW(model.parameters(), lr=0.9)
             # État volontairement incompatible avec le nouvel entraînement.
@@ -56,7 +56,7 @@ class TrainingPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
             config = root / "config.json"
-            replace(ChimeraConfig.preset("tiny"), dropout=0.1).save(config)
+            replace(BlueConfig.preset("tiny"), dropout=0.1).save(config)
             common = ["--threads", "2", "train", "--config", str(config), "--steps", "7",
                       "--batch-size", "2", "--accumulation", "2", "--eval-every", "7"]
             full, split = root / "full", root / "split"

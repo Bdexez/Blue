@@ -10,15 +10,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from chimera.augmentation import SeriesAugmentation
-from chimera.calibration import file_sha256
-from chimera.cli import prediction_stream, same_file
-from chimera.data import synthetic_batch
-from chimera.evaluation import evaluate
-from chimera.modalities import keep_modalities
-from chimera.series_classifier import fit_series_classifier
-from chimera.series_probability import fit_series_probability
-from chimera.training import load_checkpoint
+from blue.augmentation import SeriesAugmentation
+from blue.calibration import file_sha256
+from blue.cli import prediction_stream, same_file
+from blue.data import synthetic_batch
+from blue.evaluation import evaluate
+from blue.modalities import keep_modalities
+from blue.series_classifier import fit_series_classifier
+from blue.series_probability import fit_series_probability
+from blue.training import load_checkpoint
 
 
 def main():

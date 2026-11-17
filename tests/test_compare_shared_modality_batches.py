@@ -8,8 +8,8 @@ import unittest
 import torch
 from torch import distributed as dist
 
-from chimera import Chimera, ChimeraConfig
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.training import save_checkpoint
 
 
 class CompareSharedModalityBatchesTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class CompareSharedModalityBatchesTests(unittest.TestCase):
             root = Path(directory)
             checkpoint, output = root / 'parent.pt', root / 'study'
             torch.manual_seed(31)
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset('tiny')))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset('tiny')))
             script = Path(__file__).resolve().parents[1] / 'tools/compare_shared_modality_batches.py'
             command = [sys.executable, str(script), '--checkpoint', str(checkpoint), '--output-dir', str(output),
                        '--seeds', '17', '--steps', '2', '--train-examples', '8', '--batch-size', '2',
@@ -47,7 +47,7 @@ class CompareSharedModalityBatchesTests(unittest.TestCase):
             root = Path(directory)
             checkpoint, output = root / 'parent.pt', root / 'periodic-study'
             torch.manual_seed(32)
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset('tiny')))
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset('tiny')))
             script = Path(__file__).resolve().parents[1] / 'tools/compare_shared_modality_batches.py'
             command = [sys.executable, str(script), '--checkpoint', str(checkpoint), '--output-dir', str(output),
                        '--seeds', '17', '--steps', '2', '--train-examples', '12', '--batch-size', '2',

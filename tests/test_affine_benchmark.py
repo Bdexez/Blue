@@ -6,8 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from chimera import Chimera, ChimeraConfig
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.training import save_checkpoint
 from tools.benchmark_affine_forecast import main
 
 
@@ -16,7 +16,7 @@ class AffineBenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             root = Path(directory)
             checkpoint, output = root / "model.pt", root / "report.json"
-            save_checkpoint(checkpoint, Chimera(ChimeraConfig.preset("tiny")),
+            save_checkpoint(checkpoint, Blue(BlueConfig.preset("tiny")),
                             trainer={"validation_state": {"best_step": None, "best_loss": float("inf")}})
             args = ["--reference-checkpoint", str(checkpoint), "--checkpoint", str(checkpoint),
                     "--output", str(output), "--cases", "history8_missing30", "--transforms", "original", "offset20", "scale10",
@@ -34,7 +34,7 @@ class AffineBenchmarkTests(unittest.TestCase):
                 main([*args, "--output", str(checkpoint)])
             self.assertEqual(checkpoint.read_bytes(), before)
             other = root / "other.pt"
-            save_checkpoint(other, Chimera(replace(ChimeraConfig.preset("tiny"), forecast_horizon=2)))
+            save_checkpoint(other, Blue(replace(BlueConfig.preset("tiny"), forecast_horizon=2)))
             content = output.read_bytes()
             with self.assertRaisesRegex(ValueError, "mêmes entrées"):
                 main([*args, "--checkpoint", str(other)])

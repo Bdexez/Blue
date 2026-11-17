@@ -10,8 +10,8 @@ import unittest
 import torch
 from torch import distributed as dist
 
-from chimera import ChimeraConfig
-from chimera.training import load_checkpoint
+from blue import BlueConfig
+from blue.training import load_checkpoint
 
 
 class SharedModalityTrainingTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class SharedModalityTrainingTests(unittest.TestCase):
     def test_shared_batches_enable_pairs_and_resume_exactly(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = replace(ChimeraConfig.preset('tiny'), alignment_scope='global',
+            config = replace(BlueConfig.preset('tiny'), alignment_scope='global',
                              alignment_text_view='isolated', dropout=.1)
             config_path, data = root / 'config.json', root / 'data.jsonl'
             config.save(config_path)
@@ -27,7 +27,7 @@ class SharedModalityTrainingTests(unittest.TestCase):
                          class_label=index) for index in range(4)]
             data.write_text(''.join(json.dumps(row) + '\n' for row in rows))
             base = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=2',
-                    '-m', 'chimera', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
+                    '-m', 'blue', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
                     '--steps', '4', '--batch-size', '2', '--mixed-modalities', '--modality-policy', 'balanced',
                     '--no-shuffle', '--loss-normalization', 'observed', '--seed', '0', '--log-every', '1']
             env = dict(os.environ)
@@ -68,7 +68,7 @@ class SharedModalityTrainingTests(unittest.TestCase):
     def test_periodic_shared_batches_resume_mid_epoch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = replace(ChimeraConfig.preset('tiny'), alignment_scope='global',
+            config = replace(BlueConfig.preset('tiny'), alignment_scope='global',
                              alignment_text_view='isolated', dropout=.1)
             config_path, data = root / 'config.json', root / 'data.jsonl'
             config.save(config_path)
@@ -76,7 +76,7 @@ class SharedModalityTrainingTests(unittest.TestCase):
                          class_label=index % config.num_classes) for index in range(4)]
             data.write_text(''.join(json.dumps(row) + '\n' for row in rows))
             base = [sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc-per-node=2',
-                    '-m', 'chimera', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
+                    '-m', 'blue', '--threads', '1', 'train', '--config', str(config_path), '--data', str(data),
                     '--steps', '4', '--batch-size', '2', '--mixed-modalities', '--modality-policy', 'balanced',
                     '--shared-modality-batches', '--shared-modality-batch-interval', '2', '--no-shuffle',
                     '--loss-normalization', 'observed', '--seed', '0', '--log-every', '1']

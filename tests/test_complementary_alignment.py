@@ -6,7 +6,7 @@ import torch
 from torch import distributed as dist
 from torch.nn import functional as F
 
-from chimera.distributed_alignment import _rectangular_alignment, distributed_alignment_loss
+from blue.distributed_alignment import _rectangular_alignment, distributed_alignment_loss
 
 
 LEFT = torch.tensor([[.8, .1, .3], [.2, .9, .4], [.1, .3, .9]], dtype=torch.float32)

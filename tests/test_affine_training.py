@@ -9,10 +9,10 @@ from unittest.mock import patch
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.cli import main
-from chimera.data import synthetic_batch
-from chimera.training import load_checkpoint
+from blue import Blue, BlueConfig
+from blue.cli import main
+from blue.data import synthetic_batch
+from blue.training import load_checkpoint
 
 
 class AffineTrainingTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class AffineTrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
             config = root / "config.json"
-            replace(ChimeraConfig.preset("tiny"), dropout=0.1).save(config)
+            replace(BlueConfig.preset("tiny"), dropout=0.1).save(config)
             common = ["--threads", "2", "train", "--config", str(config), "--steps", "3", "--batch-size", "2",
                       "--eval-every", "3", "--modality-policy", "balanced"]
             initial, legacy = root / "initial", root / "legacy.pt"
@@ -43,7 +43,7 @@ class AffineTrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
             config = root / "config.json"
-            replace(ChimeraConfig.preset("tiny"), temporal_statistics=True, dropout=0.1).save(config)
+            replace(BlueConfig.preset("tiny"), temporal_statistics=True, dropout=0.1).save(config)
             common = ["--threads", "2", "train", "--config", str(config), "--steps", "7", "--batch-size", "2",
                       "--accumulation", "2", "--eval-every", "7", "--modality-policy", "balanced"]
             options = ["--series-crop-probability", "0.7", "--series-missing-rate", "0.2",
@@ -68,13 +68,13 @@ class AffineTrainingTests(unittest.TestCase):
 
     def test_future_units_follow_retained_series_and_validation_stays_unaugmented(self):
         captured = []
-        original_forward = Chimera.forward
+        original_forward = Blue.forward
 
         def capture(model, *args, **kwargs):
             captured.append((model.training, "series" in kwargs, kwargs["forecast_targets"].clone()))
             return original_forward(model, *args, **kwargs)
 
-        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), patch.object(Chimera, "forward", capture):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), patch.object(Blue, "forward", capture):
             main(["--threads", "2", "train", "--steps", "7", "--batch-size", "2", "--seed", "6081",
                   "--modality-policy", "balanced", "--series-affine-probability", "1",
                   "--series-affine-min-scale", "2", "--series-affine-max-scale", "2", "--series-affine-max-shift", "0",
@@ -83,7 +83,7 @@ class AffineTrainingTests(unittest.TestCase):
         validation = [row for row in captured if not row[0]]
         self.assertEqual(len(training), 7)
         self.assertTrue(any(row[1] for row in training) and any(not row[1] for row in training))
-        config = ChimeraConfig.preset("tiny")
+        config = BlueConfig.preset("tiny")
         for index, (_, has_series, future) in enumerate(training):
             expected = synthetic_batch(config, batch_size=2, seed=6081 + index)["forecast_targets"]
             torch.testing.assert_close(future, expected * (2 if has_series else 1), rtol=0, atol=0)

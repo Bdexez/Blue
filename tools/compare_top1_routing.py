@@ -15,8 +15,8 @@ sys.path.insert(0, str(ROOT))
 import torch
 
 from benchmark import measure
-from chimera.data import synthetic_batch
-from chimera.training import load_checkpoint
+from blue.data import synthetic_batch
+from blue.training import load_checkpoint
 
 
 def aggregate_metrics(runs):
@@ -68,7 +68,7 @@ def main():
             directory.mkdir()
             config = directory / "input-config.json"
             config.write_text(json.dumps(base | dict(top_k=1, top1_gate=mode), indent=2) + "\n")
-            command = [sys.executable, "-m", "chimera", "--threads", str(args.threads), "train",
+            command = [sys.executable, "-m", "blue", "--threads", str(args.threads), "train",
                        "--config", str(config), "--seed", str(seed), "--steps", str(args.steps),
                        "--batch-size", str(args.batch_size), "--lr", "0.001", "--warmup", "10",
                        "--modality-dropout", "0.3", "--save-every", str(args.steps),

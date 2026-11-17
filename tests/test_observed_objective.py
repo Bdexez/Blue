@@ -11,15 +11,15 @@ import torch
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from chimera import Chimera, ChimeraConfig
-from chimera.data import synthetic_batch
-from chimera.cli import main
-from chimera.observed_objective import observed_objective, target_counts
-from chimera.training import DistributedTrainingModel, load_checkpoint
+from blue import Blue, BlueConfig
+from blue.data import synthetic_batch
+from blue.cli import main
+from blue.observed_objective import observed_objective, target_counts
+from blue.training import DistributedTrainingModel, load_checkpoint
 
 
 def test_config():
-    return replace(ChimeraConfig.preset("tiny"), prediction_steps=4, balance_weight=0,
+    return replace(BlueConfig.preset("tiny"), prediction_steps=4, balance_weight=0,
                    router_z_weight=0, alignment_weight=0)
 
 
@@ -39,7 +39,7 @@ def distributed_worker(rank, init_file, output_dir, mixed=False):
     try:
         config = test_config()
         torch.manual_seed(316)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         wrapped = DistributedDataParallel(DistributedTrainingModel(model), find_unused_parameters=True)
         batch = test_batch(config)
         chunks = [{name: value[rank * 2 + index:rank * 2 + index + 1] for name, value in batch.items()}
@@ -74,8 +74,8 @@ class ObservedObjectiveTests(unittest.TestCase):
     def test_accumulated_gradients_match_full_batch_with_missing_targets(self):
         config = test_config()
         torch.manual_seed(316)
-        full = Chimera(config).eval()
-        accumulated = Chimera(config).eval()
+        full = Blue(config).eval()
+        accumulated = Blue(config).eval()
         accumulated.load_state_dict(full.state_dict())
         batch = test_batch(config)
         chunks = [{name: value[section] for name, value in batch.items()}
@@ -97,7 +97,7 @@ class ObservedObjectiveTests(unittest.TestCase):
     def test_distributed_gradients_match_full_batch_with_missing_targets(self):
         config = test_config()
         torch.manual_seed(316)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         model(**test_batch(config)).loss.backward()
         with tempfile.TemporaryDirectory() as directory:
             torch.multiprocessing.spawn(distributed_worker, args=(str(Path(directory) / "group"), directory),
@@ -116,7 +116,7 @@ class ObservedObjectiveTests(unittest.TestCase):
     def test_distributed_gradients_with_varying_modalities(self):
         config = test_config()
         torch.manual_seed(316)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         batch = test_batch(config)
         chunks = [{name: value[index:index + 1] for name, value in batch.items()} for index in range(4)]
         for chunk in chunks[:2]:
@@ -146,7 +146,7 @@ class ObservedObjectiveTests(unittest.TestCase):
     def test_distributed_rank_can_have_no_supervised_targets(self):
         config = test_config()
         torch.manual_seed(316)
-        model = Chimera(config).eval()
+        model = Blue(config).eval()
         batch = test_batch(config)
         chunks = [{name: value[index:index + 1] for name, value in batch.items()} for index in range(4)]
         for chunk in chunks[2:]:
@@ -173,7 +173,7 @@ class ObservedObjectiveTests(unittest.TestCase):
     def test_cli_accumulation_matches_full_batch_with_partial_supervision(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), prediction_steps=4, balance_weight=0,
+            config = replace(BlueConfig.preset("tiny"), prediction_steps=4, balance_weight=0,
                              router_z_weight=0, alignment_weight=0)
             config_path = root / "model.json"
             config.save(config_path)
@@ -206,7 +206,7 @@ class ObservedObjectiveTests(unittest.TestCase):
     def test_unlabeled_microbatch_is_allowed_when_step_has_targets(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
-            config = replace(ChimeraConfig.preset("tiny"), balance_weight=0, router_z_weight=0, alignment_weight=0)
+            config = replace(BlueConfig.preset("tiny"), balance_weight=0, router_z_weight=0, alignment_weight=0)
             config_path = root / "model.json"
             config.save(config_path)
             batch = synthetic_batch(config, batch_size=4, seed=1010)
@@ -232,7 +232,7 @@ class ObservedObjectiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
             config = root / "model.json"
-            replace(ChimeraConfig.preset("tiny"), dropout=0.1).save(config)
+            replace(BlueConfig.preset("tiny"), dropout=0.1).save(config)
             common = ["--threads", "2", "train", "--config", str(config), "--steps", "4",
                       "--batch-size", "2", "--accumulation", "2", "--eval-every", "2"]
             full, split = root / "full", root / "split"

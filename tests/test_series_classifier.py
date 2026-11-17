@@ -10,26 +10,26 @@ import unittest
 
 import torch
 
-from chimera import Chimera, ChimeraConfig
-from chimera.augmentation import SeriesAugmentation
-from chimera.cli import main
-from chimera.data import synthetic_batch
-from chimera.evaluation import evaluate
-from chimera.series_classifier import SeriesClassifier, fit_series_classifier, normalized_temporal_features
-from chimera.training import save_checkpoint
+from blue import Blue, BlueConfig
+from blue.augmentation import SeriesAugmentation
+from blue.cli import main
+from blue.data import synthetic_batch
+from blue.evaluation import evaluate
+from blue.series_classifier import SeriesClassifier, fit_series_classifier, normalized_temporal_features
+from blue.training import save_checkpoint
 
 
 class SeriesClassifierTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(2)
-        cls.config = replace(ChimeraConfig.preset("tiny"), temporal_statistics=True)
+        cls.config = replace(BlueConfig.preset("tiny"), temporal_statistics=True)
 
     def setUp(self):
         torch.manual_seed(125)
 
     def test_standardized_features_respect_affine_changes_and_padding(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         batch = synthetic_batch(self.config, batch_size=4, seed=491)
         series = batch["series"][:, -12:].double()
         series[0, :, 1] = float("nan")
@@ -51,7 +51,7 @@ class SeriesClassifierTests(unittest.TestCase):
             normalized_temporal_features(model, dict(series=series, images=batch["images"]), 1e-4)
 
     def test_shape_features_have_expected_values_and_ignore_missing_positions(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         series = torch.tensor([[[1., 2., float("nan")], [3., 4., float("nan")]]], dtype=torch.float64)
         with torch.inference_mode():
             base = normalized_temporal_features(model, dict(series=series), 1e-4)
@@ -69,7 +69,7 @@ class SeriesClassifierTests(unittest.TestCase):
         torch.testing.assert_close(extra, expected, rtol=0, atol=0)
 
     def test_augmented_shape_fit_is_deterministic_and_versioned(self):
-        model = Chimera(self.config).train()
+        model = Blue(self.config).train()
         batch = synthetic_batch(self.config, batch_size=96, seed=498)
         batch = {key: value for key, value in batch.items() if key in ("series", "series_mask", "class_labels")}
         augmentation = SeriesAugmentation(missing_rate=.3, mask_probability=.5)
@@ -107,7 +107,7 @@ class SeriesClassifierTests(unittest.TestCase):
             fit_series_classifier(model, [batch], augmentation=augmentation, augmentation_batch_size=10)
 
     def test_fit_is_batch_invariant_restores_mode_and_rejects_missing_class(self):
-        model = Chimera(self.config).train()
+        model = Blue(self.config).train()
         batch = synthetic_batch(self.config, batch_size=128, seed=492)
         batch = {key: value for key, value in batch.items() if key in ("series", "series_mask", "class_labels")}
         batch["class_labels"][0] = -100
@@ -137,7 +137,7 @@ class SeriesClassifierTests(unittest.TestCase):
                 SeriesClassifier.from_dict(data)
 
     def test_bf16_and_unobserved_labels(self):
-        model = Chimera(self.config).train()
+        model = Blue(self.config).train()
         batch = synthetic_batch(self.config, batch_size=128, seed=497)
         batch = {key: value for key, value in batch.items() if key in ("series", "series_mask", "class_labels")}
         batch["series"][:, ::4, 0] = float("nan")
@@ -152,7 +152,7 @@ class SeriesClassifierTests(unittest.TestCase):
         self.assertIsNone(report["series_classifier_accuracy"])
 
     def test_evaluation_reports_classifier_without_changing_model_metrics(self):
-        model = Chimera(self.config).eval()
+        model = Blue(self.config).eval()
         training = synthetic_batch(self.config, batch_size=128, seed=493)
         train = {key: value for key, value in training.items() if key in ("series", "series_mask", "class_labels")}
         fitted = fit_series_classifier(model, [train])
@@ -180,7 +180,7 @@ class SeriesClassifierTests(unittest.TestCase):
             root = Path(directory)
             checkpoint, data, test = root / "model.pt", root / "train.jsonl", root / "test.jsonl"
             classifier, predictions, report = root / "head.json", root / "predictions.jsonl", root / "report.json"
-            save_checkpoint(checkpoint, Chimera(self.config))
+            save_checkpoint(checkpoint, Blue(self.config))
             for path, count, seed in ((data, 128, 495), (test, 12, 496)):
                 batch = synthetic_batch(self.config, batch_size=count, seed=seed)
                 path.write_text("\n".join(json.dumps(dict(series=batch["series"][i].tolist(),
@@ -226,7 +226,7 @@ class SeriesClassifierTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "précision"):
                 main(["predict", *common, "--series-classifier", str(classifier), "--amp", "bf16"])
             other = root / "other.pt"
-            save_checkpoint(other, Chimera(self.config))
+            save_checkpoint(other, Blue(self.config))
             with self.assertRaisesRegex(ValueError, "checkpoint"):
                 main(["predict", "--checkpoint", str(other), "--data", str(test),
                       "--series-classifier", str(classifier)])
@@ -249,7 +249,7 @@ class SeriesClassifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkpoint, report = root / "model.pt", root / "report.json"
-            save_checkpoint(checkpoint, Chimera(self.config))
+            save_checkpoint(checkpoint, Blue(self.config))
             before = checkpoint.read_bytes()
             common = [sys.executable, "tools/benchmark_series_classifier.py", "--checkpoint", str(checkpoint),
                       "--train-batches", "12", "--test-batches", "1", "--batch-size", "16",
