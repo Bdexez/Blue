@@ -539,7 +539,14 @@ def train(args, config):
         last_step = step + 1
         routing = torch.cat((expert_totals.flatten(), expert_tokens.reshape(1).double()))
         if world > 1:
-            dist.reduce(routing, dst=0, op=dist.ReduceOp.SUM)
+            if config.router_bias_update_rate > 0:
+                dist.all_reduce(routing, op=dist.ReduceOp.SUM)
+            else:
+                dist.reduce(routing, dst=0, op=dist.ReduceOp.SUM)
+        if config.router_bias_update_rate > 0 and not skipped and routing[-1].item() > 0:
+            step_usage = routing[:-1].view(config.n_layers, config.n_experts) / routing[-1]
+            step_usage = step_usage / step_usage.sum(-1, keepdim=True).clamp_min(1e-12)
+            model.update_router_biases(step_usage)
         if rank == 0:
             routing_summary = summarize_expert_usage(routing[:-1].view(config.n_layers, config.n_experts),
                                                       int(routing[-1].item()))
