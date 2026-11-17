@@ -47,22 +47,44 @@ class SwiGLU(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, head_dim, theta):
+    def __init__(self, head_dim, theta, *, scaling_type="none", scaling_factor=1.0,
+                 original_max_seq_len=None, max_seq_len=2048):
         super().__init__()
-        self.head_dim, self.theta = head_dim, theta
+        self.head_dim = head_dim
+        self.theta = theta
+        self.scaling_type = scaling_type
+        self.scaling_factor = float(scaling_factor)
+        self.original_max_seq_len = original_max_seq_len
+        self.max_seq_len = max_seq_len
+        self.mscale = (0.1 * math.log(self.scaling_factor) + 1.0
+                       if scaling_type == "yarn" and self.scaling_factor > 1.0 else 1.0)
         self.register_buffer("inv_freq", self.frequencies(), persistent=False)
 
     def frequencies(self, device=None):
-        return 1.0 / (self.theta ** (
-            torch.arange(0, self.head_dim, 2, dtype=torch.float32, device=device) / self.head_dim
-        ))
+        exponent = torch.arange(0, self.head_dim, 2, dtype=torch.float32, device=device) / self.head_dim
+        if self.scaling_type == "ntk" and self.scaling_factor > 1.0:
+            power = self.head_dim / max(self.head_dim - 2, 1)
+            base_theta = self.theta * (self.scaling_factor ** power)
+            return 1.0 / (base_theta ** exponent)
+        base = 1.0 / (self.theta ** exponent)
+        if self.scaling_type == "linear" and self.scaling_factor > 1.0:
+            return base / self.scaling_factor
+        if self.scaling_type == "yarn" and self.scaling_factor > 1.0:
+            original_len = (self.original_max_seq_len if self.original_max_seq_len is not None
+                            else max(1, int(self.max_seq_len / self.scaling_factor)))
+            beta_fast, beta_slow = 32.0, 1.0
+            rotations = original_len * base / (2.0 * math.pi)
+            ramp = ((rotations - beta_slow) / (beta_fast - beta_slow)).clamp(0.0, 1.0)
+            return (base / self.scaling_factor) * (1.0 - ramp) + base * ramp
+        return base
 
     def forward(self, x, offset=0):
         # [B, H, T, D] ; calcul des phases en fp32, même en précision mixte.
         with torch.autocast(device_type=x.device.type, enabled=False):
             positions = torch.arange(offset, offset + x.size(-2), device=x.device).float()
             phase = torch.outer(positions, self.inv_freq.float())
-            cos, sin = phase.cos().to(x.dtype), phase.sin().to(x.dtype)
+            cos = (phase.cos() * self.mscale).to(x.dtype)
+            sin = (phase.sin() * self.mscale).to(x.dtype)
         even, odd = x[..., 0::2], x[..., 1::2]
         return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
 
@@ -90,7 +112,13 @@ class GroupedQueryAttention(nn.Module):
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
         self.q_norm = RMSNorm(self.head_dim, config.norm_eps)
         self.k_norm = RMSNorm(self.head_dim, config.norm_eps)
-        self.rope = RotaryEmbedding(self.head_dim, config.rope_theta)
+        self.rope = RotaryEmbedding(
+            self.head_dim, config.rope_theta,
+            scaling_type=config.rope_scaling_type,
+            scaling_factor=config.rope_scaling_factor,
+            original_max_seq_len=config.rope_original_max_seq_len,
+            max_seq_len=config.max_seq_len,
+        )
 
     def forward(self, x, valid, *, offset=0, cache=None, use_cache=False):
         b, t, _ = x.shape
