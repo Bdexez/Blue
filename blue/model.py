@@ -96,6 +96,9 @@ class Blue(nn.Module):
         for block in self.blocks:
             if block.ssm is not None:
                 block.ssm.reset_gate_biases()
+            for hc in (block.hc_attn, block.hc_cross, block.hc_moe):
+                if hc is not None:
+                    hc.reset_manifold_parameters()
             for expert in [*block.moe.experts, block.moe.shared]:
                 nn.init.normal_(expert.down.weight, std=0.02 / math.sqrt(2 * config.n_layers))
 
@@ -222,11 +225,21 @@ class Blue(nn.Module):
             result[name] = vector
         return result
 
+    def _expand_streams(self, x: torch.Tensor) -> torch.Tensor:
+        if self.config.residual_streams == 1:
+            return x
+        return x.unsqueeze(-2).expand(-1, -1, self.config.residual_streams, -1).contiguous()
+
+    def _collapse_streams(self, x: torch.Tensor) -> torch.Tensor:
+        if self.config.residual_streams == 1:
+            return x
+        return x.mean(dim=-2)
+
     def _isolated_text_representation(self, input_ids, valid):
         """Encoder le texte avec le contexte nul, sans image ni série associée."""
         batch = input_ids.size(0)
         memory = self.resampler([], [], batch)
-        x = self.embedding(input_ids)
+        x = self._expand_streams(self.embedding(input_ids))
         for block in self.blocks:
             if self.config.gradient_checkpointing and self.training:
                 def run(hidden, context, current=block):
@@ -234,7 +247,7 @@ class Blue(nn.Module):
                 x = checkpoint(run, x, memory, use_reentrant=False)
             else:
                 x = block(x, valid, memory)[0]
-        hidden = self.norm(x)
+        hidden = self.norm(self._collapse_streams(x))
         last = torch.arange(valid.size(1), device=x.device)[None, :].expand_as(valid)
         last = last.masked_fill(~valid, -1).max(-1).values
         return hidden[torch.arange(batch, device=x.device), last]
@@ -313,6 +326,7 @@ class Blue(nn.Module):
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
                      if attention_mask is None else attention_mask.bool())
         offset = 0 if cache is None else cache.offset
+        x = self._expand_streams(x)
         balance_losses, z_losses, usage, next_layers = [], [], [], []
         for index, block in enumerate(self.blocks):
             if self.config.gradient_checkpointing and self.training:
@@ -331,7 +345,7 @@ class Blue(nn.Module):
             balance_losses.append(balance)
             z_losses.append(z_loss)
             usage.append(expert_usage)
-        hidden = self.norm(x)
+        hidden = self.norm(self._collapse_streams(x))
         logits = self.lm_head(hidden) if input_ids is not None else None
         if input_ids is None:
             class_pooled, forecast_pooled = hidden.unbind(1)
