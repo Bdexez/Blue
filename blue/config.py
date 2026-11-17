@@ -25,6 +25,8 @@ class BlueConfig:
     rope_original_max_seq_len: int | None = None
     differential_attention: bool = False
     kv_lora_rank: int = 0
+    ssm_state_dim: int = 0
+    ssm_heads: int | None = None
     dropout: float = 0.0
     norm_eps: float = 1e-6
     stable_rms_norm: bool = False
@@ -91,6 +93,15 @@ class BlueConfig:
                 raise ValueError("kv_lora_rank nécessite d_model / n_heads divisible par 4")
             if self.differential_attention and head_dim % 8:
                 raise ValueError("kv_lora_rank + differential_attention nécessite d_model / n_heads divisible par 8")
+        if type(self.ssm_state_dim) is not int or self.ssm_state_dim < 0:
+            raise ValueError("ssm_state_dim doit être un entier positif ou nul")
+        if self.ssm_heads is not None:
+            if type(self.ssm_heads) is not int or self.ssm_heads < 1:
+                raise ValueError("ssm_heads doit être un entier strictement positif")
+            if self.ssm_state_dim == 0:
+                raise ValueError("ssm_heads nécessite ssm_state_dim > 0")
+            if self.d_model % self.ssm_heads:
+                raise ValueError("d_model doit être divisible par ssm_heads")
         if self.d_model % 4 or self.n_heads % self.n_kv_heads:
             raise ValueError("d_model doit être divisible par 4 et n_heads par n_kv_heads")
         if self.top_k > self.n_experts:
