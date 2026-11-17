@@ -15,6 +15,8 @@ class BlueConfig:
     n_experts: int = 8
     top_k: int = 2
     shared_experts: int = 1
+    shared_expert_gate: bool = False
+    router_bias_update_rate: float = 0.0
     max_seq_len: int = 2048
     sliding_window: int = 256
     global_every: int = 4
@@ -110,6 +112,10 @@ class BlueConfig:
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):
             raise ValueError("top1_gate probability nécessite top_k=1 et au moins deux experts")
+        if type(self.shared_expert_gate) is not bool:
+            raise ValueError("shared_expert_gate doit être booléen")
+        if not math.isfinite(self.router_bias_update_rate) or self.router_bias_update_rate < 0:
+            raise ValueError("router_bias_update_rate doit être fini et positif ou nul")
         if self.image_size % self.patch_size:
             raise ValueError("image_size doit être divisible par patch_size")
         if (type(self.forecast_adapter_context) is not int
