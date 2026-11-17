@@ -26,6 +26,7 @@ from .routing_metrics import summarize_expert_usage
 from .evaluation import evaluate
 from .gradient_clipping import clip_grad_norm
 from .modules import RotaryEmbedding
+from .optimizer import build_optimizer
 
 
 def seed_everything(seed):
@@ -237,6 +238,12 @@ def train(args, config):
     args.monitor = getattr(args, "monitor", None) or previous_monitor
     if args.resume and args.monitor != previous_monitor:
         raise ValueError(f"Reprise : monitor diffère du checkpoint ({previous_monitor!r})")
+    previous_optimizer = previous.get("optimizer", "adamw")
+    args.optimizer = getattr(args, "optimizer", None) or previous_optimizer
+    if args.optimizer not in ("adamw", "muon"):
+        raise ValueError("optimizer doit être adamw ou muon")
+    if args.resume and args.optimizer != previous_optimizer:
+        raise ValueError(f"Reprise : optimizer diffère du checkpoint ({previous_optimizer!r})")
     maximize = args.monitor == "accuracy"
     previous_normalization = previous.get("loss_normalization", "batch")
     args.loss_normalization = getattr(args, "loss_normalization", None) or previous_normalization
@@ -325,6 +332,7 @@ def train(args, config):
     keys = ("steps", "batch_size", "accumulation", "seed", "lr", "warmup", "weight_decay",
             "amp", "data", "modality_dropout", "modality_policy", "shuffle", "val_data", "eval_every", "patience", "min_delta", "monitor", "loss_normalization")
     trainer = {key: getattr(args, key) for key in keys}
+    trainer["optimizer"] = args.optimizer
     trainer["mixed_modalities"] = args.mixed_modalities
     trainer["alignment_duplicate_positives"] = args.alignment_duplicate_positives
     trainer["alignment_cross_rank_views"] = args.alignment_cross_rank_views
@@ -356,14 +364,7 @@ def train(args, config):
     end_step = min(args.steps, args.stop_after) if args.stop_after is not None else args.steps
     if end_step < start or end_step < 1:
         raise ValueError("stop-after doit être >= à l'étape reprise et > 0")
-    temporal_parameters = list(model.temporal.forecast_skip.parameters())
-    if model.temporal.statistics_proj is not None:
-        temporal_parameters.extend(model.temporal.statistics_proj.parameters())
-    temporal_ids = {id(p) for p in temporal_parameters}
-    optimizer = torch.optim.AdamW([
-        {"params": [p for p in model.parameters() if id(p) not in temporal_ids], "lr_scale": 1.0},
-        {"params": temporal_parameters, "lr_scale": 10.0},
-    ], lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = build_optimizer(model, name=args.optimizer, lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp == "fp16")
     if "optimizer" in payload:
         optimizer.load_state_dict(payload["optimizer"])

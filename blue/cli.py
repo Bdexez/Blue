@@ -147,6 +147,8 @@ def main(argv=None):
     training.add_argument("--loss-normalization", choices=("batch", "observed"),
                           help="Pondération des pertes supervisées : par micro-lot (défaut) ou par cible observée")
     training.add_argument("--lr", type=float, default=3e-4)
+    training.add_argument("--optimizer", choices=("adamw", "muon"),
+                          help="Optimiseur : adamw (défaut) ou muon (Newton-Schulz + AdamW) ; restauré à la reprise")
     training.add_argument("--weight-decay", type=float, default=0.01)
     training.add_argument("--grad-clip", type=float, default=1.0)
     training.add_argument("--warmup", type=int, default=10)
