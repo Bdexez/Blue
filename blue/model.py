@@ -13,6 +13,7 @@ from .distributed_alignment import distributed_alignment_loss
 from .flow_matching import ConditionalFlowHead
 from .graph import GraphEncoder
 from .losses import quantile_pinball_loss, symmetric_contrastive_loss
+from .memory import EpisodicMemoryBank
 from .forecast_adapter import ForecastAdapter, ForecastAdapterContext
 from .modules import (
     DecoderBlock, LayerCache, LatentResampler, QuantileForecastHead,
@@ -29,6 +30,7 @@ class ModelCache:
     series_scale: torch.Tensor | None = None
     forecast_baseline: torch.Tensor | None = None
     forecast_adapter_context: ForecastAdapterContext | None = None
+    episodic_memory: torch.Tensor | None = None
 
 
 @dataclass
@@ -83,6 +85,8 @@ class Blue(nn.Module):
             self.reasoning_adapter = None
             self.reasoning_gate = None
         self.norm = RMSNorm(d, config.norm_eps)
+        self.episodic_memory = (EpisodicMemoryBank(d, config.memory_slots, config.n_heads, norm_eps=config.norm_eps)
+                                if config.memory_slots > 0 else None)
         self.lm_head = nn.Linear(d, config.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight
         self.future_heads = nn.ModuleList([
@@ -126,6 +130,8 @@ class Blue(nn.Module):
             nn.init.constant_(self.reasoning_gate, -1.0)
         if self.flow_head is not None:
             self.flow_head.reset_adaln_parameters()
+        if self.episodic_memory is not None:
+            self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
             if block.ssm is not None:
                 block.ssm.reset_gate_biases()
@@ -256,6 +262,9 @@ class Blue(nn.Module):
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
             ssm_heads = c.n_heads if c.ssm_heads is None else c.ssm_heads
             ssm_shape = (batch, ssm_heads, c.ssm_state_dim, c.d_model // ssm_heads) if c.ssm_state_dim else None
+            if (c.memory_slots > 0 and (cache.episodic_memory is None
+                                        or cache.episodic_memory.shape != (batch, c.memory_slots, c.d_model))):
+                raise ValueError("Mémoire épisodique incompatible dans le cache")
             if cache.offset < 1 or any(
                 layer.start_pos < 0 or layer.start_pos + layer.key.size(-2) != cache.offset
                 or (layer.key.shape != layer.value.shape if not c.kv_lora_rank
@@ -382,7 +391,12 @@ class Blue(nn.Module):
                 z_losses.append(z_loss)
                 layer_usage[index] = expert_usage if layer_usage[index] is None else layer_usage[index] + expert_usage
         usage = [value / steps for value in layer_usage]
-        return self.norm(self._collapse_streams(x)), balance_losses, z_losses, usage, next_layers
+        collapsed = self._collapse_streams(x)
+        next_memory = None
+        if self.episodic_memory is not None:
+            prev_mem = None if cache is None else cache.episodic_memory
+            collapsed, next_memory = self.episodic_memory(collapsed, valid, prev_mem)
+        return self.norm(collapsed), balance_losses, z_losses, usage, next_layers, next_memory
 
     def _isolated_text_representation(self, input_ids, valid):
         """Encoder le texte avec le contexte nul, sans image ni série associée."""
@@ -497,7 +511,7 @@ class Blue(nn.Module):
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
                      if attention_mask is None else attention_mask.bool())
         offset = 0 if cache is None else cache.offset
-        hidden, balance_losses, z_losses, usage, next_layers = self._run_decoder_stack(
+        hidden, balance_losses, z_losses, usage, next_layers, next_memory = self._run_decoder_stack(
             x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
             reasoning_steps=reasoning_steps,
         )
@@ -585,7 +599,8 @@ class Blue(nn.Module):
                     ))
             losses["alignment"] = torch.stack(contrastive).mean()
             total = total + c.alignment_weight * losses["alignment"]
-        next_cache = (ModelCache(next_layers, latents, offset + hidden.size(1), mean, scale, baseline, adapter_context)
+        next_cache = (ModelCache(next_layers, latents, offset + hidden.size(1), mean, scale, baseline,
+                                 adapter_context, episodic_memory=next_memory)
                       if use_cache else None)
         return BlueOutput(logits, class_logits, forecast, total if supervised else None,
                           losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum(),
