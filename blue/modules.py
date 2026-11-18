@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .config import BlueConfig
+from .fsq import FiniteScalarQuantizer
 from .hyper_connections import ManifoldHyperConnection
 from .spectral import SpectralTemporalMixer
 from .ssm import GatedDeltaNet
@@ -591,6 +592,10 @@ class LatentResampler(nn.Module):
         self.norms = nn.ModuleList([RMSNorm(config.d_model) for _ in range(config.resampler_layers)])
         self.cross = nn.ModuleList([CrossAttention(config) for _ in range(config.resampler_layers)])
         self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.resampler_layers)])
+        self.fsq = (FiniteScalarQuantizer(config.d_model, config.latent_fsq_levels,
+                                          norm_cls=RMSNorm, norm_eps=config.norm_eps)
+                    if config.latent_fsq_levels else None)
+        self.last_codes: torch.Tensor | None = None
 
     def forward(self, contexts, masks, batch_size):
         null = self.null_context.expand(batch_size, -1, -1)
@@ -614,6 +619,10 @@ class LatentResampler(nn.Module):
         for norm, cross, block in zip(self.norms, self.cross, self.blocks):
             x = x + cross(norm(x), context, valid)
             x = block(x, latent_valid)
+        if self.fsq is not None:
+            x, self.last_codes = self.fsq(x)
+        else:
+            self.last_codes = None
         return x
 
 
