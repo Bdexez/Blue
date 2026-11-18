@@ -64,9 +64,9 @@ class JointDataset(Dataset):
                 if not isinstance(record, dict):
                     raise ValueError(f"{self.path}:{line_number}: un objet JSON est attendu")
                 current = tuple(key in record or (key == "image" and "image_path" in record)
-                                for key in ("text", "image", "series"))
+                                for key in ("text", "image", "series", "audio"))
                 if not any(current):
-                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path ou series")
+                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path, series ou audio")
                 if not allow_mixed and signature is not None and current != signature:
                     raise ValueError(f"{self.path}:{line_number}: les modalités doivent être identiques dans le fichier")
                 signature = current
@@ -175,6 +175,8 @@ class JointDataset(Dataset):
             item["images"] = pixels.view(self.config.image_size, self.config.image_size, -1).permute(2, 0, 1).float() / 255
         if "series" in record:
             item["series"] = numeric_tensor(record["series"])
+        if "audio" in record:
+            item["audio"] = numeric_tensor(record["audio"])
         if "class_label" in record:
             label = record["class_label"]
             if type(label) is not int or not (label == -100 or 0 <= label < self.config.num_classes):
@@ -189,7 +191,7 @@ def collate_records(items):
     if not items:
         raise ValueError("Le batch ne peut pas être vide")
     result = {}
-    for name in ("input_ids", "images", "series"):
+    for name in ("input_ids", "images", "series", "audio"):
         present = [name in item for item in items]
         if any(present) and not all(present):
             raise ValueError(f"{name} doit être fourni pour tout le batch")
@@ -224,6 +226,16 @@ def collate_records(items):
             values[i, :n] = item["series"]
             mask[i, :n] = True
         result.update(series=values, series_mask=mask)
+    if "audio" in items[0]:
+        length = max(item["audio"].size(-1) for item in items)
+        channels = items[0]["audio"].size(0)
+        values = torch.zeros(len(items), channels, length, dtype=torch.float32)
+        mask = torch.zeros(len(items), length, dtype=torch.bool)
+        for i, item in enumerate(items):
+            n = item["audio"].size(-1)
+            values[i, :, :n] = item["audio"]
+            mask[i, :n] = True
+        result.update(audio=values, audio_mask=mask)
     return result
 
 
@@ -242,11 +254,23 @@ def synthetic_batch(config, *, batch_size=4, seed=0, device="cpu"):
     pattern = torch.sin((classes[:, None, None].float() + 1) * axis[None, None, :] * 3)
     image = pattern.expand(-1, config.image_size, -1)[:, None].expand(-1, config.image_channels, -1, -1)
     image = (image + 1) / 2 + torch.randn(image.shape, generator=gen) * 0.01
+    audio = None
+    if getattr(config, "audio_enabled", False):
+        audio_len = min(config.max_audio_len, max(config.audio_patch_size * 4, 64))
+        a_times = torch.linspace(0.0, 1.0, audio_len)[None, None, :]
+        base_hz = 2.0 + classes[:, None, None].float() * 1.5
+        harmonics = (torch.sin(2.0 * torch.pi * base_hz * a_times)
+                     + 0.4 * torch.sin(4.0 * torch.pi * base_hz * a_times))
+        audio = harmonics.expand(-1, config.audio_channels, -1)
+        audio = audio + torch.randn(audio.shape, generator=gen) * 0.02
     tokenizer = ByteTokenizer()
     items = []
     for i in range(batch_size):
         text = f"Signal de classe {classes[i].item()}."
         tokens = tokenizer.encode(text)[:config.max_seq_len]
-        items.append(dict(input_ids=torch.tensor(tokens), images=image[i], series=sequence[i, :length],
-                          class_labels=classes[i], forecast_targets=sequence[i, length:]))
+        entry = dict(input_ids=torch.tensor(tokens), images=image[i], series=sequence[i, :length],
+                     class_labels=classes[i], forecast_targets=sequence[i, length:])
+        if audio is not None:
+            entry["audio"] = audio[i]
+        items.append(entry)
     return {key: value.to(device) for key, value in collate_records(items).items()}
