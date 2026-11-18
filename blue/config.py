@@ -84,6 +84,8 @@ class BlueConfig:
     alignment_scope: str = "local"
     alignment_text_view: str = "joint"
     alignment_temperature: float = 0.1
+    alignment_geometry: str = "euclidean"
+    alignment_curvature: float = 1.0
     text_weight: float = 1.0
     classification_weight: float = 1.0
     forecast_weight: float = 1.0
@@ -205,6 +207,10 @@ class BlueConfig:
             raise ValueError("alignment_text_view doit être joint ou isolated")
         if not math.isfinite(self.alignment_temperature) or self.alignment_temperature <= 0:
             raise ValueError("alignment_temperature doit être finie et > 0")
+        if self.alignment_geometry not in ("euclidean", "hyperbolic"):
+            raise ValueError("alignment_geometry doit être euclidean ou hyperbolic")
+        if not math.isfinite(self.alignment_curvature) or self.alignment_curvature <= 0:
+            raise ValueError("alignment_curvature doit être fini et > 0")
         self.quantiles = tuple(self.quantiles)
         if not self.quantiles or any(not 0 < q < 1 for q in self.quantiles):
             raise ValueError("Les quantiles doivent appartenir à ]0, 1[")
