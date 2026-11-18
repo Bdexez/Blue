@@ -618,6 +618,9 @@ class DecoderBlock(nn.Module):
         self.cross = CrossAttention(config)
         self.cross_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         self.moe = SparseMoE(config)
+        self.depth_capacity = config.depth_routing_capacity
+        self.depth_router = nn.Linear(config.d_model, 1, bias=True) if config.depth_routing_capacity < 1.0 else None
+        self.reset_depth_router()
         self.dropout = nn.Dropout(config.dropout)
         self.residual_streams = config.residual_streams
         if config.residual_streams > 1:
@@ -629,6 +632,12 @@ class DecoderBlock(nn.Module):
                                                   norm_cls=RMSNorm, norm_eps=config.norm_eps)
         else:
             self.hc_attn = self.hc_cross = self.hc_moe = None
+
+    def reset_depth_router(self):
+        if self.depth_router is not None:
+            with torch.no_grad():
+                p = min(max(self.depth_capacity, 1e-4), 1.0 - 1e-4)
+                self.depth_router.bias.fill_(math.log(p / (1.0 - p)))
 
     def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False):
         if self.hc_attn is not None:
@@ -661,15 +670,29 @@ class DecoderBlock(nn.Module):
         if self.hc_moe is not None:
             m_pre, m_post, m_res = self.hc_moe.routing_weights(x)
             moe_in = self.norm3(self.hc_moe.combine_input(x, m_pre))
+        else:
+            moe_in = self.norm3(x)
+        depth_loss = None
+        if self.depth_router is not None:
+            with torch.autocast(device_type=moe_in.device.type, enabled=False):
+                logits = F.linear(moe_in.float(), self.depth_router.weight.float(),
+                                  self.depth_router.bias.float()).squeeze(-1)
+                depth_prob = torch.sigmoid(logits)
+                mean_prob = (depth_prob * valid.float()).sum() / valid.sum().clamp_min(1)
+                depth_loss = (mean_prob - self.depth_capacity).square()
+            selected = valid & (depth_prob >= 0.5)
+            update, balance, z_loss, usage = self.moe(moe_in, selected)
+            update = update * depth_prob.to(update.dtype).unsqueeze(-1)
+        else:
             update, balance, z_loss, usage = self.moe(moe_in, valid)
+        if self.hc_moe is not None:
             x = self.hc_moe.update_streams(x, self.dropout(update), m_post, m_res) * valid[:, :, None, None]
         else:
-            update, balance, z_loss, usage = self.moe(self.norm3(x), valid)
             x = (x + self.dropout(update)) * valid.unsqueeze(-1)
         next_cache = (LayerCache(k, v, key_valid, conv_state, offset + x.size(1) - k.size(-2),
                                  *context_kv, ssm_state=ssm_state)
                       if use_cache else None)
-        return x, balance, z_loss, usage, next_cache
+        return x, balance, z_loss, usage, next_cache, depth_loss
 
 
 class QuantileForecastHead(nn.Module):

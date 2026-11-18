@@ -134,6 +134,7 @@ class Blue(nn.Module):
             self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
             block.attn.reset_sink_parameters()
+            block.reset_depth_router()
             if block.ssm is not None:
                 block.ssm.reset_gate_biases()
             for hc in (block.hc_attn, block.hc_cross, block.hc_moe):
@@ -370,7 +371,7 @@ class Blue(nn.Module):
         steps = self.config.latent_reasoning_steps if reasoning_steps is None else reasoning_steps
         initial = self._expand_streams(x_raw)
         x = initial
-        balance_losses, z_losses, next_layers = [], [], []
+        balance_losses, z_losses, depth_losses, next_layers = [], [], [], []
         layer_usage = [None] * self.config.n_layers
         for rec_step in range(steps):
             x = self._prepare_reasoning_step(x, initial, valid, rec_step)
@@ -379,10 +380,13 @@ class Blue(nn.Module):
                 if self.config.gradient_checkpointing and self.training:
                     def run(hidden, memory, current=block):
                         result = current(hidden, valid, memory)
-                        return result[:4]
-                    x, balance, z_loss, expert_usage = checkpoint(run, x, latents, use_reentrant=False)
+                        d_loss = result[5] if result[5] is not None else hidden.sum() * 0
+                        return result[0], result[1], result[2], result[3], d_loss
+                    x, balance, z_loss, expert_usage, depth_loss = checkpoint(run, x, latents, use_reentrant=False)
+                    if block.depth_router is None:
+                        depth_loss = None
                 else:
-                    x, balance, z_loss, expert_usage, layer_cache = block(
+                    x, balance, z_loss, expert_usage, layer_cache, depth_loss = block(
                         x, valid, latents, offset=offset,
                         cache=None if cache is None else cache.layers[cache_slot], use_cache=use_cache,
                     )
@@ -390,6 +394,8 @@ class Blue(nn.Module):
                         next_layers.append(layer_cache)
                 balance_losses.append(balance)
                 z_losses.append(z_loss)
+                if depth_loss is not None:
+                    depth_losses.append(depth_loss)
                 layer_usage[index] = expert_usage if layer_usage[index] is None else layer_usage[index] + expert_usage
         usage = [value / steps for value in layer_usage]
         collapsed = self._collapse_streams(x)
@@ -397,7 +403,7 @@ class Blue(nn.Module):
         if self.episodic_memory is not None:
             prev_mem = None if cache is None else cache.episodic_memory
             collapsed, next_memory = self.episodic_memory(collapsed, valid, prev_mem)
-        return self.norm(collapsed), balance_losses, z_losses, usage, next_layers, next_memory
+        return self.norm(collapsed), balance_losses, z_losses, depth_losses, usage, next_layers, next_memory
 
     def _isolated_text_representation(self, input_ids, valid):
         """Encoder le texte avec le contexte nul, sans image ni série associée."""
@@ -512,7 +518,7 @@ class Blue(nn.Module):
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
                      if attention_mask is None else attention_mask.bool())
         offset = 0 if cache is None else cache.offset
-        hidden, balance_losses, z_losses, usage, next_layers, next_memory = self._run_decoder_stack(
+        hidden, balance_losses, z_losses, depth_losses, usage, next_layers, next_memory = self._run_decoder_stack(
             x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
             reasoning_steps=reasoning_steps,
         )
@@ -540,6 +546,9 @@ class Blue(nn.Module):
         }
         c = self.config
         total = c.balance_weight * losses["balance"] + c.router_z_weight * losses["router_z"]
+        if depth_losses:
+            losses["depth_budget"] = torch.stack(depth_losses).mean()
+            total = total + c.depth_budget_weight * losses["depth_budget"]
         if labels is not None:
             targets = labels.masked_fill(~valid, -100)
             shifted = targets[:, 1:].masked_fill(~valid[:, :-1], -100)
