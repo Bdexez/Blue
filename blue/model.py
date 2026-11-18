@@ -130,6 +130,8 @@ class Blue(nn.Module):
             nn.init.normal_(self.graph_modality, std=0.02)
         if self.pointcloud_modality is not None:
             nn.init.normal_(self.pointcloud_modality, std=0.02)
+        if self.resampler.local_latents is not None:
+            nn.init.normal_(self.resampler.local_latents, std=0.02)
         if self.audio is not None and self.audio.spectral is not None:
             self.audio.spectral.reset_spectral_parameters()
         if self.reasoning_gate is not None:
