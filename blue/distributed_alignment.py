@@ -31,20 +31,21 @@ class _GatherWithGrad(torch.autograd.Function):
 
 
 def _rectangular_alignment(gathered, metadata, first, second, temperature, mode, *,
-                           cross_ids, cross_classes, has_ids):
+                           cross_ids, cross_classes, has_ids, num_modalities=3):
     """Aligner les vues ayant un partenaire selon les règles activées."""
     left_rows = (metadata[:, first] != 0).nonzero(as_tuple=True)[0]
     right_rows = (metadata[:, second] != 0).nonzero(as_tuple=True)[0]
     if left_rows.numel() == 0 or right_rows.numel() == 0:
         return None
-    left_ids, right_ids = metadata[left_rows, 4], metadata[right_rows, 4]
+    label_col, id_col = num_modalities, num_modalities + 1
+    left_ids, right_ids = metadata[left_rows, id_col], metadata[right_rows, id_col]
     positive = (left_rows[:, None] == right_rows[None, :])
     id_matches = ((left_ids[:, None] == right_ids[None, :])
                   & (left_ids[:, None] >= 0) & (right_ids[None, :] >= 0))
     if cross_ids:
         positive |= id_matches
     if cross_classes:
-        left_labels, right_labels = metadata[left_rows, 3], metadata[right_rows, 3]
+        left_labels, right_labels = metadata[left_rows, label_col], metadata[right_rows, label_col]
         positive |= ((left_labels[:, None] == right_labels[None, :])
                      & (left_labels[:, None] != -100) & (right_labels[None, :] != -100))
     left_valid, right_valid = positive.any(-1), positive.any(0)
@@ -55,7 +56,7 @@ def _rectangular_alignment(gathered, metadata, first, second, temperature, mode,
     if has_ids:
         positive |= id_matches[left_valid][:, right_valid]
     if mode == "class":
-        left_labels, right_labels = metadata[left_rows, 3], metadata[right_rows, 3]
+        left_labels, right_labels = metadata[left_rows, label_col], metadata[right_rows, label_col]
         positive |= ((left_labels[:, None] == right_labels[None, :])
                      & (left_labels[:, None] != -100) & (right_labels[None, :] != -100))
     left, right = gathered[left_rows, first], gathered[right_rows, second]
@@ -69,10 +70,10 @@ def _rectangular_alignment(gathered, metadata, first, second, temperature, mode,
 
 
 def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, group, text_view="joint", sample_ids=None,
-                               cross_rank_views=False, cross_class_views=False):
+                               cross_rank_views=False, cross_class_views=False, num_modalities=3):
     """Calculer les paires globales tout en conservant les gradients locaux.
 
-    Les vecteurs, déjà normalisés, sont indexés par modalité (0, 1, 2).
+    Les vecteurs, déjà normalisés, sont indexés par modalité (0..num_modalities-1).
     Tous les rangs du groupe doivent appeler cette fonction dans le même ordre.
     """
     if not vectors:
@@ -81,7 +82,8 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
     batch = sample.size(0) if sample.ndim >= 1 else 0
     dim = sample.size(1) if sample.ndim >= 2 else 0
     input_error = 0
-    if any(key not in (0, 1, 2) for key in vectors):
+    valid_keys = tuple(range(num_modalities))
+    if any(key not in valid_keys for key in vectors):
         input_error = 5
     elif sample.ndim != 2 or not sample.is_floating_point() or batch < 1:
         input_error = 1
@@ -136,31 +138,33 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
         raise ValueError("cross_class_views nécessite le mode class")
     max_batch = max(row[0] for row in rows)
     zeros = torch.zeros_like(sample)
-    packed = torch.stack([vectors.get(index, zeros) for index in range(3)], dim=1)
+    packed = torch.stack([vectors.get(index, zeros) for index in range(num_modalities)], dim=1)
     if max_batch > batch:
         packed = F.pad(packed, (0, 0, 0, 0, 0, max_batch - batch))
     # Même un rang dont les paramètres sont gelés doit participer au backward.
     if torch.is_grad_enabled() and not packed.requires_grad:
         packed = packed.detach().requires_grad_(True)
-    gathered = _GatherWithGrad.apply(packed, group).reshape(world * max_batch, 3, dim)
-    metadata = torch.zeros(batch, 5, dtype=torch.long, device=sample.device)
+    gathered = _GatherWithGrad.apply(packed, group).reshape(world * max_batch, num_modalities, dim)
+    metadata = torch.zeros(batch, num_modalities + 2, dtype=torch.long, device=sample.device)
     for index in vectors:
         metadata[:, index] = 1
-    metadata[:, 3] = class_labels if class_labels is not None else -100
-    metadata[:, 4] = sample_ids if sample_ids is not None else -1
+    label_col, id_col = num_modalities, num_modalities + 1
+    metadata[:, label_col] = class_labels if class_labels is not None else -100
+    metadata[:, id_col] = sample_ids if sample_ids is not None else -1
     if max_batch > batch:
         metadata = F.pad(metadata, (0, 0, 0, max_batch - batch))
     all_metadata = [torch.empty_like(metadata) for _ in range(world)]
     dist.all_gather(all_metadata, metadata, group=group)
     all_metadata = torch.cat(all_metadata, dim=0)
-    has_ids = ((all_metadata[:, 4] >= 0) & (all_metadata[:, :3] != 0).any(-1)).any().item()
+    has_ids = ((all_metadata[:, id_col] >= 0) & (all_metadata[:, :num_modalities] != 0).any(-1)).any().item()
     losses = []
-    for first in range(3):
-        for second in range(first + 1, 3):
+    for first in range(num_modalities):
+        for second in range(first + 1, num_modalities):
             if (has_ids and cross_rank_views) or cross_class_views:
                 loss = _rectangular_alignment(gathered, all_metadata, first, second, temperature, mode,
                                               cross_ids=has_ids and cross_rank_views,
-                                              cross_classes=cross_class_views, has_ids=has_ids)
+                                              cross_classes=cross_class_views, has_ids=has_ids,
+                                              num_modalities=num_modalities)
                 if loss is not None:
                     losses.append(loss)
                 continue
@@ -170,8 +174,8 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
             left, right = gathered[valid, first], gathered[valid, second]
             with torch.autocast(device_type=sample.device.type, enabled=False):
                 similarity = left @ right.T / temperature
-            labels = all_metadata[valid, 3] if mode == "class" else None
-            identities = all_metadata[valid, 4] if has_ids else None
+            labels = all_metadata[valid, label_col] if mode == "class" else None
+            identities = all_metadata[valid, id_col] if has_ids else None
             losses.append(symmetric_contrastive_loss(similarity, labels, sample_ids=identities))
     # Lien explicite au gather même sans paire : tous les rangs participent
     # alors au backward de la collective avec un gradient nul.
