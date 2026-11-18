@@ -26,8 +26,10 @@ from .routing_metrics import summarize_expert_usage
 from .evaluation import evaluate
 from .ema import ModelEMA
 from .gradient_clipping import clip_grad_norm
+from .lora import DoRALinear, inject_dora
 from .modules import RotaryEmbedding
 from .optimizer import build_optimizer
+from .quantize import quantize_model_int8
 
 
 def seed_everything(seed):
@@ -135,9 +137,26 @@ def load_checkpoint(path, device="cpu", *, mmap=True, overrides=None):
                 if not same_length_branch or key in missing_keys:
                     relative = key.removeprefix("forecast_adapter.")
                     state[key] = torch.zeros(expected[relative].shape, dtype=state["embedding.weight"].dtype, device="cpu")
+    trainer_meta = payload.get("trainer") or {}
+    dora_meta = trainer_meta.get("dora")
+    int8_meta = trainer_meta.get("quantized_int8")
+    if dora_meta is not None:
+        inject_dora(model, rank=int(dora_meta["rank"]), alpha=float(dora_meta["alpha"]),
+                    use_dora=bool(dora_meta.get("use_dora", True)))
+    if int8_meta is not None:
+        quantize_model_int8(model, min_numel=int(int8_meta.get("min_numel", 1024)))
     model.load_state_dict(state, strict=True, assign=True)
-    # assign remplace les Parameters ; rétablir explicitement le poids partagé.
+    # assign remplace les Parameters ; rétablir explicitement le poids partagé et requires_grad.
     model.lm_head.weight = model.embedding.weight
+    if dora_meta is not None:
+        for param in model.parameters():
+            param.requires_grad_(False)
+        for module in model.modules():
+            if isinstance(module, DoRALinear):
+                module.lora_a.requires_grad_(True)
+                module.lora_b.requires_grad_(True)
+                if module.magnitude is not None:
+                    module.magnitude.requires_grad_(True)
     for module in model.modules():
         if isinstance(module, RotaryEmbedding):
             module.inv_freq = module.frequencies(device="cpu")
@@ -254,6 +273,39 @@ def train(args, config):
         raise ValueError("ema_decay doit être fini et appartenir à [0, 1[")
     if args.resume and args.ema_decay != previous_ema_decay:
         raise ValueError(f"Reprise : ema_decay diffère du checkpoint ({previous_ema_decay!r})")
+    previous_dora = previous.get("dora")
+    req_dora_rank = getattr(args, "dora_rank", None)
+    req_dora_alpha = getattr(args, "dora_alpha", None)
+    req_dora_mode = getattr(args, "dora_mode", None)
+    if args.resume:
+        dora_spec = previous_dora
+        if req_dora_rank is not None:
+            if dora_spec is None or req_dora_rank != dora_spec["rank"]:
+                raise ValueError(f"Reprise : dora_rank diffère du checkpoint ({dora_spec!r})")
+        if req_dora_alpha is not None:
+            if dora_spec is None or float(req_dora_alpha) != float(dora_spec["alpha"]):
+                raise ValueError(f"Reprise : dora_alpha diffère du checkpoint ({dora_spec!r})")
+        if req_dora_mode is not None:
+            if dora_spec is None or (req_dora_mode == "dora") != bool(dora_spec["use_dora"]):
+                raise ValueError(f"Reprise : dora_mode diffère du checkpoint ({dora_spec!r})")
+    elif req_dora_rank is not None:
+        if any(isinstance(m, DoRALinear) for m in model.modules()):
+            raise ValueError("Le checkpoint source contient déjà un adaptateur DoRA ; fusionner d'abord avec export --merge-dora")
+        if type(req_dora_rank) is not int or req_dora_rank < 1:
+            raise ValueError("dora_rank doit être un entier strictement positif")
+        alpha = float(2 * req_dora_rank) if req_dora_alpha is None else float(req_dora_alpha)
+        if not math.isfinite(alpha) or alpha <= 0:
+            raise ValueError("dora_alpha doit être fini et strictement positif")
+        mode = "dora" if req_dora_mode is None else req_dora_mode
+        if mode not in ("dora", "lora"):
+            raise ValueError("dora_mode doit être dora ou lora")
+        use_dora = mode == "dora"
+        dora_stats = inject_dora(model, rank=req_dora_rank, alpha=alpha, use_dora=use_dora)
+        dora_spec = {"rank": req_dora_rank, "alpha": alpha, "use_dora": use_dora, **dora_stats}
+    else:
+        if req_dora_alpha is not None or req_dora_mode is not None:
+            raise ValueError("dora_alpha et dora_mode nécessitent --dora-rank")
+        dora_spec = None
     maximize = args.monitor == "accuracy"
     previous_normalization = previous.get("loss_normalization", "batch")
     args.loss_normalization = getattr(args, "loss_normalization", None) or previous_normalization
@@ -344,6 +396,8 @@ def train(args, config):
     trainer = {key: getattr(args, key) for key in keys}
     trainer["optimizer"] = args.optimizer
     trainer["ema_decay"] = args.ema_decay
+    if dora_spec is not None:
+        trainer["dora"] = dora_spec
     trainer["mixed_modalities"] = args.mixed_modalities
     trainer["alignment_duplicate_positives"] = args.alignment_duplicate_positives
     trainer["alignment_cross_rank_views"] = args.alignment_cross_rank_views

@@ -16,7 +16,7 @@ class ModelEMA:
         self.shadow: dict[str, torch.Tensor] = {}
         seen_ids: set[int] = set()
         for name, param in model.named_parameters():
-            if not param.is_floating_point() or id(param) in seen_ids:
+            if not param.requires_grad or not param.is_floating_point() or id(param) in seen_ids:
                 continue
             seen_ids.add(id(param))
             self.shadow[name] = param.detach().clone()
