@@ -60,6 +60,12 @@
   "n_latents": 48,
   "resampler_layers": 3,
   "hierarchical_resampler": true,
+  "latent_fsq_levels": [
+    8,
+    5,
+    5,
+    5
+  ],
   "num_classes": 6,
   "forecast_horizon": 12,
   "forecast_context": 32,
@@ -81,6 +87,8 @@
   "alignment_scope": "local",
   "alignment_text_view": "joint",
   "alignment_temperature": 0.1,
+  "alignment_geometry": "hyperbolic",
+  "alignment_curvature": 1.0,
   "text_weight": 1.0,
   "classification_weight": 1.0,
   "forecast_weight": 1.0,
