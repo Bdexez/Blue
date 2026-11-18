@@ -91,9 +91,23 @@ def inspect_config(config):
         "parameters": total,
         "parameters_with_selected_decoder_experts_upper_bound": total - unselected,
         "decoder_layers": config.n_layers,
+        "effective_decoder_layers": config.n_layers * config.latent_reasoning_steps,
+        "residual_streams": config.residual_streams,
         "experts_per_layer": config.n_experts,
         "selected_experts_per_token": config.top_k,
         "shared_experts_per_layer": config.shared_experts,
+        "architecture_features": {
+            "rope_scaling": config.rope_scaling_type,
+            "differential_attention": config.differential_attention,
+            "kv_lora_rank": config.kv_lora_rank,
+            "ssm_state_dim": config.ssm_state_dim,
+            "shared_expert_gate": config.shared_expert_gate,
+            "router_bias_update_rate": config.router_bias_update_rate,
+            "vision_rope_2d": config.vision_rope_2d,
+            "temporal_spectral_mixing": config.temporal_spectral_mixing,
+            "audio_enabled": config.audio_enabled,
+            "latent_reasoning_steps": config.latent_reasoning_steps,
+        },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
         "weights_gib_bf16": round(total * 2 / 2**30, 3),
         "adamw_gib_fp32_excluding_activations": round(total * 16 / 2**30, 3),
@@ -124,7 +138,7 @@ def main(argv=None):
     prepare = commands.add_parser("prepare-series", help="Créer quatre jeux chronologiques sans fenêtres communes")
     prepare.add_argument("--input", required=True, help="JSONL de séries complètes avec series_id et values")
     prepare.add_argument("--output-dir", required=True, help="Nouveau dossier pour train, validation, calibration, test")
-    prepare.add_argument("--preset", choices=("tiny", "small", "workstation", "base", "large", "ultra"), default="tiny")
+    prepare.add_argument("--preset", choices=("tiny", "small", "workstation", "base", "large", "ultra", "hyper", "titan"), default="tiny")
     prepare.add_argument("--config", help="Configuration JSON définissant variables et horizon")
     prepare.add_argument("--history", type=int, required=True)
     prepare.add_argument("--train-end", type=int, required=True, help="Fin exclusive de la période d'entraînement")
@@ -135,7 +149,7 @@ def main(argv=None):
     demo = commands.add_parser("demo", help="Exécuter les trois modalités et les trois sorties")
     training = commands.add_parser("train", help="Entraînement conjoint réel")
     for command in (inspect, demo, training):
-        command.add_argument("--preset", choices=("tiny", "small", "workstation", "base", "large", "ultra"), default="tiny")
+        command.add_argument("--preset", choices=("tiny", "small", "workstation", "base", "large", "ultra", "hyper", "titan"), default="tiny")
         command.add_argument("--config", help="Configuration JSON personnalisée")
     demo.add_argument("--checkpoint")
     demo.add_argument("--device", default="cpu")
@@ -415,7 +429,7 @@ def main(argv=None):
     elif args.command == "inspect":
         if args.all:
             report = {name: inspect_config(BlueConfig.preset(name))
-                      for name in ("tiny", "small", "workstation", "base", "large", "ultra")}
+                      for name in ("tiny", "small", "workstation", "base", "large", "ultra", "hyper", "titan")}
         else:
             report = inspect_config(get_config(args))
         print(json.dumps(report, indent=2))
