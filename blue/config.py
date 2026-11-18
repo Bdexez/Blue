@@ -78,6 +78,9 @@ class BlueConfig:
     text_weight: float = 1.0
     classification_weight: float = 1.0
     forecast_weight: float = 1.0
+    flow_matching_dim: int = 0
+    flow_matching_layers: int = 2
+    flow_matching_weight: float = 0.25
     gradient_checkpointing: bool = False
     top1_gate: str = "normalized"
 
@@ -91,6 +94,7 @@ class BlueConfig:
             "max_audio_len", "audio_layers", "graph_node_features", "graph_edge_features",
             "max_graph_nodes", "graph_layers", "graph_rwse_steps", "n_latents", "resampler_layers",
             "num_classes", "forecast_horizon", "forecast_context", "prediction_steps",
+            "flow_matching_layers",
         )
         for name in integers:
             value = getattr(self, name)
@@ -190,10 +194,12 @@ class BlueConfig:
         if 0.5 not in self.quantiles:
             raise ValueError("Le quantile médian 0.5 est requis")
         for name in ("balance_weight", "router_z_weight", "mtp_weight", "alignment_weight",
-                     "text_weight", "classification_weight", "forecast_weight"):
+                     "text_weight", "classification_weight", "forecast_weight", "flow_matching_weight"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
+        if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
+            raise ValueError("flow_matching_dim doit être un entier positif ou nul")
         if type(self.gradient_checkpointing) is not bool:
             raise ValueError("gradient_checkpointing doit être booléen")
         if type(self.temporal_statistics) is not bool:

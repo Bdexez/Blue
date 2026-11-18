@@ -107,6 +107,7 @@ def inspect_config(config):
             "temporal_spectral_mixing": config.temporal_spectral_mixing,
             "audio_enabled": config.audio_enabled,
             "graph_enabled": config.graph_enabled,
+            "flow_matching_dim": config.flow_matching_dim,
             "latent_reasoning_steps": config.latent_reasoning_steps,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
