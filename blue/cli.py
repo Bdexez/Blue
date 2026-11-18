@@ -106,6 +106,7 @@ def inspect_config(config):
             "vision_rope_2d": config.vision_rope_2d,
             "temporal_spectral_mixing": config.temporal_spectral_mixing,
             "audio_enabled": config.audio_enabled,
+            "graph_enabled": config.graph_enabled,
             "latent_reasoning_steps": config.latent_reasoning_steps,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),

@@ -50,6 +50,12 @@ class BlueConfig:
     audio_patch_size: int = 16
     max_audio_len: int = 1024
     audio_layers: int = 2
+    graph_enabled: bool = False
+    graph_node_features: int = 8
+    graph_edge_features: int = 4
+    max_graph_nodes: int = 64
+    graph_layers: int = 2
+    graph_rwse_steps: int = 8
     n_latents: int = 16
     resampler_layers: int = 2
     num_classes: int = 6
@@ -82,7 +88,8 @@ class BlueConfig:
             "sliding_window", "global_every", "conv_kernel", "image_size",
             "image_channels", "patch_size", "vision_layers", "series_features",
             "max_series_len", "temporal_layers", "audio_channels", "audio_patch_size",
-            "max_audio_len", "audio_layers", "n_latents", "resampler_layers",
+            "max_audio_len", "audio_layers", "graph_node_features", "graph_edge_features",
+            "max_graph_nodes", "graph_layers", "graph_rwse_steps", "n_latents", "resampler_layers",
             "num_classes", "forecast_horizon", "forecast_context", "prediction_steps",
         )
         for name in integers:
@@ -197,6 +204,8 @@ class BlueConfig:
             raise ValueError("temporal_spectral_mixing doit être booléen")
         if type(self.audio_enabled) is not bool:
             raise ValueError("audio_enabled doit être booléen")
+        if type(self.graph_enabled) is not bool:
+            raise ValueError("graph_enabled doit être booléen")
         if type(self.forecast_adapter_relative) is not bool:
             raise ValueError("forecast_adapter_relative doit être booléen")
         if type(self.forecast_adapter_missing_gate) is not bool:
