@@ -40,6 +40,7 @@ class BlueOutput:
     cache: ModelCache | None = None
     auxiliary_text_losses: dict[int, tuple[torch.Tensor, torch.Tensor]] | None = None
     routed_tokens: torch.Tensor | None = None
+    last_hidden: torch.Tensor | None = None
 
 
 def masked_cross_entropy(logits, labels):
@@ -516,11 +517,21 @@ class Blue(nn.Module):
         next_cache = (ModelCache(next_layers, latents, offset + hidden.size(1), mean, scale, baseline, adapter_context)
                       if use_cache else None)
         return BlueOutput(logits, class_logits, forecast, total if supervised else None,
-                             losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum())
+                          losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum(),
+                          last_hidden=hidden[:, -1:] if use_cache else None)
+
+    def _draft_future_tokens(self, last_hidden: torch.Tensor, count: int) -> list[torch.Tensor]:
+        drafts = []
+        for head in self.future_heads[:count]:
+            scores = self.lm_head(head(last_hidden))[:, -1].float()
+            scores[:, [0, 1, 3]] = -torch.inf
+            drafts.append(scores.argmax(-1))
+        return drafts
 
     @torch.inference_mode()
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,
-                 top_p=0.95, eos_id=2, reasoning_steps: int | None = None, **context):
+                 top_p=0.95, eos_id=2, reasoning_steps: int | None = None,
+                 speculative: bool = False, **context):
         if input_ids.ndim != 2 or input_ids.size(1) < 1:
             raise ValueError("Le prompt doit avoir la forme [B, T] avec T > 0")
         if type(max_new_tokens) is not int or max_new_tokens < 0:
@@ -529,6 +540,8 @@ class Blue(nn.Module):
             raise ValueError("temperature doit être >= 0 et top_p dans ]0, 1]")
         if type(top_k) is not int or top_k < 0:
             raise ValueError("top_k doit être un entier positif ou nul")
+        if type(speculative) is not bool:
+            raise ValueError("speculative doit être booléen")
         if input_ids.size(1) + max_new_tokens > self.config.max_seq_len:
             raise ValueError("Prompt + génération dépassent max_seq_len")
         if eos_id is not None and (type(eos_id) is not int or not 0 <= eos_id < self.config.vocab_size
@@ -541,6 +554,12 @@ class Blue(nn.Module):
         was_training = self.training
         self.eval()
         try:
+            if (speculative and temperature == 0 and input_ids.size(0) == 1
+                    and max_new_tokens > 0 and len(self.future_heads) > 0):
+                return self._generate_speculative_greedy(
+                    input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id,
+                    reasoning_steps=reasoning_steps, **context,
+                )
             result = input_ids
             finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=input_ids.device)
             cache = None
@@ -582,3 +601,63 @@ class Blue(nn.Module):
             return result
         finally:
             self.train(was_training)
+
+    def _generate_speculative_greedy(self, input_ids, *, max_new_tokens, eos_id, reasoning_steps, **context):
+        """Décodage auto-spéculatif exact (greedy) exploitant les future_heads."""
+        result = input_ids
+        output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
+        cache = output.cache
+        scores = output.logits[:, -1].float()
+        scores[:, [0, 1, 3]] = -torch.inf
+        next_token = scores.argmax(-1)
+        result = torch.cat((result, next_token[:, None]), -1)
+        generated = 1
+        if eos_id is not None and next_token.item() == eos_id:
+            return result
+        last_hidden = output.last_hidden
+        while generated < max_new_tokens:
+            remaining = max_new_tokens - generated
+            n_draft = min(len(self.future_heads), remaining - 1)
+            if n_draft == 0:
+                step_out = self(next_token[:, None], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+                step_scores = step_out.logits[:, -1].float()
+                step_scores[:, [0, 1, 3]] = -torch.inf
+                next_token = step_scores.argmax(-1)
+                result = torch.cat((result, next_token[:, None]), -1)
+                break
+            drafts = self._draft_future_tokens(last_hidden, n_draft)
+            candidate = torch.stack([next_token, *drafts], dim=1)  # [1, 1 + n_draft]
+            verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+            v_scores = verify_out.logits[0].float()  # [1 + n_draft, V]
+            v_scores[:, [0, 1, 3]] = -torch.inf
+            verified = v_scores.argmax(-1)  # verified[j] is true token after candidate[0..j]
+            accepted = 0
+            for j in range(n_draft):
+                if verified[j].item() == drafts[j].item():
+                    accepted += 1
+                else:
+                    break
+            # Les tokens exacts produits sont verified[0..accepted].
+            emitted = verified[:accepted + 1]
+            stop_now = False
+            if eos_id is not None:
+                eos_positions = (emitted == eos_id).nonzero(as_tuple=True)[0]
+                if eos_positions.numel():
+                    emitted = emitted[:eos_positions[0].item() + 1]
+                    stop_now = True
+            result = torch.cat((result, emitted[None, :]), -1)
+            generated += emitted.numel()
+            if stop_now or generated >= max_new_tokens:
+                break
+            next_token = emitted[-1:]
+            if accepted == n_draft:
+                # Tous les brouillons acceptés : le cache de verify_out est déjà synchronisé !
+                cache = verify_out.cache
+                last_hidden = verify_out.last_hidden
+            else:
+                # Resynchroniser exactement le cache sur les seuls tokens validés.
+                sync_tokens = candidate[:, :accepted + 1]
+                sync_out = self(sync_tokens, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+                cache = sync_out.cache
+                last_hidden = sync_out.last_hidden
+        return result
