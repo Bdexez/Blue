@@ -2,7 +2,7 @@
 
 Un réseau PyTorch qui réunit les quatre usages demandés : modèle multimodal, génération de texte, vision et prévision de séries temporelles. Les trois modalités partagent un décodeur à mélange d'experts et peuvent être utilisées seules, par paires ou ensemble.
 
-La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. BLUE fournit une architecture réellement entraînable, des configurations allant de **739 506 à 1 668 883 660 115 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
+La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. BLUE fournit une architecture réellement entraînable, des configurations allant de **739 506 à 1 668 883 733 848 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
 
 Le checkpoint livré apprend sur des signaux synthétiques associés à des images de motifs et à de courtes descriptions. Il sert à démontrer l'apprentissage conjoint. Ce n'est pas un assistant préentraîné ni un modèle déjà performant sur des photos ou des textes quelconques. La complexité seule ne garantit pas la qualité.
 
@@ -81,7 +81,7 @@ Chaque bloc du décodeur combine :
 - **Fusion multimodale hiérarchique 6 modalités** : attention croisée à porte vers les latents (à 1 niveau ou **hiérarchique à 2 niveaux** via `hierarchical_resampler`) des images, séries temporelles, **audio** (`audio_enabled`), **graphes attribués** (`graph_enabled`, RWSE + Graph Transformer double piste) et **nuages de points 3D SE(3)-invariants** (`pointcloud_enabled`, 63 combinaisons, 15 paires contrastives).
 - **Experts SwiGLU nouvelle génération + Causal Mixture-of-Depths** : routage top-k par token, routage causal de profondeur (`depth_routing_capacity`) sautant le MoE sur les tokens simples, experts partagés à porte sigmoïde (`shared_expert_gate`), équilibrage sans perte auxiliaire par biais dynamique centré (`router_bias_update_rate`).
 - **Manifold-Constrained Hyper-Connections (mHC)** optionnelles (`residual_streams > 1`) : flux résiduels parallèles couplés sur le polytope de Birkhoff (Sinkhorn-Knopp logarithmique) garantissant une norme spectrale $\le 1$.
-- **Raisonnement latent récursif**, **mémoire épisodique**, **Flow Matching** & **ingénierie avancée** : profondeur récursive (`latent_reasoning_steps`) à calcul dynamique en inférence (`reasoning_steps`), **banc de mémoire épisodique modulé par la surprise** (`memory_slots`), **tête générative continue Conditional Flow Matching** AdaLN-Zero avec intégrateurs ODE Euler/Heun (`flow_matching_dim`), **RoPE axial 2D** en vision (`vision_rope_2d`), **mélange spectral rFFT** sur séries temporelles (`temporal_spectral_mixing`), **décodage auto-spéculatif exact** via `future_heads` (`speculative=True`), **EMA des poids** (`--ema-decay` / `export --use-ema`) et optimiseur hybride **Muon (Newton-Schulz) + AdamW** (`--optimizer muon`).
+- **Raisonnement latent récursif**, **mémoire épisodique**, **Flow Matching**, **géométrie hyperbolique** & **ingénierie avancée** : profondeur récursive (`latent_reasoning_steps`) à calcul dynamique en inférence (`reasoning_steps`), **banc de mémoire épisodique modulé par la surprise** (`memory_slots`), **goulot latent discret FSQ** sans codebook (`latent_fsq_levels`), **alignement contrastif hyperbolique sur la boule de Poincaré** (`alignment_geometry="hyperbolic"`), **tête générative continue Conditional Flow Matching** AdaLN-Zero avec intégrateurs ODE Euler/Heun (`flow_matching_dim`), **RoPE axial 2D** en vision (`vision_rope_2d`), **mélange spectral rFFT** sur séries temporelles (`temporal_spectral_mixing`), **décodage auto-spéculatif exact** via `future_heads` (`--speculative`), **EMA des poids** (`--ema-decay` / `export --use-ema`), **DoRA/LoRA** avec fusion exacte (`blue.lora`), **quantification INT8 par canal** (`blue.quantize`), diagnostic **`blue profile`** et optimiseur hybride **Muon (Newton-Schulz) + AdamW** (`--optimizer muon`).
 
 Une [normalisation RMS stable optionnelle](NUMERICAL_PRECISION.md) évite le débordement des carrés sur les grandes activations finies ; le chemin historique reste le défaut.
 
@@ -103,8 +103,8 @@ Les comptes dédupliquent l'embedding et la tête de texte, qui partagent leurs 
 | `base` | 1 534 337 266 | 16 | 16 / 2 | 2,858 Gio |
 | `large` | 39 285 370 354 | 32 | 32 / 2 | 73,175 Gio |
 | `ultra` | 588 945 015 026 | 64 | 64 / 4 | 1 096,996 Gio |
-| `hyper` | 1 704 047 639 | 16 (32 effectives) | 16 / 2 | 3,174 Gio |
-| `titan` | 1 668 883 660 115 | 80 (160 effectives) | 64 / 4 | 3 108,538 Gio |
+| `hyper` | 1 704 055 323 | 16 (32 effectives) | 16 / 2 | 3,174 Gio |
+| `titan` | 1 668 883 733 848 | 80 (160 effectives) | 64 / 4 | 3 108,538 Gio |
 
 Les experts partagés s'ajoutent aux experts routés : un pour la plupart des presets, deux pour `ultra` et `titan`. Les presets `hyper` et `titan` activent l'ensemble de l'architecture hybride (**6 modalités** : texte, vision 2D-RoPE, séries spectrales, audio, graphes, nuages 3D SE(3)-invariants ; resampler hiérarchique, mHC à 4 flux, Gated DeltaNet, MLA, Differential Attention, Attention Sinks, Causal Mixture-of-Depths, YaRN RoPE, mémoire épisodique, Flow Matching continu et raisonnement latent récursif). Le nombre de paramètres sélectionnés par token n'est ni un compte de FLOPS ni une mesure du pic mémoire. Tous les poids restent en mémoire dans cette implémentation.
 
