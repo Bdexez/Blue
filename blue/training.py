@@ -24,6 +24,7 @@ from .modality_batch_sampler import ModalityBatchSampler
 from .observed_objective import observed_objective, target_counts
 from .routing_metrics import summarize_expert_usage
 from .evaluation import evaluate
+from .ema import ModelEMA
 from .gradient_clipping import clip_grad_norm
 from .modules import RotaryEmbedding
 from .optimizer import build_optimizer
@@ -51,7 +52,7 @@ def collect_rng_states(device, world, rank):
     return states
 
 
-def save_checkpoint(path, model, *, optimizer=None, scaler=None, step=0, trainer=None, rank_rng=None):
+def save_checkpoint(path, model, *, optimizer=None, scaler=None, step=0, trainer=None, rank_rng=None, ema=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -66,6 +67,8 @@ def save_checkpoint(path, model, *, optimizer=None, scaler=None, step=0, trainer
         payload["scaler"] = scaler.state_dict()
     if rank_rng is not None:
         payload["rank_rng"] = rank_rng
+    if ema is not None:
+        payload["ema"] = ema.state_dict()
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w+b", dir=path.parent, prefix=path.name + ".",
@@ -244,6 +247,13 @@ def train(args, config):
         raise ValueError("optimizer doit être adamw ou muon")
     if args.resume and args.optimizer != previous_optimizer:
         raise ValueError(f"Reprise : optimizer diffère du checkpoint ({previous_optimizer!r})")
+    previous_ema_decay = previous.get("ema_decay", 0.0)
+    requested_ema_decay = getattr(args, "ema_decay", None)
+    args.ema_decay = previous_ema_decay if requested_ema_decay is None else requested_ema_decay
+    if not math.isfinite(args.ema_decay) or not 0.0 <= args.ema_decay < 1.0:
+        raise ValueError("ema_decay doit être fini et appartenir à [0, 1[")
+    if args.resume and args.ema_decay != previous_ema_decay:
+        raise ValueError(f"Reprise : ema_decay diffère du checkpoint ({previous_ema_decay!r})")
     maximize = args.monitor == "accuracy"
     previous_normalization = previous.get("loss_normalization", "batch")
     args.loss_normalization = getattr(args, "loss_normalization", None) or previous_normalization
@@ -333,6 +343,7 @@ def train(args, config):
             "amp", "data", "modality_dropout", "modality_policy", "shuffle", "val_data", "eval_every", "patience", "min_delta", "monitor", "loss_normalization")
     trainer = {key: getattr(args, key) for key in keys}
     trainer["optimizer"] = args.optimizer
+    trainer["ema_decay"] = args.ema_decay
     trainer["mixed_modalities"] = args.mixed_modalities
     trainer["alignment_duplicate_positives"] = args.alignment_duplicate_positives
     trainer["alignment_cross_rank_views"] = args.alignment_cross_rank_views
@@ -365,9 +376,12 @@ def train(args, config):
     if end_step < start or end_step < 1:
         raise ValueError("stop-after doit être >= à l'étape reprise et > 0")
     optimizer = build_optimizer(model, name=args.optimizer, lr=args.lr, weight_decay=args.weight_decay)
+    ema = ModelEMA(model, args.ema_decay) if args.ema_decay > 0 else None
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp == "fp16")
     if "optimizer" in payload:
         optimizer.load_state_dict(payload["optimizer"])
+    if ema is not None and "ema" in payload:
+        ema.load_state_dict(payload["ema"])
     if "scaler" in payload:
         scaler.load_state_dict(payload["scaler"])
     if args.resume:
@@ -538,6 +552,8 @@ def train(args, config):
             expert_totals += batch_usage.detach().double() * batch_routed
             expert_tokens += batch_routed
         norm, skipped = step_optimizer(model, optimizer, scaler, args.grad_clip)
+        if ema is not None and not skipped:
+            ema.update(model)
         last_step = step + 1
         routing = torch.cat((expert_totals.flatten(), expert_tokens.reshape(1).double()))
         if world > 1:
@@ -566,7 +582,9 @@ def train(args, config):
         if validation_event:
             improved = False
             if rank == 0:
-                report = evaluate(model, val, args.amp)
+                eval_context = ema.apply_to(model) if ema is not None else nullcontext()
+                with eval_context:
+                    report = evaluate(model, val, args.amp)
                 observed = sum(report.get(name, 0) for name in
                                ("text_tokens", "multi_token_targets", "classified_examples", "forecast_observations"))
                 if not observed:
@@ -599,17 +617,19 @@ def train(args, config):
                 rank_rng = collect_rng_states(device, world, rank)
                 if rank == 0:
                     save_checkpoint(output_dir / "best.pt", model, optimizer=optimizer, scaler=scaler,
-                                    step=last_step, trainer=trainer, rank_rng=rank_rng)
+                                    step=last_step, trainer=trainer, rank_rng=rank_rng, ema=ema)
         if last_step % args.save_every == 0 or last_step == end_step or stopped_early:
             rank_rng = collect_rng_states(device, world, rank)
             if rank == 0:
                 save_checkpoint(output_dir / "latest.pt", model, optimizer=optimizer, scaler=scaler,
-                                step=last_step, trainer=trainer, rank_rng=rank_rng)
+                                step=last_step, trainer=trainer, rank_rng=rank_rng, ema=ema)
         if stopped_early:
             break
     if rank == 0:
         if last_evaluated != last_step:
-            report = evaluate(model, val, args.amp)
+            eval_context = ema.apply_to(model) if ema is not None else nullcontext()
+            with eval_context:
+                report = evaluate(model, val, args.amp)
         report = dict(report, step=last_step, best_step=state["best_step"], stopped_early=stopped_early,
                       monitor=args.monitor, best_monitor_value=state["best_loss"] if state["best_step"] is not None else None)
         (output_dir / "evaluation.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")

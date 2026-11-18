@@ -166,6 +166,8 @@ def main(argv=None):
     training.add_argument("--lr", type=float, default=3e-4)
     training.add_argument("--optimizer", choices=("adamw", "muon"),
                           help="Optimiseur : adamw (défaut) ou muon (Newton-Schulz + AdamW) ; restauré à la reprise")
+    training.add_argument("--ema-decay", type=float,
+                          help="Décroissance EMA des poids dans [0, 1[ (0 désactive) ; restaurée à la reprise")
     training.add_argument("--weight-decay", type=float, default=0.01)
     training.add_argument("--grad-clip", type=float, default=1.0)
     training.add_argument("--warmup", type=int, default=10)
@@ -286,6 +288,8 @@ def main(argv=None):
     export.add_argument("--output", required=True)
     export.add_argument("--stable-rms-norm", action="store_true",
                         help="Activer la normalisation RMS stable dans un nouveau checkpoint d'inférence")
+    export.add_argument("--use-ema", action="store_true",
+                        help="Exporter les poids EMA enregistrés dans le checkpoint source")
     evaluation = commands.add_parser("evaluate", help="Évaluer un checkpoint sur un fichier JSONL indépendant")
     evaluation.add_argument("--checkpoint", required=True)
     evaluation.add_argument("--data", required=True)
@@ -681,6 +685,19 @@ def main(argv=None):
                                          overrides={"stable_rms_norm": True} if args.stable_rms_norm else None)
         step = payload["step"]
         trainer = dict(payload.get("trainer", {}), inference_only=True)
+        if args.use_ema:
+            ema_state = payload.get("ema")
+            if ema_state is None:
+                raise ValueError("Le checkpoint source ne contient pas d'état EMA")
+            from .ema import ModelEMA
+            ema = ModelEMA(model, ema_state["decay"])
+            ema.load_state_dict(ema_state)
+            with torch.no_grad():
+                params = dict(model.named_parameters())
+                for name, shadow in ema.shadow.items():
+                    params[name].copy_(shadow.to(device=params[name].device, dtype=params[name].dtype))
+                model.lm_head.weight = model.embedding.weight
+            trainer["exported_ema"] = True
         if args.stable_rms_norm:
             if file_sha256(args.checkpoint) != parent_sha:
                 raise ValueError("Le checkpoint source a changé pendant l'export")
