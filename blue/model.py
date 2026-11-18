@@ -10,6 +10,7 @@ from torch.utils.checkpoint import checkpoint
 from .audio import AudioEncoder
 from .config import BlueConfig
 from .distributed_alignment import distributed_alignment_loss
+from .flow_matching import ConditionalFlowHead
 from .graph import GraphEncoder
 from .losses import quantile_pinball_loss, symmetric_contrastive_loss
 from .forecast_adapter import ForecastAdapter, ForecastAdapterContext
@@ -91,6 +92,7 @@ class Blue(nn.Module):
         self.fusion = nn.Sequential(nn.Linear(2 * d, d), nn.SiLU(), RMSNorm(d))
         self.classifier = nn.Linear(d, config.num_classes)
         self.forecaster = QuantileForecastHead(config)
+        self.flow_head = ConditionalFlowHead(config) if config.flow_matching_dim > 0 else None
         self.alignment = nn.ModuleList([nn.Linear(d, d, bias=False) for _ in range(3)])
         self.audio_alignment = nn.Linear(d, d, bias=False) if config.audio_enabled else None
         self.graph_alignment = nn.Linear(d, d, bias=False) if config.graph_enabled else None
@@ -122,6 +124,8 @@ class Blue(nn.Module):
             self.audio.spectral.reset_spectral_parameters()
         if self.reasoning_gate is not None:
             nn.init.constant_(self.reasoning_gate, -1.0)
+        if self.flow_head is not None:
+            self.flow_head.reset_adaln_parameters()
         for block in self.blocks:
             if block.ssm is not None:
                 block.ssm.reset_gate_biases()
@@ -393,7 +397,7 @@ class Blue(nn.Module):
         self, input_ids=None, *, images=None, series=None, audio=None,
         graph_nodes=None, graph_edges=None, attention_mask=None,
         series_mask=None, audio_mask=None, graph_mask=None,
-        labels=None, class_labels=None, forecast_targets=None, alignment_ids=None,
+        labels=None, class_labels=None, forecast_targets=None, flow_targets=None, alignment_ids=None,
         alignment_cross_rank_views=False, alignment_cross_class_views=False,
         cache: ModelCache | None = None, use_cache=False, reasoning_steps: int | None = None,
     ) -> BlueOutput:
@@ -412,9 +416,16 @@ class Blue(nn.Module):
             raise ValueError("use_cache nécessite eval() et des tokens texte")
         if cache is not None and not use_cache:
             raise ValueError("Passer use_cache=True pour continuer un cache")
-        supervised = any(t is not None for t in (labels, class_labels, forecast_targets))
+        supervised = any(t is not None for t in (labels, class_labels, forecast_targets, flow_targets))
         if use_cache and supervised:
             raise ValueError("Le cache ne doit pas être utilisé pendant le calcul des pertes")
+        if flow_targets is not None:
+            if self.flow_head is None:
+                raise ValueError("flow_targets nécessite flow_matching_dim > 0 dans la configuration")
+            if flow_targets.shape != (batch, self.config.flow_matching_dim) or not flow_targets.is_floating_point():
+                raise ValueError("flow_targets doit être flottant [B, flow_matching_dim]")
+            if flow_targets.device != self.embedding.weight.device:
+                raise ValueError("Les cibles doivent être sur le même device que le modèle")
         if labels is not None and (input_ids is None or labels.shape != input_ids.shape):
             raise ValueError("labels doit partager la forme [B, T] de input_ids")
         if class_labels is not None and (class_labels.shape != (batch,) or class_labels.dtype != torch.long):
@@ -540,6 +551,9 @@ class Blue(nn.Module):
         if forecast_targets is not None:
             losses["forecast"] = quantile_pinball_loss(forecast, forecast_targets, c.quantiles)
             total = total + c.forecast_weight * losses["forecast"]
+        if flow_targets is not None:
+            losses["flow"] = self.flow_head.loss(flow_targets, forecast_pooled)
+            total = total + c.flow_matching_weight * losses["flow"]
         # En entraînement distribué, toutes les paires effectivement présentes
         # peuvent partager leurs exemples négatifs entre rangs.
         if (c.alignment_text_view == "isolated" and input_ids is not None
@@ -576,6 +590,29 @@ class Blue(nn.Module):
         return BlueOutput(logits, class_logits, forecast, total if supervised else None,
                           losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum(),
                           last_hidden=hidden[:, -1:] if use_cache else None)
+
+    @torch.inference_mode()
+    def sample_flow(self, *, steps: int = 20, solver: str = "heun", generator: torch.Generator | None = None,
+                    initial_noise: torch.Tensor | None = None, reasoning_steps: int | None = None,
+                    **modalities) -> torch.Tensor:
+        """Échantillonner des sorties continues conditionnées par les modalités fournies."""
+        if self.flow_head is None:
+            raise ValueError("sample_flow nécessite flow_matching_dim > 0 dans la configuration")
+        was_training = self.training
+        self.eval()
+        try:
+            captured = {}
+            hook = self.forecaster.register_forward_pre_hook(
+                lambda module, args: captured.update(condition=args[0])
+            )
+            try:
+                self(reasoning_steps=reasoning_steps, **modalities)
+            finally:
+                hook.remove()
+            return self.flow_head.sample(captured["condition"], steps=steps, solver=solver,
+                                         generator=generator, initial_noise=initial_noise)
+        finally:
+            self.train(was_training)
 
     def _draft_future_tokens(self, last_hidden: torch.Tensor, count: int) -> list[torch.Tensor]:
         drafts = []
