@@ -27,6 +27,7 @@ class BlueConfig:
     rope_original_max_seq_len: int | None = None
     differential_attention: bool = False
     kv_lora_rank: int = 0
+    attention_sinks: int = 0
     ssm_state_dim: int = 0
     ssm_heads: int | None = None
     residual_streams: int = 1
@@ -117,6 +118,8 @@ class BlueConfig:
                 raise ValueError("kv_lora_rank nécessite d_model / n_heads divisible par 4")
             if self.differential_attention and head_dim % 8:
                 raise ValueError("kv_lora_rank + differential_attention nécessite d_model / n_heads divisible par 8")
+        if type(self.attention_sinks) is not int or self.attention_sinks < 0:
+            raise ValueError("attention_sinks doit être un entier positif ou nul")
         if type(self.ssm_state_dim) is not int or self.ssm_state_dim < 0:
             raise ValueError("ssm_state_dim doit être un entier positif ou nul")
         if self.ssm_heads is not None:

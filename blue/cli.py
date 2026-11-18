@@ -100,6 +100,7 @@ def inspect_config(config):
             "rope_scaling": config.rope_scaling_type,
             "differential_attention": config.differential_attention,
             "kv_lora_rank": config.kv_lora_rank,
+            "attention_sinks": config.attention_sinks,
             "ssm_state_dim": config.ssm_state_dim,
             "shared_expert_gate": config.shared_expert_gate,
             "router_bias_update_rate": config.router_bias_update_rate,
@@ -229,6 +230,9 @@ def main(argv=None):
     generate.add_argument("--temperature", type=float, default=0.8)
     generate.add_argument("--top-k", type=int, default=40)
     generate.add_argument("--top-p", type=float, default=0.95)
+    generate.add_argument("--reasoning-steps", type=int, help="Nombre d'itérations latentes à l'inférence")
+    generate.add_argument("--speculative", action="store_true",
+                          help="Activer le décodage auto-spéculatif greedy via future_heads")
     generate.add_argument("--device", default="cpu")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
@@ -480,7 +484,8 @@ def main(argv=None):
         model, _ = load_checkpoint(args.checkpoint, args.device)
         tokens = torch.tensor([ByteTokenizer().encode(args.prompt, eos=False)], device=args.device)
         generated = model.generate(tokens, max_new_tokens=args.max_new_tokens,
-                                   temperature=args.temperature, top_k=args.top_k, top_p=args.top_p)
+                                   temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+                                   reasoning_steps=args.reasoning_steps, speculative=args.speculative)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
         if args.max_new_tokens < 0:
