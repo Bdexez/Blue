@@ -12,6 +12,7 @@ from .config import BlueConfig
 from .distributed_alignment import distributed_alignment_loss
 from .flow_matching import ConditionalFlowHead
 from .graph import GraphEncoder
+from .hyperbolic import poincare_exp0, poincare_pairwise_distance
 from .losses import quantile_pinball_loss, symmetric_contrastive_loss
 from .memory import EpisodicMemoryBank
 from .forecast_adapter import ForecastAdapter, ForecastAdapterContext
@@ -316,7 +317,10 @@ class Blue(nn.Module):
             proj = self.pointcloud_alignment
         else:
             proj = self.alignment[index]
-        return F.normalize(proj(value).float(), dim=-1)
+        projected = proj(value).float()
+        if self.config.alignment_geometry == "hyperbolic":
+            return poincare_exp0(projected, self.config.alignment_curvature)
+        return F.normalize(projected, dim=-1)
 
     def _default_graph_edges(self, graph_nodes: torch.Tensor) -> torch.Tensor:
         b, n, _ = graph_nodes.shape
@@ -643,7 +647,9 @@ class Blue(nn.Module):
                                                               text_view=c.alignment_text_view, sample_ids=alignment_ids,
                                                               cross_rank_views=alignment_cross_rank_views,
                                                               cross_class_views=alignment_cross_class_views,
-                                                              num_modalities=n_mod)
+                                                              num_modalities=n_mod,
+                                                              geometry=c.alignment_geometry,
+                                                              curvature=c.alignment_curvature)
             total = total + c.alignment_weight * losses["alignment"]
         elif len(align_vectors) > 1 and batch > 1:
             vectors = [self._project_alignment(i, v) for i, v in align_vectors]
@@ -651,7 +657,11 @@ class Blue(nn.Module):
             for i in range(len(vectors)):
                 for j in range(i + 1, len(vectors)):
                     with torch.autocast(device_type=x.device.type, enabled=False):
-                        similarity = vectors[i] @ vectors[j].T / c.alignment_temperature
+                        if c.alignment_geometry == "hyperbolic":
+                            similarity = -poincare_pairwise_distance(vectors[i], vectors[j],
+                                                                     c.alignment_curvature) / c.alignment_temperature
+                        else:
+                            similarity = vectors[i] @ vectors[j].T / c.alignment_temperature
                     contrastive.append(symmetric_contrastive_loss(
                         similarity, class_labels if c.alignment_mode == "class" else None, sample_ids=alignment_ids,
                     ))

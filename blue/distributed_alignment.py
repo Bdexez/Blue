@@ -7,6 +7,7 @@ import torch
 from torch import distributed as dist
 from torch.nn import functional as F
 
+from .hyperbolic import poincare_pairwise_distance
 from .losses import symmetric_contrastive_loss
 
 
@@ -31,7 +32,8 @@ class _GatherWithGrad(torch.autograd.Function):
 
 
 def _rectangular_alignment(gathered, metadata, first, second, temperature, mode, *,
-                           cross_ids, cross_classes, has_ids, num_modalities=3):
+                           cross_ids, cross_classes, has_ids, num_modalities=3,
+                           geometry="euclidean", curvature=1.0):
     """Aligner les vues ayant un partenaire selon les règles activées."""
     left_rows = (metadata[:, first] != 0).nonzero(as_tuple=True)[0]
     right_rows = (metadata[:, second] != 0).nonzero(as_tuple=True)[0]
@@ -61,7 +63,10 @@ def _rectangular_alignment(gathered, metadata, first, second, temperature, mode,
                      & (left_labels[:, None] != -100) & (right_labels[None, :] != -100))
     left, right = gathered[left_rows, first], gathered[right_rows, second]
     with torch.autocast(device_type=left.device.type, enabled=False):
-        scores = (left @ right.T / temperature).float()
+        if geometry == "hyperbolic":
+            scores = (-poincare_pairwise_distance(left, right, curvature) / temperature).float()
+        else:
+            scores = (left @ right.T / temperature).float()
         forward_weights = positive.float() / positive.sum(-1, keepdim=True)
         backward_weights = positive.T.float() / positive.T.sum(-1, keepdim=True)
         forward = -(forward_weights * F.log_softmax(scores, dim=-1)).sum(-1).mean()
@@ -70,7 +75,8 @@ def _rectangular_alignment(gathered, metadata, first, second, temperature, mode,
 
 
 def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, group, text_view="joint", sample_ids=None,
-                               cross_rank_views=False, cross_class_views=False, num_modalities=3):
+                               cross_rank_views=False, cross_class_views=False, num_modalities=3,
+                               geometry="euclidean", curvature=1.0):
     """Calculer les paires globales tout en conservant les gradients locaux.
 
     Les vecteurs, déjà normalisés, sont indexés par modalité (0..num_modalities-1).
@@ -108,9 +114,15 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
     world = dist.get_world_size(group)
     cross_rank_code = int(cross_rank_views) if type(cross_rank_views) is bool else -1
     cross_class_code = int(cross_class_views) if type(cross_class_views) is bool else -1
+    geom_code = {"euclidean": 0, "hyperbolic": 1}.get(geometry, -1) if isinstance(geometry, str) else -1
+    try:
+        valid_curvature = bool(math.isfinite(curvature) and curvature > 0)
+        curvature_bits = struct.unpack("!q", struct.pack("!d", float(curvature)))[0] if valid_curvature else 0
+    except (TypeError, ValueError, OverflowError, RuntimeError):
+        valid_curvature, curvature_bits = False, 0
     specification = torch.tensor([batch, dim, dtype_code, mode_code,
                                   view_code, temperature_bits, cross_rank_code,
-                                  cross_class_code, input_error],
+                                  cross_class_code, geom_code, curvature_bits, input_error],
                                  dtype=torch.long, device=sample.device)
     specifications = [torch.empty_like(specification) for _ in range(world)]
     dist.all_gather(specifications, specification, group=group)
@@ -128,8 +140,8 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
         raise ValueError("Dimensions, dtype ou paramètres d'alignement différents selon les rangs")
     if not dtype_code:
         raise ValueError("Dtype de représentation non pris en charge")
-    if mode_code < 0 or view_code < 0 or not valid_temperature:
-        raise ValueError("Mode, vue textuelle ou température d'alignement invalide")
+    if mode_code < 0 or view_code < 0 or not valid_temperature or geom_code < 0 or not valid_curvature:
+        raise ValueError("Mode, vue textuelle, géométrie ou température d'alignement invalide")
     if cross_rank_code < 0:
         raise ValueError("cross_rank_views doit être booléen")
     if cross_class_code < 0:
@@ -164,7 +176,8 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
                 loss = _rectangular_alignment(gathered, all_metadata, first, second, temperature, mode,
                                               cross_ids=has_ids and cross_rank_views,
                                               cross_classes=cross_class_views, has_ids=has_ids,
-                                              num_modalities=num_modalities)
+                                              num_modalities=num_modalities,
+                                              geometry=geometry, curvature=curvature)
                 if loss is not None:
                     losses.append(loss)
                 continue
@@ -173,7 +186,10 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
                 continue
             left, right = gathered[valid, first], gathered[valid, second]
             with torch.autocast(device_type=sample.device.type, enabled=False):
-                similarity = left @ right.T / temperature
+                if geometry == "hyperbolic":
+                    similarity = -poincare_pairwise_distance(left, right, curvature) / temperature
+                else:
+                    similarity = left @ right.T / temperature
             labels = all_metadata[valid, label_col] if mode == "class" else None
             identities = all_metadata[valid, id_col] if has_ids else None
             losses.append(symmetric_contrastive_loss(similarity, labels, sample_ids=identities))
