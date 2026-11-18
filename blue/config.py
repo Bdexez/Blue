@@ -60,6 +60,10 @@ class BlueConfig:
     max_graph_nodes: int = 64
     graph_layers: int = 2
     graph_rwse_steps: int = 8
+    pointcloud_enabled: bool = False
+    pointcloud_features: int = 0
+    max_pointcloud_points: int = 128
+    pointcloud_layers: int = 2
     n_latents: int = 16
     resampler_layers: int = 2
     num_classes: int = 6
@@ -96,7 +100,9 @@ class BlueConfig:
             "image_channels", "patch_size", "vision_layers", "series_features",
             "max_series_len", "temporal_layers", "audio_channels", "audio_patch_size",
             "max_audio_len", "audio_layers", "graph_node_features", "graph_edge_features",
-            "max_graph_nodes", "graph_layers", "graph_rwse_steps", "n_latents", "resampler_layers",
+            "max_graph_nodes", "graph_layers", "graph_rwse_steps",
+            "max_pointcloud_points", "pointcloud_layers",
+            "n_latents", "resampler_layers",
             "num_classes", "forecast_horizon", "forecast_context", "prediction_steps",
             "flow_matching_layers",
         )
@@ -224,6 +230,10 @@ class BlueConfig:
             raise ValueError("audio_enabled doit être booléen")
         if type(self.graph_enabled) is not bool:
             raise ValueError("graph_enabled doit être booléen")
+        if type(self.pointcloud_enabled) is not bool:
+            raise ValueError("pointcloud_enabled doit être booléen")
+        if type(self.pointcloud_features) is not int or self.pointcloud_features < 0:
+            raise ValueError("pointcloud_features doit être un entier positif ou nul")
         if type(self.forecast_adapter_relative) is not bool:
             raise ValueError("forecast_adapter_relative doit être booléen")
         if type(self.forecast_adapter_missing_gate) is not bool:

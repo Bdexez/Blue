@@ -109,6 +109,7 @@ def inspect_config(config):
             "temporal_spectral_mixing": config.temporal_spectral_mixing,
             "audio_enabled": config.audio_enabled,
             "graph_enabled": config.graph_enabled,
+            "pointcloud_enabled": config.pointcloud_enabled,
             "flow_matching_dim": config.flow_matching_dim,
             "memory_slots": config.memory_slots,
             "latent_reasoning_steps": config.latent_reasoning_steps,
