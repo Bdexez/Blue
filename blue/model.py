@@ -133,6 +133,7 @@ class Blue(nn.Module):
         if self.episodic_memory is not None:
             self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
+            block.attn.reset_sink_parameters()
             if block.ssm is not None:
                 block.ssm.reset_gate_biases()
             for hc in (block.hc_attn, block.hc_cross, block.hc_moe):
