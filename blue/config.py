@@ -35,6 +35,9 @@ class BlueConfig:
     ssm_heads: int | None = None
     residual_streams: int = 1
     latent_reasoning_steps: int = 1
+    latent_reasoning_adaptive: bool = False
+    ponder_prior: float = 0.5
+    ponder_kl_weight: float = 0.01
     memory_slots: int = 0
     dropout: float = 0.0
     norm_eps: float = 1e-6
@@ -150,6 +153,14 @@ class BlueConfig:
             raise ValueError("residual_streams doit être un entier strictement positif")
         if type(self.latent_reasoning_steps) is not int or self.latent_reasoning_steps < 1:
             raise ValueError("latent_reasoning_steps doit être un entier strictement positif")
+        if type(self.latent_reasoning_adaptive) is not bool:
+            raise ValueError("latent_reasoning_adaptive doit être booléen")
+        if self.latent_reasoning_adaptive and self.latent_reasoning_steps < 2:
+            raise ValueError("latent_reasoning_adaptive nécessite latent_reasoning_steps >= 2")
+        if not math.isfinite(self.ponder_prior) or not 0.0 < self.ponder_prior < 1.0:
+            raise ValueError("ponder_prior doit être fini et strictement compris entre 0 et 1")
+        if not math.isfinite(self.ponder_kl_weight) or self.ponder_kl_weight < 0:
+            raise ValueError("ponder_kl_weight doit être fini et positif ou nul")
         if type(self.memory_slots) is not int or self.memory_slots < 0:
             raise ValueError("memory_slots doit être un entier positif ou nul")
         if self.d_model % 4 or self.n_heads % self.n_kv_heads:
