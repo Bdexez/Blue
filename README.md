@@ -2,7 +2,7 @@
 
 Un réseau PyTorch qui réunit les quatre usages demandés : modèle multimodal, génération de texte, vision et prévision de séries temporelles. Les trois modalités partagent un décodeur à mélange d'experts et peuvent être utilisées seules, par paires ou ensemble.
 
-La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. BLUE fournit une architecture réellement entraînable, des configurations allant de **739 506 à 1 664 561 024 003 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
+La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. BLUE fournit une architecture réellement entraînable, des configurations allant de **739 506 à 1 668 883 660 115 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
 
 Le checkpoint livré apprend sur des signaux synthétiques associés à des images de motifs et à de courtes descriptions. Il sert à démontrer l'apprentissage conjoint. Ce n'est pas un assistant préentraîné ni un modèle déjà performant sur des photos ou des textes quelconques. La complexité seule ne garantit pas la qualité.
 
@@ -75,11 +75,11 @@ flowchart TD
 
 Chaque bloc du décodeur combine :
 
-- **Attention GQA / MLA / Differential** : regroupement de têtes clé/valeur, compression KV latente de rang bas optionnelle (`kv_lora_rank`), attention différentielle optionnelle (`differential_attention`), normalisation Q/K et positions rotatives RoPE extensibles (**Linear / NTK / YaRN**).
+- **Attention GQA / MLA / Differential + Attention Sinks** : regroupement de têtes clé/valeur, compression KV latente de rang bas optionnelle (`kv_lora_rank`), attention différentielle optionnelle (`differential_attention`), **Attention Sinks permanents** (`attention_sinks`), normalisation Q/K et positions rotatives RoPE extensibles (**Linear / NTK / YaRN**).
 - **Attention causale locale et globale** : fenêtre locale dans certains blocs, contexte global tous les `global_every` blocs.
 - **Convolution causale à porte + Gated DeltaNet (SSM)** : convolution locale et branche récurrente matricielle sélective optionnelle (`ssm_state_dim`) à état borné $O(1)$ en génération.
-- **Attention croisée multimodale** à porte vers les latents des images, de l'historique temporel, de l'**audio** (4e modalité optionnelle `audio_enabled`) et des **graphes attribués** (5e modalité optionnelle `graph_enabled`, avec RWSE et Graph Transformer à double piste nœuds/arêtes équivariant par permutation).
-- **Experts SwiGLU nouvelle génération** : routage top-k par token, experts partagés à porte sigmoïde optionnelle (`shared_expert_gate`), équilibrage sans perte auxiliaire par biais dynamique centré (`router_bias_update_rate`), aucune suppression de tokens.
+- **Fusion multimodale hiérarchique 6 modalités** : attention croisée à porte vers les latents (à 1 niveau ou **hiérarchique à 2 niveaux** via `hierarchical_resampler`) des images, séries temporelles, **audio** (`audio_enabled`), **graphes attribués** (`graph_enabled`, RWSE + Graph Transformer double piste) et **nuages de points 3D SE(3)-invariants** (`pointcloud_enabled`, 63 combinaisons, 15 paires contrastives).
+- **Experts SwiGLU nouvelle génération + Causal Mixture-of-Depths** : routage top-k par token, routage causal de profondeur (`depth_routing_capacity`) sautant le MoE sur les tokens simples, experts partagés à porte sigmoïde (`shared_expert_gate`), équilibrage sans perte auxiliaire par biais dynamique centré (`router_bias_update_rate`).
 - **Manifold-Constrained Hyper-Connections (mHC)** optionnelles (`residual_streams > 1`) : flux résiduels parallèles couplés sur le polytope de Birkhoff (Sinkhorn-Knopp logarithmique) garantissant une norme spectrale $\le 1$.
 - **Raisonnement latent récursif**, **mémoire épisodique**, **Flow Matching** & **ingénierie avancée** : profondeur récursive (`latent_reasoning_steps`) à calcul dynamique en inférence (`reasoning_steps`), **banc de mémoire épisodique modulé par la surprise** (`memory_slots`), **tête générative continue Conditional Flow Matching** AdaLN-Zero avec intégrateurs ODE Euler/Heun (`flow_matching_dim`), **RoPE axial 2D** en vision (`vision_rope_2d`), **mélange spectral rFFT** sur séries temporelles (`temporal_spectral_mixing`), **décodage auto-spéculatif exact** via `future_heads` (`speculative=True`), **EMA des poids** (`--ema-decay` / `export --use-ema`) et optimiseur hybride **Muon (Newton-Schulz) + AdamW** (`--optimizer muon`).
 
@@ -103,10 +103,10 @@ Les comptes dédupliquent l'embedding et la tête de texte, qui partagent leurs 
 | `base` | 1 534 337 266 | 16 | 16 / 2 | 2,858 Gio |
 | `large` | 39 285 370 354 | 32 | 32 / 2 | 73,175 Gio |
 | `ultra` | 588 945 015 026 | 64 | 64 / 4 | 1 096,996 Gio |
-| `hyper` | 1 665 425 735 | 16 (32 effectives) | 16 / 2 | 3,102 Gio |
-| `titan` | 1 664 561 024 003 | 80 (160 effectives) | 64 / 4 | 3 100,487 Gio |
+| `hyper` | 1 704 047 639 | 16 (32 effectives) | 16 / 2 | 3,174 Gio |
+| `titan` | 1 668 883 660 115 | 80 (160 effectives) | 64 / 4 | 3 108,538 Gio |
 
-Les experts partagés s'ajoutent aux experts routés : un pour la plupart des presets, deux pour `ultra` et `titan`. Les presets `hyper` et `titan` activent l'ensemble de l'architecture hybride (5 modalités incluant l'audio et les graphes, mHC à 4 flux, Gated DeltaNet, MLA, Differential Attention, YaRN RoPE, RoPE 2D vision, mélange spectral temporel, mémoire épisodique, Flow Matching continu et raisonnement latent récursif). Le nombre de paramètres sélectionnés par token n'est ni un compte de FLOPS ni une mesure du pic mémoire. Tous les poids restent en mémoire dans cette implémentation.
+Les experts partagés s'ajoutent aux experts routés : un pour la plupart des presets, deux pour `ultra` et `titan`. Les presets `hyper` et `titan` activent l'ensemble de l'architecture hybride (**6 modalités** : texte, vision 2D-RoPE, séries spectrales, audio, graphes, nuages 3D SE(3)-invariants ; resampler hiérarchique, mHC à 4 flux, Gated DeltaNet, MLA, Differential Attention, Attention Sinks, Causal Mixture-of-Depths, YaRN RoPE, mémoire épisodique, Flow Matching continu et raisonnement latent récursif). Le nombre de paramètres sélectionnés par token n'est ni un compte de FLOPS ni une mesure du pic mémoire. Tous les poids restent en mémoire dans cette implémentation.
 
 `inspect` indique aussi une estimation mémoire pour AdamW en FP32 : poids + gradients complets + deux moments, hors activations et allocations temporaires. Pour `workstation`, cette estimation est d'environ 8,19 Gio ; pour `ultra`, elle dépasse 8 775 Gio. Les paramètres restent FP32 pendant l'entraînement AMP : la colonne BF16 ne décrit pas la mémoire du trainer.
 
