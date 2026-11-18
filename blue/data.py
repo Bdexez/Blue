@@ -64,9 +64,9 @@ class JointDataset(Dataset):
                 if not isinstance(record, dict):
                     raise ValueError(f"{self.path}:{line_number}: un objet JSON est attendu")
                 current = tuple(key in record or (key == "image" and "image_path" in record)
-                                for key in ("text", "image", "series", "audio", "graph_nodes"))
+                                for key in ("text", "image", "series", "audio", "graph_nodes", "points"))
                 if not any(current):
-                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path, series, audio ou graph_nodes")
+                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path, series, audio, graph_nodes ou points")
                 if not allow_mixed and signature is not None and current != signature:
                     raise ValueError(f"{self.path}:{line_number}: les modalités doivent être identiques dans le fichier")
                 signature = current
@@ -181,6 +181,10 @@ class JointDataset(Dataset):
             item["graph_nodes"] = numeric_tensor(record["graph_nodes"])
             if "graph_edges" in record:
                 item["graph_edges"] = numeric_tensor(record["graph_edges"])
+        if "points" in record:
+            item["points"] = numeric_tensor(record["points"])
+            if "point_features" in record:
+                item["point_features"] = numeric_tensor(record["point_features"])
         if "class_label" in record:
             label = record["class_label"]
             if type(label) is not int or not (label == -100 or 0 <= label < self.config.num_classes):
@@ -195,7 +199,7 @@ def collate_records(items):
     if not items:
         raise ValueError("Le batch ne peut pas être vide")
     result = {}
-    for name in ("input_ids", "images", "series", "audio", "graph_nodes"):
+    for name in ("input_ids", "images", "series", "audio", "graph_nodes", "points"):
         present = [name in item for item in items]
         if any(present) and not all(present):
             raise ValueError(f"{name} doit être fourni pour tout le batch")
@@ -260,6 +264,25 @@ def collate_records(items):
                 n = item["graph_nodes"].size(0)
                 edges[i, :n, :n] = item["graph_edges"]
             result["graph_edges"] = edges
+    if "points" in items[0]:
+        max_pts = max(item["points"].size(0) for item in items)
+        pts = torch.zeros(len(items), max_pts, 3, dtype=torch.float32)
+        p_mask = torch.zeros(len(items), max_pts, dtype=torch.bool)
+        for i, item in enumerate(items):
+            n = item["points"].size(0)
+            pts[i, :n] = item["points"]
+            p_mask[i, :n] = True
+        result.update(points=pts, point_mask=p_mask)
+        feat_present = ["point_features" in item for item in items]
+        if any(feat_present):
+            if not all(feat_present):
+                raise ValueError("point_features doit être fourni pour tout le batch")
+            f_dim = items[0]["point_features"].size(-1)
+            feats = torch.zeros(len(items), max_pts, f_dim, dtype=torch.float32)
+            for i, item in enumerate(items):
+                n = item["points"].size(0)
+                feats[i, :n] = item["point_features"]
+            result["point_features"] = feats
     return result
 
 
@@ -301,6 +324,18 @@ def synthetic_batch(config, *, batch_size=4, seed=0, device="cpu"):
                     val = 1.0 + 0.1 * classes[b].item()
                     graph_edges[b, node, neighbor, 0] = val
                     graph_edges[b, neighbor, node, 0] = val
+    points = point_features = None
+    if getattr(config, "pointcloud_enabled", False):
+        n_pts = min(config.max_pointcloud_points, 12)
+        angles = torch.linspace(0.0, 2.0 * torch.pi, n_pts + 1)[:-1]
+        radii = 0.5 + 0.2 * (classes.float() + 1.0)
+        xs = radii[:, None] * torch.cos(angles[None, :])
+        ys = radii[:, None] * torch.sin(angles[None, :])
+        zs = 0.3 * torch.sin((classes[:, None].float() + 1.0) * angles[None, :])
+        points = torch.stack((xs, ys, zs), dim=-1) + torch.randn(batch_size, n_pts, 3, generator=gen) * 0.02
+        if config.pointcloud_features > 0:
+            point_features = torch.randn(batch_size, n_pts, config.pointcloud_features, generator=gen) * 0.1
+            point_features = point_features + classes[:, None, None].float() * 0.2
     tokenizer = ByteTokenizer()
     items = []
     for i in range(batch_size):
@@ -313,5 +348,9 @@ def synthetic_batch(config, *, batch_size=4, seed=0, device="cpu"):
         if graph_nodes is not None:
             entry["graph_nodes"] = graph_nodes[i]
             entry["graph_edges"] = graph_edges[i]
+        if points is not None:
+            entry["points"] = points[i]
+            if point_features is not None:
+                entry["point_features"] = point_features[i]
         items.append(entry)
     return {key: value.to(device) for key, value in collate_records(items).items()}
