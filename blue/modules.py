@@ -149,6 +149,7 @@ class GroupedQueryAttention(nn.Module):
         self.dropout = config.dropout
         self.differential = config.differential_attention
         self.kv_lora_rank = config.kv_lora_rank
+        self.attention_sinks = config.attention_sinks if causal else 0
         self.q = nn.Linear(config.d_model, config.d_model, bias=False)
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
         if self.kv_lora_rank > 0:
@@ -198,6 +199,19 @@ class GroupedQueryAttention(nn.Module):
             nn.init.normal_(self.lambda_k1, std=0.1)
             nn.init.normal_(self.lambda_q2, std=0.1)
             nn.init.normal_(self.lambda_k2, std=0.1)
+        if self.attention_sinks > 0:
+            sink_heads = self.n_heads if self.kv_lora_rank > 0 else self.n_kv_heads
+            self.sink_k = nn.Parameter(torch.empty(1, sink_heads, self.attention_sinks, self.head_dim))
+            self.sink_v = nn.Parameter(torch.empty(1, sink_heads, self.attention_sinks, self.head_dim))
+            self.reset_sink_parameters()
+        else:
+            self.sink_k = self.sink_v = None
+
+    def reset_sink_parameters(self):
+        if self.sink_k is not None:
+            with torch.no_grad():
+                nn.init.normal_(self.sink_k, std=0.02)
+                nn.init.zeros_(self.sink_v)
 
     def _compute_differential_lambda(self, device, dtype):
         with torch.autocast(device_type=device.type, enabled=False):
@@ -254,7 +268,8 @@ class GroupedQueryAttention(nn.Module):
         # Les positions RoPE restent absolues après l'éviction des anciennes clés.
         inside_window = not self.window or offset + t - 1 - start_pos < self.window
         mask, is_causal = None, False
-        if bool(key_valid.all()) and inside_window and (not self.causal or t == 1 or offset == 0):
+        if (self.attention_sinks == 0 and bool(key_valid.all()) and inside_window
+                and (not self.causal or t == 1 or offset == 0)):
             is_causal = self.causal and t > 1
         else:
             key_pos = torch.arange(start_pos, start_pos + seq_k, device=x.device)
@@ -265,11 +280,16 @@ class GroupedQueryAttention(nn.Module):
             if self.window:
                 allowed = allowed & (key_pos[None, :] > query_pos[:, None] - self.window)
             mask = allowed[None, None, :, :] & key_valid[:, None, None, :]
+            if self.attention_sinks > 0:
+                sink_mask = torch.ones((b, 1, t, self.attention_sinks), dtype=torch.bool, device=x.device)
+                mask = torch.cat((sink_mask, mask), dim=-1)
 
         dropout_p = self.dropout if self.training else 0.0
         if self.kv_lora_rank > 0:
             latent = cache_k.squeeze(1)
             v_attn = self.v_up(latent).view(b, seq_k, self.n_heads, self.head_dim).transpose(1, 2)
+            if self.sink_v is not None:
+                v_attn = torch.cat((self.sink_v.to(v_attn.dtype).expand(b, -1, -1, -1), v_attn), dim=-2)
             if self.differential:
                 kn1, kn2 = self.k_up(latent).view(b, seq_k, self.n_heads, 2, self.nope_dim).unbind(3)
                 kn1 = self.k_norm(kn1.transpose(1, 2))
@@ -277,6 +297,10 @@ class GroupedQueryAttention(nn.Module):
                 kr1_all, kr2_all = cache_v.expand(b, self.n_heads, seq_k, 2 * self.rope_dim).chunk(2, dim=-1)
                 k1_all = torch.cat((kn1, kr1_all), dim=-1)
                 k2_all = torch.cat((kn2, kr2_all), dim=-1)
+                if self.sink_k is not None:
+                    sk1, sk2 = self.sink_k.to(k1_all.dtype).expand(b, -1, -1, -1).chunk(2, dim=-1)
+                    k1_all = torch.cat((sk1, k1_all), dim=-2)
+                    k2_all = torch.cat((sk2, k2_all), dim=-2)
                 a1 = F.scaled_dot_product_attention(q1, k1_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p)
                 a2 = F.scaled_dot_product_attention(q2, k2_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p)
                 lam = self._compute_differential_lambda(x.device, a1.dtype)
@@ -284,22 +308,34 @@ class GroupedQueryAttention(nn.Module):
             else:
                 k_nope = self.k_norm(self.k_up(latent).view(b, seq_k, self.n_heads, self.nope_dim).transpose(1, 2))
                 k_attn = torch.cat((k_nope, cache_v.expand(b, self.n_heads, seq_k, self.rope_dim)), dim=-1)
+                if self.sink_k is not None:
+                    k_attn = torch.cat((self.sink_k.to(k_attn.dtype).expand(b, -1, -1, -1), k_attn), dim=-2)
                 y = F.scaled_dot_product_attention(q, k_attn, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p)
         else:
             gqa = self.n_heads != self.n_kv_heads
+            v_attn = cache_v
+            if self.sink_v is not None:
+                v_attn = torch.cat((self.sink_v.to(v_attn.dtype).expand(b, -1, -1, -1), v_attn), dim=-2)
             if self.differential:
                 k1_all, k2_all = cache_k.chunk(2, dim=-1)
+                if self.sink_k is not None:
+                    sk1, sk2 = self.sink_k.to(k1_all.dtype).expand(b, -1, -1, -1).chunk(2, dim=-1)
+                    k1_all = torch.cat((self.k_norm(sk1), k1_all), dim=-2)
+                    k2_all = torch.cat((self.k_norm(sk2), k2_all), dim=-2)
                 a1 = F.scaled_dot_product_attention(
-                    q1, k1_all, cache_v, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, enable_gqa=gqa,
+                    q1, k1_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, enable_gqa=gqa,
                 )
                 a2 = F.scaled_dot_product_attention(
-                    q2, k2_all, cache_v, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, enable_gqa=gqa,
+                    q2, k2_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, enable_gqa=gqa,
                 )
                 lam = self._compute_differential_lambda(x.device, a1.dtype)
                 y = self.sub_norm(a1 - lam * a2) * (1.0 - self.lambda_init)
             else:
+                k_attn = cache_k
+                if self.sink_k is not None:
+                    k_attn = torch.cat((self.k_norm(self.sink_k.to(k_attn.dtype).expand(b, -1, -1, -1)), k_attn), dim=-2)
                 y = F.scaled_dot_product_attention(
-                    q, cache_k, cache_v, attn_mask=mask, is_causal=is_causal,
+                    q, k_attn, v_attn, attn_mask=mask, is_causal=is_causal,
                     dropout_p=dropout_p, enable_gqa=gqa,
                 )
         y = y.transpose(1, 2).contiguous().view(b, t, -1)
