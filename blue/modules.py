@@ -349,30 +349,63 @@ class GroupedQueryAttention(nn.Module):
 
 
 class CrossAttention(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, *, layer_index=0):
         super().__init__()
         self.heads, self.head_dim = config.n_heads, config.d_model // config.n_heads
+        self.differential = config.cross_differential_attention
         self.q = nn.Linear(config.d_model, config.d_model, bias=False)
         self.kv = nn.Linear(config.d_model, 2 * config.d_model, bias=False)
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
-        self.q_norm = RMSNorm(self.head_dim, config.norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, config.norm_eps)
+        norm_dim = self.head_dim // 2 if self.differential else self.head_dim
+        self.q_norm = RMSNorm(norm_dim, config.norm_eps)
+        self.k_norm = RMSNorm(norm_dim, config.norm_eps)
         self.dropout = config.dropout
+        if self.differential:
+            self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_index)
+            self.lambda_q1 = nn.Parameter(torch.empty(norm_dim))
+            self.lambda_k1 = nn.Parameter(torch.empty(norm_dim))
+            self.lambda_q2 = nn.Parameter(torch.empty(norm_dim))
+            self.lambda_k2 = nn.Parameter(torch.empty(norm_dim))
+            self.sub_norm = RMSNorm(self.head_dim, config.norm_eps)
+            nn.init.normal_(self.lambda_q1, std=0.1)
+            nn.init.normal_(self.lambda_k1, std=0.1)
+            nn.init.normal_(self.lambda_q2, std=0.1)
+            nn.init.normal_(self.lambda_k2, std=0.1)
 
     def project_context(self, context):
         b = context.size(0)
         k, v = self.kv(context).view(b, -1, 2, self.heads, self.head_dim).unbind(2)
+        if self.differential:
+            sub = self.head_dim // 2
+            k1, k2 = k.view(b, -1, self.heads, 2, sub).unbind(3)
+            k1 = self.k_norm(k1.transpose(1, 2))
+            k2 = self.k_norm(k2.transpose(1, 2))
+            return torch.cat((k1, k2), dim=-1), v.transpose(1, 2)
         return self.k_norm(k.transpose(1, 2)), v.transpose(1, 2)
 
     def forward(self, queries, context=None, valid=None, *, projected=None):
         b, t, d = queries.shape
-        q = self.q(queries).view(b, t, self.heads, self.head_dim).transpose(1, 2)
         k, v = self.project_context(context) if projected is None else projected
         mask = None if valid is None else valid[:, None, None, :]
-        y = F.scaled_dot_product_attention(
-            self.q_norm(q), k, v,
-            attn_mask=mask, dropout_p=self.dropout if self.training else 0.0,
-        )
+        dropout_p = self.dropout if self.training else 0.0
+        if self.differential:
+            sub = self.head_dim // 2
+            q1, q2 = self.q(queries).view(b, t, self.heads, 2, sub).unbind(3)
+            q1 = self.q_norm(q1.transpose(1, 2))
+            q2 = self.q_norm(q2.transpose(1, 2))
+            k1, k2 = k.chunk(2, dim=-1)
+            a1 = F.scaled_dot_product_attention(q1, k1, v, attn_mask=mask, dropout_p=dropout_p)
+            a2 = F.scaled_dot_product_attention(q2, k2, v, attn_mask=mask, dropout_p=dropout_p)
+            with torch.autocast(device_type=queries.device.type, enabled=False):
+                dot1 = (self.lambda_q1.float() * self.lambda_k1.float()).sum().clamp(-10.0, 10.0)
+                dot2 = (self.lambda_q2.float() * self.lambda_k2.float()).sum().clamp(-10.0, 10.0)
+                lam = (dot1.exp() - dot2.exp() + self.lambda_init).to(a1.dtype)
+            y = self.sub_norm(a1 - lam * a2) * (1.0 - self.lambda_init)
+        else:
+            q = self.q(queries).view(b, t, self.heads, self.head_dim).transpose(1, 2)
+            y = F.scaled_dot_product_attention(
+                self.q_norm(q), k, v, attn_mask=mask, dropout_p=dropout_p,
+            )
         return self.out(y.transpose(1, 2).contiguous().view(b, t, d))
 
 
@@ -590,7 +623,7 @@ class LatentResampler(nn.Module):
         else:
             self.local_latents = self.local_norm = self.local_cross = self.local_block = None
         self.norms = nn.ModuleList([RMSNorm(config.d_model) for _ in range(config.resampler_layers)])
-        self.cross = nn.ModuleList([CrossAttention(config) for _ in range(config.resampler_layers)])
+        self.cross = nn.ModuleList([CrossAttention(config, layer_index=i) for i in range(config.resampler_layers)])
         self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.resampler_layers)])
         self.fsq = (FiniteScalarQuantizer(config.d_model, config.latent_fsq_levels,
                                           norm_cls=RMSNorm, norm_eps=config.norm_eps)
@@ -644,7 +677,7 @@ class DecoderBlock(nn.Module):
         else:
             self.ssm = None
             self.ssm_gate = None
-        self.cross = CrossAttention(config)
+        self.cross = CrossAttention(config, layer_index=index)
         self.cross_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         self.moe = SparseMoE(config)
         self.depth_capacity = config.depth_routing_capacity
