@@ -64,9 +64,9 @@ class JointDataset(Dataset):
                 if not isinstance(record, dict):
                     raise ValueError(f"{self.path}:{line_number}: un objet JSON est attendu")
                 current = tuple(key in record or (key == "image" and "image_path" in record)
-                                for key in ("text", "image", "series", "audio", "graph_nodes", "points"))
+                                for key in ("text", "image", "series", "audio", "graph_nodes", "points", "tabular_num"))
                 if not any(current):
-                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path, series, audio, graph_nodes ou points")
+                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path, series, audio, graph_nodes, points ou tabular_num")
                 if not allow_mixed and signature is not None and current != signature:
                     raise ValueError(f"{self.path}:{line_number}: les modalités doivent être identiques dans le fichier")
                 signature = current
@@ -185,6 +185,11 @@ class JointDataset(Dataset):
             item["points"] = numeric_tensor(record["points"])
             if "point_features" in record:
                 item["point_features"] = numeric_tensor(record["point_features"])
+        if "tabular_num" in record:
+            item["tabular_num"] = numeric_tensor(record["tabular_num"])
+            if "tabular_cat" in record:
+                raw_cat = [-1 if v is None else v for v in record["tabular_cat"]]
+                item["tabular_cat"] = torch.tensor(raw_cat, dtype=torch.long)
         if "class_label" in record:
             label = record["class_label"]
             if type(label) is not int or not (label == -100 or 0 <= label < self.config.num_classes):
@@ -199,7 +204,7 @@ def collate_records(items):
     if not items:
         raise ValueError("Le batch ne peut pas être vide")
     result = {}
-    for name in ("input_ids", "images", "series", "audio", "graph_nodes", "points"):
+    for name in ("input_ids", "images", "series", "audio", "graph_nodes", "points", "tabular_num"):
         present = [name in item for item in items]
         if any(present) and not all(present):
             raise ValueError(f"{name} doit être fourni pour tout le batch")
@@ -283,6 +288,13 @@ def collate_records(items):
                 n = item["points"].size(0)
                 feats[i, :n] = item["point_features"]
             result["point_features"] = feats
+    if "tabular_num" in items[0]:
+        result["tabular_num"] = torch.stack([item["tabular_num"] for item in items])
+        cat_present = ["tabular_cat" in item for item in items]
+        if any(cat_present):
+            if not all(cat_present):
+                raise ValueError("tabular_cat doit être fourni pour tout le batch")
+            result["tabular_cat"] = torch.stack([item["tabular_cat"] for item in items])
     return result
 
 
@@ -336,6 +348,13 @@ def synthetic_batch(config, *, batch_size=4, seed=0, device="cpu"):
         if config.pointcloud_features > 0:
             point_features = torch.randn(batch_size, n_pts, config.pointcloud_features, generator=gen) * 0.1
             point_features = point_features + classes[:, None, None].float() * 0.2
+    tabular_num = tabular_cat = None
+    if getattr(config, "tabular_enabled", False):
+        tabular_num = (torch.randn(batch_size, config.tabular_num_features, generator=gen) * 0.3
+                       + (classes[:, None].float() - config.num_classes / 2.0) * 0.5)
+        if config.tabular_cat_features > 0:
+            base_cat = (classes[:, None] * 2 + torch.arange(config.tabular_cat_features)[None, :]) % config.tabular_cat_cardinality
+            tabular_cat = base_cat.to(torch.long)
     tokenizer = ByteTokenizer()
     items = []
     for i in range(batch_size):
@@ -352,5 +371,9 @@ def synthetic_batch(config, *, batch_size=4, seed=0, device="cpu"):
             entry["points"] = points[i]
             if point_features is not None:
                 entry["point_features"] = point_features[i]
+        if tabular_num is not None:
+            entry["tabular_num"] = tabular_num[i]
+            if tabular_cat is not None:
+                entry["tabular_cat"] = tabular_cat[i]
         items.append(entry)
     return {key: value.to(device) for key, value in collate_records(items).items()}

@@ -21,6 +21,7 @@ from .modules import (
     RMSNorm, TemporalEncoder, VisionEncoder,
 )
 from .pointcloud import PointCloudEncoder
+from .tabular import TabularEncoder
 
 
 @dataclass
@@ -71,10 +72,12 @@ class Blue(nn.Module):
         self.audio = AudioEncoder(config) if config.audio_enabled else None
         self.graph = GraphEncoder(config) if config.graph_enabled else None
         self.pointcloud = PointCloudEncoder(config) if config.pointcloud_enabled else None
+        self.tabular = TabularEncoder(config) if config.tabular_enabled else None
         self.modality = nn.Parameter(torch.empty(2, d))
         self.audio_modality = nn.Parameter(torch.empty(d)) if config.audio_enabled else None
         self.graph_modality = nn.Parameter(torch.empty(d)) if config.graph_enabled else None
         self.pointcloud_modality = nn.Parameter(torch.empty(d)) if config.pointcloud_enabled else None
+        self.tabular_modality = nn.Parameter(torch.empty(d)) if config.tabular_enabled else None
         self.resampler = LatentResampler(config)
         self.task_queries = nn.Parameter(torch.empty(1, 2, d))
         self.blocks = nn.ModuleList([DecoderBlock(config, i) for i in range(config.n_layers)])
@@ -107,6 +110,7 @@ class Blue(nn.Module):
         self.audio_alignment = nn.Linear(d, d, bias=False) if config.audio_enabled else None
         self.graph_alignment = nn.Linear(d, d, bias=False) if config.graph_enabled else None
         self.pointcloud_alignment = nn.Linear(d, d, bias=False) if config.pointcloud_enabled else None
+        self.tabular_alignment = nn.Linear(d, d, bias=False) if config.tabular_enabled else None
         self.forecast_adapter = ForecastAdapter(config) if config.forecast_adapter_context else None
         self.apply(self._initialize)
         if config.stable_rms_norm:
@@ -133,6 +137,10 @@ class Blue(nn.Module):
             nn.init.normal_(self.graph_modality, std=0.02)
         if self.pointcloud_modality is not None:
             nn.init.normal_(self.pointcloud_modality, std=0.02)
+        if self.tabular_modality is not None:
+            nn.init.normal_(self.tabular_modality, std=0.02)
+        if self.tabular is not None:
+            self.tabular.reset_tabular_parameters()
         if self.resampler.local_latents is not None:
             nn.init.normal_(self.resampler.local_latents, std=0.02)
         if self.audio is not None and self.audio.spectral is not None:
@@ -190,7 +198,8 @@ class Blue(nn.Module):
     def _validate(self, input_ids, images, series, attention_mask, series_mask, cache,
                   reasoning_steps=None, audio=None, audio_mask=None,
                   graph_nodes=None, graph_edges=None, graph_mask=None,
-                  points=None, point_features=None, point_mask=None):
+                  points=None, point_features=None, point_mask=None,
+                  tabular_num=None, tabular_cat=None):
         c = self.config
         if reasoning_steps is not None:
             if type(reasoning_steps) is not int or reasoning_steps < 1:
@@ -198,9 +207,9 @@ class Blue(nn.Module):
             if c.latent_reasoning_steps == 1 and reasoning_steps != 1:
                 raise ValueError("reasoning_steps > 1 nécessite latent_reasoning_steps > 1 dans la configuration")
         effective_steps = c.latent_reasoning_steps if reasoning_steps is None else reasoning_steps
-        tensors = [x for x in (input_ids, images, series, audio, graph_nodes, points) if x is not None]
+        tensors = [x for x in (input_ids, images, series, audio, graph_nodes, points, tabular_num) if x is not None]
         if not tensors:
-            raise ValueError("Au moins une modalité est requise : texte, images, séries, audio, graphe ou nuage 3D")
+            raise ValueError("Au moins une modalité est requise : texte, images, séries, audio, graphe, nuage 3D ou tabulaire")
         batch = tensors[0].size(0)
         if batch < 1 or any(x.size(0) != batch for x in tensors):
             raise ValueError("Les modalités doivent partager un batch non vide")
@@ -275,6 +284,23 @@ class Blue(nn.Module):
                     raise ValueError("point_features doit être flottant fini [B, P, pointcloud_features] sur le même device")
         elif point_features is not None or point_mask is not None:
             raise ValueError("point_features et point_mask nécessitent points")
+        if tabular_num is not None:
+            if self.tabular is None:
+                raise ValueError("tabular_num nécessite tabular_enabled=True dans la configuration")
+            if tabular_num.shape != (batch, c.tabular_num_features) or not tabular_num.is_floating_point():
+                raise ValueError("tabular_num doit être flottant [B, tabular_num_features]")
+            if torch.isinf(tabular_num).any():
+                raise ValueError("tabular_num ne peut pas contenir de valeurs infinies (utiliser NaN pour manquant)")
+            if tabular_cat is not None:
+                if c.tabular_cat_features == 0:
+                    raise ValueError("tabular_cat nécessite tabular_cat_features > 0")
+                if (tabular_cat.shape != (batch, c.tabular_cat_features)
+                        or tabular_cat.device != device or tabular_cat.dtype != torch.long):
+                    raise ValueError("tabular_cat doit être long [B, tabular_cat_features] sur le même device")
+                if (tabular_cat < -1).any() or (tabular_cat >= c.tabular_cat_cardinality).any():
+                    raise ValueError("tabular_cat doit appartenir à [-1, tabular_cat_cardinality - 1]")
+        elif tabular_cat is not None:
+            raise ValueError("tabular_cat nécessite tabular_num")
         for mask, data, name, expected_shape in (
             (attention_mask, input_ids, "attention_mask", None if input_ids is None else input_ids.shape[:2]),
             (series_mask, series, "series_mask", None if series is None else series.shape[:2]),
@@ -292,7 +318,7 @@ class Blue(nn.Module):
         if cache is not None:
             if self.training:
                 raise ValueError("Le cache est réservé à l'inférence en mode eval()")
-            if any(m is not None for m in (images, series, audio, graph_nodes, points)):
+            if any(m is not None for m in (images, series, audio, graph_nodes, points, tabular_num)):
                 raise ValueError("Le contexte multimodal est déjà dans le cache ; ne pas le réinjecter")
             if len(cache.layers) != c.n_layers * effective_steps or cache.latents.size(0) != batch:
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
@@ -320,6 +346,8 @@ class Blue(nn.Module):
             proj = self.graph_alignment
         elif index == 5:
             proj = self.pointcloud_alignment
+        elif index == 6:
+            proj = self.tabular_alignment
         else:
             proj = self.alignment[index]
         projected = proj(value).float()
@@ -333,6 +361,7 @@ class Blue(nn.Module):
 
     def encode_modalities(self, *, input_ids=None, images=None, series=None, audio=None,
                           graph_nodes=None, graph_edges=None, points=None, point_features=None,
+                          tabular_num=None, tabular_cat=None,
                           attention_mask=None, series_mask=None, audio_mask=None,
                           graph_mask=None, point_mask=None):
         """Représentations contrastives indépendantes de chaque modalité fournie.
@@ -344,7 +373,8 @@ class Blue(nn.Module):
         self._validate(input_ids, images, series, attention_mask, series_mask, None,
                        audio=audio, audio_mask=audio_mask,
                        graph_nodes=graph_nodes, graph_edges=graph_edges, graph_mask=graph_mask,
-                       points=points, point_features=point_features, point_mask=point_mask)
+                       points=points, point_features=point_features, point_mask=point_mask,
+                       tabular_num=tabular_num, tabular_cat=tabular_cat)
         representations = {}
         if input_ids is not None:
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
@@ -378,6 +408,10 @@ class Blue(nn.Module):
             tokens, mask = self.pointcloud(points, valid, point_features)
             pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
             representations['pointcloud'] = (5, pooled)
+        if tabular_num is not None:
+            tokens, mask = self.tabular(tabular_num, tabular_cat)
+            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
+            representations['tabular'] = (6, pooled)
         result = {}
         for name, (index, value) in representations.items():
             vector = self._project_alignment(index, value)
@@ -499,6 +533,7 @@ class Blue(nn.Module):
     def forward(
         self, input_ids=None, *, images=None, series=None, audio=None,
         graph_nodes=None, graph_edges=None, points=None, point_features=None,
+        tabular_num=None, tabular_cat=None,
         attention_mask=None, series_mask=None, audio_mask=None, graph_mask=None, point_mask=None,
         labels=None, class_labels=None, forecast_targets=None, flow_targets=None, alignment_ids=None,
         alignment_cross_rank_views=False, alignment_cross_class_views=False,
@@ -507,7 +542,8 @@ class Blue(nn.Module):
         batch = self._validate(input_ids, images, series, attention_mask, series_mask, cache,
                                reasoning_steps, audio=audio, audio_mask=audio_mask,
                                graph_nodes=graph_nodes, graph_edges=graph_edges, graph_mask=graph_mask,
-                               points=points, point_features=point_features, point_mask=point_mask)
+                               points=points, point_features=point_features, point_mask=point_mask,
+                               tabular_num=tabular_num, tabular_cat=tabular_cat)
         distributed_alignment = (self.config.alignment_scope == "global" and self.training and dist.is_available()
                                  and dist.is_initialized() and dist.get_world_size() > 1)
         if type(alignment_cross_rank_views) is not bool and not distributed_alignment:
@@ -596,6 +632,13 @@ class Blue(nn.Module):
                 pooled_pc = (point_tokens * point_valid.unsqueeze(-1)).sum(1)
                 pooled_pc = pooled_pc / point_valid.sum(1, keepdim=True).clamp_min(1)
                 align_vectors.append((5, pooled_pc))
+            if tabular_num is not None:
+                tab_tokens, tab_valid = self.tabular(tabular_num, tabular_cat)
+                contexts.append(tab_tokens + self.tabular_modality)
+                masks.append(tab_valid)
+                pooled_tab = (tab_tokens * tab_valid.unsqueeze(-1)).sum(1)
+                pooled_tab = pooled_tab / tab_valid.sum(1, keepdim=True).clamp_min(1)
+                align_vectors.append((6, pooled_tab))
             latents = self.resampler(contexts, masks, batch)
         else:
             latents, mean, scale = cache.latents, cache.series_mean, cache.series_scale
@@ -684,7 +727,8 @@ class Blue(nn.Module):
                 self._alignment_group = dist.new_group()
                 self._alignment_world = dist.group.WORLD
             vectors = {i: self._project_alignment(i, v) for i, v in align_vectors}
-            n_mod = 6 if c.pointcloud_enabled else (5 if c.graph_enabled else (4 if c.audio_enabled else 3))
+            n_mod = (7 if c.tabular_enabled else
+                     (6 if c.pointcloud_enabled else (5 if c.graph_enabled else (4 if c.audio_enabled else 3))))
             losses["alignment"] = distributed_alignment_loss(vectors, class_labels, c.alignment_temperature,
                                                               c.alignment_mode, group=self._alignment_group,
                                                               text_view=c.alignment_text_view, sample_ids=alignment_ids,
