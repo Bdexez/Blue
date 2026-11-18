@@ -104,6 +104,7 @@ def inspect_config(config):
             "ssm_state_dim": config.ssm_state_dim,
             "shared_expert_gate": config.shared_expert_gate,
             "router_bias_update_rate": config.router_bias_update_rate,
+            "depth_routing_capacity": config.depth_routing_capacity,
             "vision_rope_2d": config.vision_rope_2d,
             "temporal_spectral_mixing": config.temporal_spectral_mixing,
             "audio_enabled": config.audio_enabled,

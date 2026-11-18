@@ -17,6 +17,8 @@ class BlueConfig:
     shared_experts: int = 1
     shared_expert_gate: bool = False
     router_bias_update_rate: float = 0.0
+    depth_routing_capacity: float = 1.0
+    depth_budget_weight: float = 0.01
     max_seq_len: int = 2048
     sliding_window: int = 256
     global_every: int = 4
@@ -147,6 +149,10 @@ class BlueConfig:
             raise ValueError("shared_expert_gate doit être booléen")
         if not math.isfinite(self.router_bias_update_rate) or self.router_bias_update_rate < 0:
             raise ValueError("router_bias_update_rate doit être fini et positif ou nul")
+        if not math.isfinite(self.depth_routing_capacity) or not 0.0 < self.depth_routing_capacity <= 1.0:
+            raise ValueError("depth_routing_capacity doit être fini et appartenir à ]0, 1]")
+        if not math.isfinite(self.depth_budget_weight) or self.depth_budget_weight < 0:
+            raise ValueError("depth_budget_weight doit être fini et positif ou nul")
         if self.image_size % self.patch_size:
             raise ValueError("image_size doit être divisible par patch_size")
         if type(self.vision_rope_2d) is not bool:
