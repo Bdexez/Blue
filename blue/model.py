@@ -64,6 +64,16 @@ class Blue(nn.Module):
         self.resampler = LatentResampler(config)
         self.task_queries = nn.Parameter(torch.empty(1, 2, d))
         self.blocks = nn.ModuleList([DecoderBlock(config, i) for i in range(config.n_layers)])
+        if config.latent_reasoning_steps > 1:
+            self.reasoning_step_embed = nn.Embedding(config.latent_reasoning_steps, d)
+            self.reasoning_norm = RMSNorm(d, config.norm_eps)
+            self.reasoning_adapter = nn.Linear(2 * d, d, bias=False)
+            self.reasoning_gate = nn.Parameter(torch.full((d,), -1.0))
+        else:
+            self.reasoning_step_embed = None
+            self.reasoning_norm = None
+            self.reasoning_adapter = None
+            self.reasoning_gate = None
         self.norm = RMSNorm(d, config.norm_eps)
         self.lm_head = nn.Linear(d, config.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight
@@ -95,6 +105,8 @@ class Blue(nn.Module):
         for parameter in (self.modality, self.task_queries, self.resampler.latents,
                           self.resampler.null_context, self.vision.position):
             nn.init.normal_(parameter, std=0.02)
+        if self.reasoning_gate is not None:
+            nn.init.constant_(self.reasoning_gate, -1.0)
         for block in self.blocks:
             if block.ssm is not None:
                 block.ssm.reset_gate_biases()
@@ -134,8 +146,14 @@ class Blue(nn.Module):
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
 
-    def _validate(self, input_ids, images, series, attention_mask, series_mask, cache):
+    def _validate(self, input_ids, images, series, attention_mask, series_mask, cache, reasoning_steps=None):
         c = self.config
+        if reasoning_steps is not None:
+            if type(reasoning_steps) is not int or reasoning_steps < 1:
+                raise ValueError("reasoning_steps doit être un entier strictement positif")
+            if c.latent_reasoning_steps == 1 and reasoning_steps != 1:
+                raise ValueError("reasoning_steps > 1 nécessite latent_reasoning_steps > 1 dans la configuration")
+        effective_steps = c.latent_reasoning_steps if reasoning_steps is None else reasoning_steps
         tensors = [x for x in (input_ids, images, series) if x is not None]
         if not tensors:
             raise ValueError("Au moins une modalité est requise : texte, images ou séries")
@@ -181,7 +199,7 @@ class Blue(nn.Module):
                 raise ValueError("Le cache est réservé à l'inférence en mode eval()")
             if images is not None or series is not None:
                 raise ValueError("Le contexte multimodal est déjà dans le cache ; ne pas le réinjecter")
-            if len(cache.layers) != c.n_layers or cache.latents.size(0) != batch:
+            if len(cache.layers) != c.n_layers * effective_steps or cache.latents.size(0) != batch:
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
             ssm_heads = c.n_heads if c.ssm_heads is None else c.ssm_heads
             ssm_shape = (batch, ssm_heads, c.ssm_state_dim, c.d_model // ssm_heads) if c.ssm_state_dim else None
@@ -237,30 +255,68 @@ class Blue(nn.Module):
             return x
         return x.mean(dim=-2)
 
+    def _prepare_reasoning_step(self, state: torch.Tensor, initial: torch.Tensor,
+                                valid: torch.Tensor, step_index: int) -> torch.Tensor:
+        if self.reasoning_step_embed is None:
+            return state
+        embed_index = min(step_index, self.config.latent_reasoning_steps - 1)
+        step_vec = self.reasoning_step_embed.weight[embed_index]
+        if state.ndim == 4:
+            mask = valid[:, :, None, None]
+            step_vec = step_vec.view(1, 1, 1, -1)
+        else:
+            mask = valid.unsqueeze(-1)
+            step_vec = step_vec.view(1, 1, -1)
+        if step_index == 0:
+            return (state + step_vec) * mask
+        fused = self.reasoning_adapter(torch.cat((self.reasoning_norm(state), initial), dim=-1))
+        return (state + torch.sigmoid(self.reasoning_gate) * fused + step_vec) * mask
+
+    def _run_decoder_stack(self, x_raw, valid, latents, *, offset=0, cache=None, use_cache=False,
+                           reasoning_steps=None):
+        steps = self.config.latent_reasoning_steps if reasoning_steps is None else reasoning_steps
+        initial = self._expand_streams(x_raw)
+        x = initial
+        balance_losses, z_losses, next_layers = [], [], []
+        layer_usage = [None] * self.config.n_layers
+        for rec_step in range(steps):
+            x = self._prepare_reasoning_step(x, initial, valid, rec_step)
+            for index, block in enumerate(self.blocks):
+                cache_slot = rec_step * self.config.n_layers + index
+                if self.config.gradient_checkpointing and self.training:
+                    def run(hidden, memory, current=block):
+                        result = current(hidden, valid, memory)
+                        return result[:4]
+                    x, balance, z_loss, expert_usage = checkpoint(run, x, latents, use_reentrant=False)
+                else:
+                    x, balance, z_loss, expert_usage, layer_cache = block(
+                        x, valid, latents, offset=offset,
+                        cache=None if cache is None else cache.layers[cache_slot], use_cache=use_cache,
+                    )
+                    if use_cache:
+                        next_layers.append(layer_cache)
+                balance_losses.append(balance)
+                z_losses.append(z_loss)
+                layer_usage[index] = expert_usage if layer_usage[index] is None else layer_usage[index] + expert_usage
+        usage = [value / steps for value in layer_usage]
+        return self.norm(self._collapse_streams(x)), balance_losses, z_losses, usage, next_layers
+
     def _isolated_text_representation(self, input_ids, valid):
         """Encoder le texte avec le contexte nul, sans image ni série associée."""
         batch = input_ids.size(0)
         memory = self.resampler([], [], batch)
-        x = self._expand_streams(self.embedding(input_ids))
-        for block in self.blocks:
-            if self.config.gradient_checkpointing and self.training:
-                def run(hidden, context, current=block):
-                    return current(hidden, valid, context)[0]
-                x = checkpoint(run, x, memory, use_reentrant=False)
-            else:
-                x = block(x, valid, memory)[0]
-        hidden = self.norm(self._collapse_streams(x))
-        last = torch.arange(valid.size(1), device=x.device)[None, :].expand_as(valid)
+        hidden, *_ = self._run_decoder_stack(self.embedding(input_ids), valid, memory)
+        last = torch.arange(valid.size(1), device=hidden.device)[None, :].expand_as(valid)
         last = last.masked_fill(~valid, -1).max(-1).values
-        return hidden[torch.arange(batch, device=x.device), last]
+        return hidden[torch.arange(batch, device=hidden.device), last]
 
     def forward(
         self, input_ids=None, *, images=None, series=None, attention_mask=None,
         series_mask=None, labels=None, class_labels=None, forecast_targets=None, alignment_ids=None,
         alignment_cross_rank_views=False, alignment_cross_class_views=False,
-        cache: ModelCache | None = None, use_cache=False,
+        cache: ModelCache | None = None, use_cache=False, reasoning_steps: int | None = None,
     ) -> BlueOutput:
-        batch = self._validate(input_ids, images, series, attention_mask, series_mask, cache)
+        batch = self._validate(input_ids, images, series, attention_mask, series_mask, cache, reasoning_steps)
         distributed_alignment = (self.config.alignment_scope == "global" and self.training and dist.is_available()
                                  and dist.is_initialized() and dist.get_world_size() > 1)
         if type(alignment_cross_rank_views) is not bool and not distributed_alignment:
@@ -328,26 +384,10 @@ class Blue(nn.Module):
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
                      if attention_mask is None else attention_mask.bool())
         offset = 0 if cache is None else cache.offset
-        x = self._expand_streams(x)
-        balance_losses, z_losses, usage, next_layers = [], [], [], []
-        for index, block in enumerate(self.blocks):
-            if self.config.gradient_checkpointing and self.training:
-                # Capturer le bloc courant : aucune fermeture sur une variable de boucle mutable.
-                def run(hidden, memory, current=block):
-                    result = current(hidden, valid, memory)
-                    return result[:4]
-                x, balance, z_loss, expert_usage = checkpoint(run, x, latents, use_reentrant=False)
-            else:
-                x, balance, z_loss, expert_usage, layer_cache = block(
-                    x, valid, latents, offset=offset,
-                    cache=None if cache is None else cache.layers[index], use_cache=use_cache,
-                )
-                if use_cache:
-                    next_layers.append(layer_cache)
-            balance_losses.append(balance)
-            z_losses.append(z_loss)
-            usage.append(expert_usage)
-        hidden = self.norm(self._collapse_streams(x))
+        hidden, balance_losses, z_losses, usage, next_layers = self._run_decoder_stack(
+            x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
+            reasoning_steps=reasoning_steps,
+        )
         logits = self.lm_head(hidden) if input_ids is not None else None
         if input_ids is None:
             class_pooled, forecast_pooled = hidden.unbind(1)
@@ -434,7 +474,7 @@ class Blue(nn.Module):
 
     @torch.inference_mode()
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,
-                 top_p=0.95, eos_id=2, **context):
+                 top_p=0.95, eos_id=2, reasoning_steps: int | None = None, **context):
         if input_ids.ndim != 2 or input_ids.size(1) < 1:
             raise ValueError("Le prompt doit avoir la forme [B, T] avec T > 0")
         if type(max_new_tokens) is not int or max_new_tokens < 0:
@@ -460,7 +500,8 @@ class Blue(nn.Module):
             cache = None
             for step in range(max_new_tokens):
                 output = self(input_ids if step == 0 else result[:, -1:],
-                              cache=cache, use_cache=True, **(context if step == 0 else {}))
+                              cache=cache, use_cache=True, reasoning_steps=reasoning_steps,
+                              **(context if step == 0 else {}))
                 cache = output.cache
                 scores = output.logits[:, -1].float()
                 # Les tokens de contrôle réservés ne sont pas des caractères générables.
