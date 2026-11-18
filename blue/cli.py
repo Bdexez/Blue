@@ -108,6 +108,7 @@ def inspect_config(config):
             "audio_enabled": config.audio_enabled,
             "graph_enabled": config.graph_enabled,
             "flow_matching_dim": config.flow_matching_dim,
+            "memory_slots": config.memory_slots,
             "latent_reasoning_steps": config.latent_reasoning_steps,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
