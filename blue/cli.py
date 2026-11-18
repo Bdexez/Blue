@@ -100,6 +100,7 @@ def inspect_config(config):
         "architecture_features": {
             "rope_scaling": config.rope_scaling_type,
             "differential_attention": config.differential_attention,
+            "cross_differential_attention": config.cross_differential_attention,
             "kv_lora_rank": config.kv_lora_rank,
             "attention_sinks": config.attention_sinks,
             "ssm_state_dim": config.ssm_state_dim,
