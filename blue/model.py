@@ -374,9 +374,15 @@ class Blue(nn.Module):
                     else layer.key.shape[:3] != layer.value.shape[:3])
                 or layer.key.size(0) != batch
                 or layer.valid.shape != (batch, layer.key.size(-2))
-                or (ssm_shape is not None and (layer.ssm_state is None or layer.ssm_state.shape != ssm_shape))
-                or (ttt_shape is not None and (layer.ttt_state is None or layer.ttt_state.shape != ttt_shape))
-                for layer in cache.layers
+                or ((ssm_shape is not None and (slot % c.n_layers) % c.ssm_every == 0)
+                    and (layer.ssm_state is None or layer.ssm_state.shape != ssm_shape))
+                or ((ssm_shape is None or (slot % c.n_layers) % c.ssm_every != 0)
+                    and layer.ssm_state is not None)
+                or ((ttt_shape is not None and (slot % c.n_layers) % c.ttt_every == 0)
+                    and (layer.ttt_state is None or layer.ttt_state.shape != ttt_shape))
+                or ((ttt_shape is None or (slot % c.n_layers) % c.ttt_every != 0)
+                    and layer.ttt_state is not None)
+                for slot, layer in enumerate(cache.layers)
             ):
                 raise ValueError("Positions incohérentes dans le cache")
         return batch

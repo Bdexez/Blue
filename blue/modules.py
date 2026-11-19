@@ -762,7 +762,7 @@ class DecoderBlock(nn.Module):
         self.attn = GroupedQueryAttention(config, window=window, layer_index=index)
         self.conv = GatedCausalConv(config.d_model, config.conv_kernel)
         self.mix_gate = nn.Parameter(torch.zeros(config.d_model))
-        if config.ssm_state_dim > 0:
+        if config.ssm_state_dim > 0 and index % config.ssm_every == 0:
             ssm_heads = config.n_heads if config.ssm_heads is None else config.ssm_heads
             self.ssm = GatedDeltaNet(config.d_model, config.ssm_state_dim, ssm_heads,
                                      norm_cls=RMSNorm, norm_eps=config.norm_eps,
@@ -771,7 +771,7 @@ class DecoderBlock(nn.Module):
         else:
             self.ssm = None
             self.ssm_gate = None
-        if config.ttt_state_dim > 0:
+        if config.ttt_state_dim > 0 and index % config.ttt_every == 0:
             ttt_heads = config.n_heads if config.ttt_heads is None else config.ttt_heads
             self.ttt = TTTLinear(config.d_model, config.ttt_state_dim, ttt_heads,
                                  norm_cls=RMSNorm, norm_eps=config.norm_eps,
