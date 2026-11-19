@@ -859,7 +859,8 @@ class Blue(nn.Module):
                           last_hidden=hidden[:, -1:] if use_cache else None)
 
     @torch.inference_mode()
-    def sample_flow(self, *, steps: int = 20, solver: str = "heun", generator: torch.Generator | None = None,
+    def sample_flow(self, *, steps: int = 20, solver: str = "heun", guidance_scale: float = 1.0,
+                    generator: torch.Generator | None = None,
                     initial_noise: torch.Tensor | None = None, reasoning_steps: int | None = None,
                     **modalities) -> torch.Tensor:
         """Échantillonner des sorties continues conditionnées par les modalités fournies."""
@@ -877,6 +878,7 @@ class Blue(nn.Module):
             finally:
                 hook.remove()
             return self.flow_head.sample(captured["condition"], steps=steps, solver=solver,
+                                         guidance_scale=guidance_scale,
                                          generator=generator, initial_noise=initial_noise)
         finally:
             self.train(was_training)

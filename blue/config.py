@@ -118,6 +118,7 @@ class BlueConfig:
     flow_matching_dim: int = 0
     flow_matching_layers: int = 2
     flow_matching_weight: float = 0.25
+    flow_cfg_dropout: float = 0.0
     jepa_weight: float = 0.0
     adaptive_loss_weighting: bool = False
     gradient_checkpointing: bool = False
@@ -288,6 +289,8 @@ class BlueConfig:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
         if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
             raise ValueError("flow_matching_dim doit être un entier positif ou nul")
+        if not math.isfinite(self.flow_cfg_dropout) or not 0.0 <= self.flow_cfg_dropout < 1.0:
+            raise ValueError("flow_cfg_dropout doit être fini et appartenir à [0, 1[")
         if type(self.gradient_checkpointing) is not bool:
             raise ValueError("gradient_checkpointing doit être booléen")
         if type(self.adaptive_loss_weighting) is not bool:

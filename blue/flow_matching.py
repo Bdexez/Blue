@@ -48,14 +48,16 @@ class AdaLNZeroBlock(nn.Module):
 
 
 class ConditionalFlowHead(nn.Module):
-    """Champ de vecteurs conditionnel v_theta(z_t, t | c) et intégrateurs ODE Euler/Heun."""
+    """Champ de vecteurs conditionnel v_theta(z_t, t | c) avec CFG et intégrateurs ODE Euler/Heun/RK4."""
 
     def __init__(self, config):
         super().__init__()
         d = config.d_model
         self.out_dim = config.flow_matching_dim
+        self.cfg_dropout = float(config.flow_cfg_dropout)
         self.time_embed = SinusoidalTimeEmbedding(d)
         self.cond_proj = nn.Linear(d, d, bias=False)
+        self.null_cond = nn.Parameter(torch.zeros(1, d)) if self.cfg_dropout > 0.0 else None
         self.in_proj = nn.Linear(self.out_dim, d)
         self.blocks = nn.ModuleList([
             AdaLNZeroBlock(d, config.hidden_dim, norm_eps=config.norm_eps)
@@ -72,6 +74,8 @@ class ConditionalFlowHead(nn.Module):
         with torch.no_grad():
             self.final_mod.weight.zero_()
             self.final_mod.bias.zero_()
+            if self.null_cond is not None:
+                nn.init.normal_(self.null_cond, std=0.02)
 
     def velocity(self, z_t: torch.Tensor, t: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
         cond = self.cond_proj(condition) + self.time_embed(t)
@@ -82,6 +86,17 @@ class ConditionalFlowHead(nn.Module):
         h = self.final_norm(h) * (1.0 + scale) + shift
         return self.out_proj(h)
 
+    def guided_velocity(self, z_t: torch.Tensor, t: torch.Tensor, condition: torch.Tensor,
+                        guidance_scale: float = 1.0) -> torch.Tensor:
+        v_cond = self.velocity(z_t, t, condition).float()
+        if guidance_scale == 1.0:
+            return v_cond
+        if self.null_cond is None:
+            raise ValueError("guidance_scale != 1.0 nécessite flow_cfg_dropout > 0 dans la configuration")
+        null_c = self.null_cond.to(dtype=condition.dtype, device=condition.device).expand_as(condition)
+        v_uncond = self.velocity(z_t, t, null_c).float()
+        return v_uncond + guidance_scale * (v_cond - v_uncond)
+
     def loss(self, targets: torch.Tensor, condition: torch.Tensor, *,
              noise: torch.Tensor | None = None, t: torch.Tensor | None = None) -> torch.Tensor:
         if targets.ndim != 2 or targets.shape != (condition.size(0), self.out_dim):
@@ -89,6 +104,10 @@ class ConditionalFlowHead(nn.Module):
         valid_rows = torch.isfinite(targets).all(dim=-1)
         safe_targets = torch.where(valid_rows.unsqueeze(-1), targets, 0.0)
         b = targets.size(0)
+        if self.training and self.null_cond is not None and self.cfg_dropout > 0.0:
+            drop_mask = torch.rand((b, 1), device=condition.device) < self.cfg_dropout
+            null_c = self.null_cond.to(dtype=condition.dtype, device=condition.device).expand_as(condition)
+            condition = torch.where(drop_mask, null_c, condition)
         if noise is None:
             noise = torch.randn_like(safe_targets, dtype=torch.float32)
         if t is None:
@@ -105,12 +124,14 @@ class ConditionalFlowHead(nn.Module):
 
     @torch.inference_mode()
     def sample(self, condition: torch.Tensor, *, steps: int = 20, solver: str = "heun",
-               generator: torch.Generator | None = None,
+               guidance_scale: float = 1.0, generator: torch.Generator | None = None,
                initial_noise: torch.Tensor | None = None) -> torch.Tensor:
         if type(steps) is not int or steps < 1:
             raise ValueError("steps doit être un entier strictement positif")
-        if solver not in ("euler", "heun"):
-            raise ValueError("solver doit être euler ou heun")
+        if solver not in ("euler", "heun", "rk4"):
+            raise ValueError("solver doit être euler, heun ou rk4")
+        if not math.isfinite(guidance_scale) or guidance_scale < 0.0:
+            raise ValueError("guidance_scale doit être fini et >= 0")
         b = condition.size(0)
         if initial_noise is not None:
             if initial_noise.shape != (b, self.out_dim) or initial_noise.device != condition.device:
@@ -121,12 +142,20 @@ class ConditionalFlowHead(nn.Module):
         dt = 1.0 / steps
         for step in range(steps):
             t0 = torch.full((b,), step * dt, device=condition.device, dtype=torch.float32)
-            v0 = self.velocity(z.to(condition.dtype), t0, condition).float()
+            v0 = self.guided_velocity(z.to(condition.dtype), t0, condition, guidance_scale)
             if solver == "euler":
                 z = z + dt * v0
-            else:
+            elif solver == "heun":
                 z_pred = z + dt * v0
                 t1 = torch.full((b,), (step + 1) * dt, device=condition.device, dtype=torch.float32)
-                v1 = self.velocity(z_pred.to(condition.dtype), t1, condition).float()
+                v1 = self.guided_velocity(z_pred.to(condition.dtype), t1, condition, guidance_scale)
                 z = z + 0.5 * dt * (v0 + v1)
+            else:
+                t_mid = torch.full((b,), (step + 0.5) * dt, device=condition.device, dtype=torch.float32)
+                t1 = torch.full((b,), (step + 1) * dt, device=condition.device, dtype=torch.float32)
+                k1 = v0
+                k2 = self.guided_velocity((z + 0.5 * dt * k1).to(condition.dtype), t_mid, condition, guidance_scale)
+                k3 = self.guided_velocity((z + 0.5 * dt * k2).to(condition.dtype), t_mid, condition, guidance_scale)
+                k4 = self.guided_velocity((z + dt * k3).to(condition.dtype), t1, condition, guidance_scale)
+                z = z + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
         return z
