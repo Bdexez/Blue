@@ -112,6 +112,7 @@ def inspect_config(config):
             "audio_enabled": config.audio_enabled,
             "graph_enabled": config.graph_enabled,
             "pointcloud_enabled": config.pointcloud_enabled,
+            "tabular_enabled": config.tabular_enabled,
             "hierarchical_resampler": config.hierarchical_resampler,
             "latent_fsq_levels": list(config.latent_fsq_levels),
             "flow_matching_dim": config.flow_matching_dim,
