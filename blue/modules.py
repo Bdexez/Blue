@@ -577,14 +577,34 @@ class TemporalEncoder(nn.Module):
 class LatentResampler(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.hierarchical = config.hierarchical_resampler
         self.latents = nn.Parameter(torch.empty(1, config.n_latents, config.d_model))
         self.null_context = nn.Parameter(torch.empty(1, 1, config.d_model))
+        if self.hierarchical:
+            local_count = max(4, config.n_latents // 2)
+            self.local_latents = nn.Parameter(torch.empty(1, local_count, config.d_model))
+            self.local_norm = RMSNorm(config.d_model, config.norm_eps)
+            self.local_cross = CrossAttention(config)
+            self.local_block = EncoderBlock(config, 0)
+        else:
+            self.local_latents = self.local_norm = self.local_cross = self.local_block = None
         self.norms = nn.ModuleList([RMSNorm(config.d_model) for _ in range(config.resampler_layers)])
         self.cross = nn.ModuleList([CrossAttention(config) for _ in range(config.resampler_layers)])
         self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.resampler_layers)])
 
     def forward(self, contexts, masks, batch_size):
         null = self.null_context.expand(batch_size, -1, -1)
+        if self.hierarchical and contexts:
+            stage1_contexts, stage1_masks = [], []
+            local_queries = self.local_latents.expand(batch_size, -1, -1)
+            local_valid = torch.ones(local_queries.shape[:2], dtype=torch.bool, device=null.device)
+            for ctx, mask in zip(contexts, masks):
+                # Niveau 1 : chaque modalité est distillée vers un budget équilibré de latents locaux.
+                q = local_queries + self.local_cross(self.local_norm(local_queries), ctx, mask)
+                q = self.local_block(q, local_valid)
+                stage1_contexts.append(q)
+                stage1_masks.append(local_valid)
+            contexts, masks = stage1_contexts, stage1_masks
         context = torch.cat([null, *contexts], 1)
         valid = torch.cat([
             torch.ones(batch_size, 1, dtype=torch.bool, device=null.device), *masks
