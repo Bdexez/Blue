@@ -102,6 +102,7 @@ def inspect_config(config):
         "shared_experts_per_layer": config.shared_experts,
         "architecture_features": {
             "rope_scaling": config.rope_scaling_type,
+            "ngram_vocab_size": config.ngram_vocab_size,
             "differential_attention": config.differential_attention,
             "cross_differential_attention": config.cross_differential_attention,
             "kv_lora_rank": config.kv_lora_rank,
