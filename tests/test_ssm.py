@@ -24,9 +24,41 @@ class GatedDeltaNetTests(unittest.TestCase):
             dict(ssm_heads=2),
             dict(ssm_state_dim=8, ssm_heads=0),
             dict(ssm_state_dim=8, ssm_heads=3),
+            dict(ssm_chunk_size=0),
+            dict(ssm_chunk_size=True),
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 replace(base, **bad)
+
+    def test_chunkwise_wy_matches_sequential_forward_state_and_gradients(self):
+        from blue.modules import RMSNorm
+        from blue.ssm import GatedDeltaNet
+
+        torch.manual_seed(1234)
+        for seq_len, chunk_size in ((17, 8), (64, 16), (37, 32)):
+            ssm = GatedDeltaNet(64, 8, 4, norm_cls=RMSNorm, chunk_size=chunk_size)
+            x1 = torch.randn(2, seq_len, 64, requires_grad=True)
+            x2 = x1.detach().clone().requires_grad_(True)
+            valid = torch.ones(2, seq_len, dtype=torch.bool)
+            valid[0, :3] = False
+            valid[0, 10] = False
+            valid[1, -4:] = False
+            init_state = torch.randn(2, 4, 8, 16) * 0.2
+
+            out_seq, s_seq = ssm(x1, valid, init_state, use_chunkwise=False)
+            out_wy, s_wy = ssm(x2, valid, init_state, use_chunkwise=True)
+            torch.testing.assert_close(out_wy, out_seq, rtol=1e-4, atol=1e-5)
+            torch.testing.assert_close(s_wy, s_seq, rtol=1e-4, atol=1e-5)
+
+            (out_seq.square().mean() + s_seq.square().mean()).backward()
+            grads_seq = {n: p.grad.clone() for n, p in ssm.named_parameters()}
+            gx_seq = x1.grad.clone()
+            ssm.zero_grad()
+
+            (out_wy.square().mean() + s_wy.square().mean()).backward()
+            torch.testing.assert_close(x2.grad, gx_seq, rtol=1e-4, atol=1e-5)
+            for n, p in ssm.named_parameters():
+                torch.testing.assert_close(p.grad, grads_seq[n], rtol=1e-4, atol=1e-5)
 
     def test_causality_padding_invariance_cache_equivalence_and_gradients(self):
         torch.manual_seed(4041)
