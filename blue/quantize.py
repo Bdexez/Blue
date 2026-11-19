@@ -6,7 +6,7 @@ from torch.nn import functional as F
 
 # Sous-modules accédant directement à .weight ou liés à l'embedding.
 DIRECT_WEIGHT_LEAF_NAMES = frozenset({
-    "lm_head", "router", "depth_router", "pre_proj", "post_proj", "res_proj",
+    "lm_head", "router", "depth_router", "ponder_halt", "pre_proj", "post_proj", "res_proj",
     "read_k", "read_v", "forecast_skip", "statistics_proj", "proj", "in_proj",
     "node_proj", "edge_proj", "pair_proj",
 })

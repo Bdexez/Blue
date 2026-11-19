@@ -68,6 +68,12 @@ class BlueConfig:
     pointcloud_features: int = 0
     max_pointcloud_points: int = 128
     pointcloud_layers: int = 2
+    tabular_enabled: bool = False
+    tabular_num_features: int = 8
+    tabular_cat_features: int = 4
+    tabular_cat_cardinality: int = 32
+    tabular_layers: int = 2
+    tabular_plr_frequencies: int = 16
     n_latents: int = 16
     resampler_layers: int = 2
     hierarchical_resampler: bool = False
@@ -110,6 +116,7 @@ class BlueConfig:
             "max_audio_len", "audio_layers", "graph_node_features", "graph_edge_features",
             "max_graph_nodes", "graph_layers", "graph_rwse_steps",
             "max_pointcloud_points", "pointcloud_layers",
+            "tabular_num_features", "tabular_layers", "tabular_plr_frequencies",
             "n_latents", "resampler_layers",
             "num_classes", "forecast_horizon", "forecast_context", "prediction_steps",
             "flow_matching_layers",
@@ -258,6 +265,12 @@ class BlueConfig:
             raise ValueError("pointcloud_enabled doit être booléen")
         if type(self.pointcloud_features) is not int or self.pointcloud_features < 0:
             raise ValueError("pointcloud_features doit être un entier positif ou nul")
+        if type(self.tabular_enabled) is not bool:
+            raise ValueError("tabular_enabled doit être booléen")
+        if type(self.tabular_cat_features) is not int or self.tabular_cat_features < 0:
+            raise ValueError("tabular_cat_features doit être un entier positif ou nul")
+        if type(self.tabular_cat_cardinality) is not int or self.tabular_cat_cardinality < 2:
+            raise ValueError("tabular_cat_cardinality doit être un entier >= 2")
         if type(self.hierarchical_resampler) is not bool:
             raise ValueError("hierarchical_resampler doit être booléen")
         self.latent_fsq_levels = tuple(self.latent_fsq_levels)
