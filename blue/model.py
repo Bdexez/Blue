@@ -159,6 +159,8 @@ class Blue(nn.Module):
             block.reset_depth_router()
             if block.ssm is not None:
                 block.ssm.reset_gate_biases()
+            if block.ttt is not None:
+                block.ttt.reset_ttt_parameters()
             for hc in (block.hc_attn, block.hc_cross, block.hc_moe):
                 if hc is not None:
                     hc.reset_manifold_parameters()
@@ -324,6 +326,8 @@ class Blue(nn.Module):
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
             ssm_heads = c.n_heads if c.ssm_heads is None else c.ssm_heads
             ssm_shape = (batch, ssm_heads, c.ssm_state_dim, c.d_model // ssm_heads) if c.ssm_state_dim else None
+            ttt_heads = c.n_heads if c.ttt_heads is None else c.ttt_heads
+            ttt_shape = (batch, ttt_heads, c.ttt_state_dim + 1, c.ttt_state_dim) if c.ttt_state_dim else None
             if (c.memory_slots > 0 and (cache.episodic_memory is None
                                         or cache.episodic_memory.shape != (batch, c.memory_slots, c.d_model))):
                 raise ValueError("Mémoire épisodique incompatible dans le cache")
@@ -334,6 +338,7 @@ class Blue(nn.Module):
                 or layer.key.size(0) != batch
                 or layer.valid.shape != (batch, layer.key.size(-2))
                 or (ssm_shape is not None and (layer.ssm_state is None or layer.ssm_state.shape != ssm_shape))
+                or (ttt_shape is not None and (layer.ttt_state is None or layer.ttt_state.shape != ttt_shape))
                 for layer in cache.layers
             ):
                 raise ValueError("Positions incohérentes dans le cache")
