@@ -120,22 +120,26 @@ def build_optimizer(model, *, name: str = "adamw", lr: float, weight_decay: floa
     """Construire AdamW ou MuonAdamW en préservant lr_scale=10 pour les projections temporelles."""
     if name not in ("adamw", "muon"):
         raise ValueError("optimizer doit être adamw ou muon")
-    temporal_parameters = list(model.temporal.forecast_skip.parameters())
+    temporal_parameters = [p for p in model.temporal.forecast_skip.parameters() if p.requires_grad]
     if model.temporal.statistics_proj is not None:
-        temporal_parameters.extend(model.temporal.statistics_proj.parameters())
+        temporal_parameters.extend(p for p in model.temporal.statistics_proj.parameters() if p.requires_grad)
     temporal_ids = {id(p) for p in temporal_parameters}
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    if not trainable:
+        raise ValueError("Aucun paramètre entraînable dans le modèle")
     if name == "adamw":
-        return torch.optim.AdamW([
-            {"params": [p for p in model.parameters() if id(p) not in temporal_ids], "lr_scale": 1.0},
+        groups = [
+            {"params": [p for p in trainable if id(p) not in temporal_ids], "lr_scale": 1.0},
             {"params": temporal_parameters, "lr_scale": 10.0},
-        ], lr=lr, weight_decay=weight_decay)
+        ]
+        return torch.optim.AdamW([g for g in groups if g["params"]], lr=lr, weight_decay=weight_decay)
     excluded_muon_ids = set(temporal_ids)
     excluded_muon_ids.add(id(model.embedding.weight))
     excluded_muon_ids.add(id(model.lm_head.weight))
     if model.reasoning_step_embed is not None:
         excluded_muon_ids.add(id(model.reasoning_step_embed.weight))
     muon_params, adamw_params = [], []
-    for p in model.parameters():
+    for p in trainable:
         if id(p) in temporal_ids:
             continue
         if p.ndim == 2 and id(p) not in excluded_muon_ids:

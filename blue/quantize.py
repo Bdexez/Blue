@@ -29,6 +29,8 @@ class Int8Linear(nn.Module):
     @classmethod
     def from_linear(cls, linear: nn.Linear) -> "Int8Linear":
         module = cls(linear.in_features, linear.out_features, bias=linear.bias is not None)
+        if linear.weight.is_meta:
+            return module.to("meta")
         with torch.no_grad():
             weight = linear.weight.detach().float()
             scale = weight.abs().amax(dim=1, keepdim=True).clamp_min(1e-8) / 127.0
@@ -65,8 +67,9 @@ def quantize_model_int8(model: nn.Module, *, min_numel: int = 1024) -> dict:
     max_error = 0.0
     for full_name, module in candidates:
         q_mod = Int8Linear.from_linear(module)
-        err = (module.weight.detach().float() - q_mod.dequantized_weight(torch.float32)).abs().max().item()
-        max_error = max(max_error, err)
+        if not module.weight.is_meta:
+            err = (module.weight.detach().float() - q_mod.dequantized_weight(torch.float32)).abs().max().item()
+            max_error = max(max_error, err)
         bytes_before += module.weight.numel() * module.weight.element_size()
         bytes_after += (q_mod.weight_int8.numel() * q_mod.weight_int8.element_size()
                         + q_mod.weight_scale.numel() * q_mod.weight_scale.element_size())
