@@ -111,6 +111,8 @@ def inspect_config(config):
             "value_residual": config.value_residual,
             "logit_softcap": config.logit_softcap,
             "attn_logit_softcap": config.attn_logit_softcap,
+            "nsa_block_size": config.nsa_block_size,
+            "nsa_top_k": config.nsa_top_k,
             "ssm_state_dim": config.ssm_state_dim,
             "ssm_every": config.ssm_every,
             "ttt_state_dim": config.ttt_state_dim,

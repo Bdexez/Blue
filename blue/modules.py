@@ -10,6 +10,7 @@ from torch.nn import functional as F
 from .config import BlueConfig
 from .fsq import FiniteScalarQuantizer
 from .hyper_connections import ManifoldHyperConnection
+from .sparse_attention import CompressedBlockSparseAttention
 from .spectral import SpectralTemporalMixer
 from .ssm import GatedDeltaNet
 from .temporal_precision import temporal_work_dtype
@@ -247,6 +248,14 @@ class GroupedQueryAttention(nn.Module):
                 self.v_res_gate = nn.Parameter(torch.full((1, self.n_kv_heads, 1, 1), -2.0))
         else:
             self.v_res_gate = None
+        if causal and window == 0 and config.nsa_block_size > 0:
+            nsa_key_dim = self.head_dim // 2 if self.differential else self.head_dim
+            self.nsa = CompressedBlockSparseAttention(
+                self.n_heads, self.head_dim, config.nsa_block_size, config.nsa_top_k,
+                key_dim=nsa_key_dim,
+            )
+        else:
+            self.nsa = None
         self.reset_sink_parameters()
 
     def reset_sink_parameters(self):
@@ -257,6 +266,8 @@ class GroupedQueryAttention(nn.Module):
         if self.v_res_gate is not None:
             with torch.no_grad():
                 self.v_res_gate.fill_(-2.0)
+        if self.nsa is not None:
+            self.nsa.reset_nsa_parameters()
 
     def _compute_differential_lambda(self, device, dtype):
         with torch.autocast(device_type=device.type, enabled=False):
@@ -363,6 +374,7 @@ class GroupedQueryAttention(nn.Module):
                 kr1_all, kr2_all = cache_v.expand(b, self.n_heads, seq_k, 2 * self.rope_dim).chunk(2, dim=-1)
                 k1_all = torch.cat((kn1, kr1_all), dim=-1)
                 k2_all = torch.cat((kn2, kr2_all), dim=-1)
+                k_nsa_src, v_nsa_src, q_nsa_src = k1_all, v_attn[:, :, self.attention_sinks:] if self.sink_v is not None else v_attn, q1
                 if self.sink_k is not None:
                     sk1, sk2 = self.sink_k.to(k1_all.dtype).expand(b, -1, -1, -1).chunk(2, dim=-1)
                     k1_all = torch.cat((sk1, k1_all), dim=-2)
@@ -374,6 +386,7 @@ class GroupedQueryAttention(nn.Module):
             else:
                 k_nope = self.k_norm(self.k_up(latent).view(b, seq_k, self.n_heads, self.nope_dim).transpose(1, 2))
                 k_attn = torch.cat((k_nope, cache_v.expand(b, self.n_heads, seq_k, self.rope_dim)), dim=-1)
+                k_nsa_src, v_nsa_src, q_nsa_src = k_attn, v_attn[:, :, self.attention_sinks:] if self.sink_v is not None else v_attn, q
                 if self.sink_k is not None:
                     k_attn = torch.cat((self.sink_k.to(k_attn.dtype).expand(b, -1, -1, -1), k_attn), dim=-2)
                 y = _sdpa(q, k_attn, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, softcap=sc)
@@ -384,6 +397,7 @@ class GroupedQueryAttention(nn.Module):
                 v_attn = torch.cat((self.sink_v.to(v_attn.dtype).expand(b, -1, -1, -1), v_attn), dim=-2)
             if self.differential:
                 k1_all, k2_all = cache_k.chunk(2, dim=-1)
+                k_nsa_src, v_nsa_src, q_nsa_src = k1_all, cache_v, q1
                 if self.sink_k is not None:
                     sk1, sk2 = self.sink_k.to(k1_all.dtype).expand(b, -1, -1, -1).chunk(2, dim=-1)
                     k1_all = torch.cat((self.k_norm(sk1), k1_all), dim=-2)
@@ -400,12 +414,15 @@ class GroupedQueryAttention(nn.Module):
                 y = self.sub_norm(a1 - lam * a2) * (1.0 - self.lambda_init)
             else:
                 k_attn = cache_k
+                k_nsa_src, v_nsa_src, q_nsa_src = k_attn, cache_v, q
                 if self.sink_k is not None:
                     k_attn = torch.cat((self.k_norm(self.sink_k.to(k_attn.dtype).expand(b, -1, -1, -1)), k_attn), dim=-2)
                 y = _sdpa(
                     q, k_attn, v_attn, attn_mask=mask, is_causal=is_causal,
                     dropout_p=dropout_p, enable_gqa=gqa, softcap=sc,
                 )
+        if self.nsa is not None:
+            y = y + self.nsa(q_nsa_src, k_nsa_src, v_nsa_src, key_valid, offset=offset, start_pos=start_pos)
         y = y.transpose(1, 2).contiguous().view(b, t, -1)
         if use_cache and self.window and seq_k > self.window - 1:
             begin = seq_k - (self.window - 1)
