@@ -118,6 +118,7 @@ def inspect_config(config):
             "memory_slots": config.memory_slots,
             "alignment_geometry": config.alignment_geometry,
             "latent_reasoning_steps": config.latent_reasoning_steps,
+            "latent_reasoning_adaptive": config.latent_reasoning_adaptive,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
         "weights_gib_bf16": round(total * 2 / 2**30, 3),
