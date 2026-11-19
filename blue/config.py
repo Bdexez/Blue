@@ -7,6 +7,7 @@ from pathlib import Path
 @dataclass
 class BlueConfig:
     vocab_size: int = 260
+    ngram_vocab_size: int = 0
     d_model: int = 256
     n_layers: int = 8
     n_heads: int = 8
@@ -141,6 +142,8 @@ class BlueConfig:
                 raise ValueError(f"{name} doit être un entier strictement positif")
         if self.vocab_size < 260:
             raise ValueError("vocab_size doit être >= 260 pour le tokenizer UTF-8")
+        if type(self.ngram_vocab_size) is not int or (self.ngram_vocab_size != 0 and self.ngram_vocab_size < 16):
+            raise ValueError("ngram_vocab_size doit être 0 ou un entier >= 16")
         if self.d_model % self.n_heads or (self.d_model // self.n_heads) % 2:
             raise ValueError("d_model / n_heads doit être un entier pair (RoPE)")
         if type(self.differential_attention) is not bool:
