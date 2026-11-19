@@ -672,7 +672,8 @@ class DecoderBlock(nn.Module):
         if config.ssm_state_dim > 0:
             ssm_heads = config.n_heads if config.ssm_heads is None else config.ssm_heads
             self.ssm = GatedDeltaNet(config.d_model, config.ssm_state_dim, ssm_heads,
-                                     norm_cls=RMSNorm, norm_eps=config.norm_eps)
+                                     norm_cls=RMSNorm, norm_eps=config.norm_eps,
+                                     chunk_size=config.ssm_chunk_size)
             self.ssm_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         else:
             self.ssm = None
