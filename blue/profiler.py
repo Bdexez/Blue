@@ -73,6 +73,7 @@ def profile_architecture(config: BlueConfig, *, seq_len: int = 1024, batch_size:
         "active_parameters_upper_bound": total - unselected,
         "weights_gib_bf16": round(total * 2 / 2**30, 3),
         "weights_gib_int8_estimate": round(total / 2**30, 3),
+        "weights_gib_int4_estimate": round(total * 0.5625 / 2**30, 3),
         "decoder_layers": config.n_layers,
         "effective_decoder_layers": config.n_layers * config.latent_reasoning_steps,
         "residual_streams": config.residual_streams,
