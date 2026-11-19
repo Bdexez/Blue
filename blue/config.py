@@ -327,6 +327,8 @@ class BlueConfig:
                           flow_matching_dim=36, flow_matching_layers=3,
                           n_latents=48, resampler_layers=3,
                           hierarchical_resampler=True,
+                          latent_fsq_levels=(8, 5, 5, 5),
+                          alignment_geometry="hyperbolic",
                           prediction_steps=4, stable_rms_norm=True,
                           gradient_checkpointing=True),
             "titan": dict(d_model=6144, n_layers=80, n_heads=48, n_kv_heads=8,
@@ -354,6 +356,8 @@ class BlueConfig:
                           flow_matching_dim=128, flow_matching_layers=6,
                           n_latents=192, resampler_layers=8,
                           hierarchical_resampler=True,
+                          latent_fsq_levels=(8, 8, 5, 5, 5),
+                          alignment_geometry="hyperbolic",
                           prediction_steps=4, stable_rms_norm=True,
                           gradient_checkpointing=True),
         }
