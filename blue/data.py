@@ -64,9 +64,9 @@ class JointDataset(Dataset):
                 if not isinstance(record, dict):
                     raise ValueError(f"{self.path}:{line_number}: un objet JSON est attendu")
                 current = tuple(key in record or (key == "image" and "image_path" in record)
-                                for key in ("text", "image", "series", "audio", "graph_nodes", "points", "tabular_num"))
+                                for key in ("text", "image", "series", "audio", "graph_nodes", "points", "tabular_num", "video"))
                 if not any(current):
-                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path, series, audio, graph_nodes, points ou tabular_num")
+                    raise ValueError(f"{self.path}:{line_number}: fournir text, image/image_path, series, audio, graph_nodes, points, tabular_num ou video")
                 if not allow_mixed and signature is not None and current != signature:
                     raise ValueError(f"{self.path}:{line_number}: les modalités doivent être identiques dans le fichier")
                 signature = current
@@ -190,6 +190,8 @@ class JointDataset(Dataset):
             if "tabular_cat" in record:
                 raw_cat = [-1 if v is None else v for v in record["tabular_cat"]]
                 item["tabular_cat"] = torch.tensor(raw_cat, dtype=torch.long)
+        if "video" in record:
+            item["video"] = numeric_tensor(record["video"])
         if "class_label" in record:
             label = record["class_label"]
             if type(label) is not int or not (label == -100 or 0 <= label < self.config.num_classes):
@@ -204,7 +206,7 @@ def collate_records(items):
     if not items:
         raise ValueError("Le batch ne peut pas être vide")
     result = {}
-    for name in ("input_ids", "images", "series", "audio", "graph_nodes", "points", "tabular_num"):
+    for name in ("input_ids", "images", "series", "audio", "graph_nodes", "points", "tabular_num", "video"):
         present = [name in item for item in items]
         if any(present) and not all(present):
             raise ValueError(f"{name} doit être fourni pour tout le batch")
@@ -295,6 +297,16 @@ def collate_records(items):
             if not all(cat_present):
                 raise ValueError("tabular_cat doit être fourni pour tout le batch")
             result["tabular_cat"] = torch.stack([item["tabular_cat"] for item in items])
+    if "video" in items[0]:
+        max_frames = max(item["video"].size(1) for item in items)
+        c_dim, h_dim, w_dim = items[0]["video"].size(0), items[0]["video"].size(2), items[0]["video"].size(3)
+        vids = torch.zeros(len(items), c_dim, max_frames, h_dim, w_dim, dtype=torch.float32)
+        v_mask = torch.zeros(len(items), max_frames, dtype=torch.bool)
+        for i, item in enumerate(items):
+            f = item["video"].size(1)
+            vids[i, :, :f] = item["video"]
+            v_mask[i, :f] = True
+        result.update(video=vids, video_mask=v_mask)
     return result
 
 
@@ -355,6 +367,14 @@ def synthetic_batch(config, *, batch_size=4, seed=0, device="cpu"):
         if config.tabular_cat_features > 0:
             base_cat = (classes[:, None] * 2 + torch.arange(config.tabular_cat_features)[None, :]) % config.tabular_cat_cardinality
             tabular_cat = base_cat.to(torch.long)
+    video = None
+    if getattr(config, "video_enabled", False):
+        n_frames = min(config.max_video_frames, max(config.video_tubelet_size * 2, 4))
+        v_axis = torch.linspace(-1.0, 1.0, config.video_size)
+        t_axis = torch.linspace(0.0, 1.0, n_frames)
+        wave = torch.sin((classes[:, None, None].float() + 1.0) * (v_axis[None, None, :] * 3.0 + t_axis[None, :, None] * 2.0))
+        vid = wave[:, None, :, None, :].expand(-1, config.video_channels, -1, config.video_size, -1)
+        video = (vid + 1.0) / 2.0 + torch.randn(vid.shape, generator=gen) * 0.01
     tokenizer = ByteTokenizer()
     items = []
     for i in range(batch_size):
@@ -375,5 +395,7 @@ def synthetic_batch(config, *, batch_size=4, seed=0, device="cpu"):
             entry["tabular_num"] = tabular_num[i]
             if tabular_cat is not None:
                 entry["tabular_cat"] = tabular_cat[i]
+        if video is not None:
+            entry["video"] = video[i]
         items.append(entry)
     return {key: value.to(device) for key, value in collate_records(items).items()}

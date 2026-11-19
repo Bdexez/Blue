@@ -118,6 +118,7 @@ def inspect_config(config):
             "graph_enabled": config.graph_enabled,
             "pointcloud_enabled": config.pointcloud_enabled,
             "tabular_enabled": config.tabular_enabled,
+            "video_enabled": config.video_enabled,
             "hierarchical_resampler": config.hierarchical_resampler,
             "latent_fsq_levels": list(config.latent_fsq_levels),
             "flow_matching_dim": config.flow_matching_dim,
@@ -672,7 +673,8 @@ def main(argv=None):
                 inputs = {key: value.to(args.device) for key, value in batch.items()
                           if key in ("input_ids", "attention_mask", "images", "series", "series_mask",
                                      "audio", "audio_mask", "graph_nodes", "graph_edges", "graph_mask",
-                                     "points", "point_features", "point_mask", "tabular_num", "tabular_cat")}
+                                     "points", "point_features", "point_mask", "tabular_num", "tabular_cat",
+                                     "video", "video_mask")}
                 vectors = {name: value.cpu().tolist() for name, value in model.encode_modalities(**inputs).items()}
                 size = len(next(iter(vectors.values())))
                 for offset in range(size):

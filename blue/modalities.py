@@ -28,7 +28,7 @@ def has_observed_targets(batch, *, prediction_steps=1):
 def keep_modalities(batch, names):
     """Conserver les cibles de sortie et retirer les masques des entrées omises."""
     result = batch.copy()
-    for name in (*MODALITIES, "audio", "graph_nodes", "points", "tabular_num"):
+    for name in (*MODALITIES, "audio", "graph_nodes", "points", "tabular_num", "video"):
         if name in result and name not in names:
             del result[name]
             if name == "input_ids":
@@ -46,6 +46,8 @@ def keep_modalities(batch, names):
                 result.pop("point_mask", None)
             elif name == "tabular_num":
                 result.pop("tabular_cat", None)
+            elif name == "video":
+                result.pop("video_mask", None)
     return result
 
 
@@ -57,13 +59,13 @@ def balanced_modalities(batch, index, seed=0, *, prediction_steps=1):
     """
     if type(index) is not int or index < 0:
         raise ValueError("L'index de modalités doit être un entier positif ou nul")
-    extras = tuple(m for m in ("audio", "graph_nodes", "points", "tabular_num") if m in batch)
+    extras = tuple(m for m in ("audio", "graph_nodes", "points", "tabular_num", "video") if m in batch)
     available_modalities = (*MODALITIES, *extras)
     names = [name for name in available_modalities if name in batch]
     # Seule la suppression du texte peut retirer une cible ; évaluer les deux
     # possibilités une fois pour éviter des synchronisations GPU par sous-ensemble.
     with_text = has_observed_targets(batch, prediction_steps=prediction_steps)
-    without_text = has_observed_targets(keep_modalities(batch, ("images", "series", "audio", "graph_nodes", "points", "tabular_num")),
+    without_text = has_observed_targets(keep_modalities(batch, ("images", "series", "audio", "graph_nodes", "points", "tabular_num", "video")),
                                         prediction_steps=prediction_steps)
     choices = [subset for count in range(1, len(names) + 1)
                for subset in itertools.combinations(names, count)

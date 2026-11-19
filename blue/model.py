@@ -22,6 +22,7 @@ from .modules import (
 )
 from .pointcloud import PointCloudEncoder
 from .tabular import TabularEncoder
+from .video import VideoEncoder
 
 
 @dataclass
@@ -73,11 +74,13 @@ class Blue(nn.Module):
         self.graph = GraphEncoder(config) if config.graph_enabled else None
         self.pointcloud = PointCloudEncoder(config) if config.pointcloud_enabled else None
         self.tabular = TabularEncoder(config) if config.tabular_enabled else None
+        self.video = VideoEncoder(config) if config.video_enabled else None
         self.modality = nn.Parameter(torch.empty(2, d))
         self.audio_modality = nn.Parameter(torch.empty(d)) if config.audio_enabled else None
         self.graph_modality = nn.Parameter(torch.empty(d)) if config.graph_enabled else None
         self.pointcloud_modality = nn.Parameter(torch.empty(d)) if config.pointcloud_enabled else None
         self.tabular_modality = nn.Parameter(torch.empty(d)) if config.tabular_enabled else None
+        self.video_modality = nn.Parameter(torch.empty(d)) if config.video_enabled else None
         self.resampler = LatentResampler(config)
         self.task_queries = nn.Parameter(torch.empty(1, 2, d))
         self.blocks = nn.ModuleList([DecoderBlock(config, i) for i in range(config.n_layers)])
@@ -111,6 +114,7 @@ class Blue(nn.Module):
         self.graph_alignment = nn.Linear(d, d, bias=False) if config.graph_enabled else None
         self.pointcloud_alignment = nn.Linear(d, d, bias=False) if config.pointcloud_enabled else None
         self.tabular_alignment = nn.Linear(d, d, bias=False) if config.tabular_enabled else None
+        self.video_alignment = nn.Linear(d, d, bias=False) if config.video_enabled else None
         self.forecast_adapter = ForecastAdapter(config) if config.forecast_adapter_context else None
         self.apply(self._initialize)
         if config.stable_rms_norm:
@@ -141,6 +145,10 @@ class Blue(nn.Module):
             nn.init.normal_(self.tabular_modality, std=0.02)
         if self.tabular is not None:
             self.tabular.reset_tabular_parameters()
+        if self.video_modality is not None:
+            nn.init.normal_(self.video_modality, std=0.02)
+        if self.video is not None:
+            self.video.reset_video_parameters()
         if self.resampler.local_latents is not None:
             nn.init.normal_(self.resampler.local_latents, std=0.02)
         if self.audio is not None and self.audio.spectral is not None:
@@ -192,7 +200,7 @@ class Blue(nn.Module):
 
     @staticmethod
     def _initialize(module):
-        if isinstance(module, (nn.Linear, nn.Embedding, nn.Conv1d, nn.Conv2d)):
+        if isinstance(module, (nn.Linear, nn.Embedding, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
             nn.init.normal_(module.weight, std=0.02)
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
@@ -201,7 +209,8 @@ class Blue(nn.Module):
                   reasoning_steps=None, audio=None, audio_mask=None,
                   graph_nodes=None, graph_edges=None, graph_mask=None,
                   points=None, point_features=None, point_mask=None,
-                  tabular_num=None, tabular_cat=None):
+                  tabular_num=None, tabular_cat=None,
+                  video=None, video_mask=None):
         c = self.config
         if reasoning_steps is not None:
             if type(reasoning_steps) is not int or reasoning_steps < 1:
@@ -209,9 +218,9 @@ class Blue(nn.Module):
             if c.latent_reasoning_steps == 1 and reasoning_steps != 1:
                 raise ValueError("reasoning_steps > 1 nécessite latent_reasoning_steps > 1 dans la configuration")
         effective_steps = c.latent_reasoning_steps if reasoning_steps is None else reasoning_steps
-        tensors = [x for x in (input_ids, images, series, audio, graph_nodes, points, tabular_num) if x is not None]
+        tensors = [x for x in (input_ids, images, series, audio, graph_nodes, points, tabular_num, video) if x is not None]
         if not tensors:
-            raise ValueError("Au moins une modalité est requise : texte, images, séries, audio, graphe, nuage 3D ou tabulaire")
+            raise ValueError("Au moins une modalité est requise : texte, images, séries, audio, graphe, nuage 3D, tabulaire ou vidéo")
         batch = tensors[0].size(0)
         if batch < 1 or any(x.size(0) != batch for x in tensors):
             raise ValueError("Les modalités doivent partager un batch non vide")
@@ -303,12 +312,24 @@ class Blue(nn.Module):
                     raise ValueError("tabular_cat doit appartenir à [-1, tabular_cat_cardinality - 1]")
         elif tabular_cat is not None:
             raise ValueError("tabular_cat nécessite tabular_num")
+        if video is not None:
+            if self.video is None:
+                raise ValueError("video nécessite video_enabled=True dans la configuration")
+            if video.ndim != 5 or video.size(1) != c.video_channels or video.shape[3:] != (c.video_size, c.video_size):
+                raise ValueError("video doit avoir la forme [B, video_channels, F, video_size, video_size]")
+            if not video.is_floating_point() or not 1 <= video.size(2) <= c.max_video_frames:
+                raise ValueError("video doit être flottant et respecter max_video_frames")
+            if not torch.isfinite(video).all():
+                raise ValueError("video doit contenir des nombres flottants finis")
+        elif video_mask is not None:
+            raise ValueError("video_mask nécessite video")
         for mask, data, name, expected_shape in (
             (attention_mask, input_ids, "attention_mask", None if input_ids is None else input_ids.shape[:2]),
             (series_mask, series, "series_mask", None if series is None else series.shape[:2]),
             (audio_mask, audio, "audio_mask", None if audio is None else (audio.size(0), audio.size(2))),
             (graph_mask, graph_nodes, "graph_mask", None if graph_nodes is None else graph_nodes.shape[:2]),
             (point_mask, points, "point_mask", None if points is None else points.shape[:2]),
+            (video_mask, video, "video_mask", None if video is None else (video.size(0), video.size(2))),
         ):
             if mask is not None:
                 if mask.shape != expected_shape or mask.device != device:
@@ -320,7 +341,7 @@ class Blue(nn.Module):
         if cache is not None:
             if self.training:
                 raise ValueError("Le cache est réservé à l'inférence en mode eval()")
-            if any(m is not None for m in (images, series, audio, graph_nodes, points, tabular_num)):
+            if any(m is not None for m in (images, series, audio, graph_nodes, points, tabular_num, video)):
                 raise ValueError("Le contexte multimodal est déjà dans le cache ; ne pas le réinjecter")
             if len(cache.layers) != c.n_layers * effective_steps or cache.latents.size(0) != batch:
                 raise ValueError("Cache incompatible avec ce modèle ou ce batch")
@@ -353,6 +374,8 @@ class Blue(nn.Module):
             proj = self.pointcloud_alignment
         elif index == 6:
             proj = self.tabular_alignment
+        elif index == 7:
+            proj = self.video_alignment
         else:
             proj = self.alignment[index]
         projected = proj(value).float()
@@ -366,9 +389,9 @@ class Blue(nn.Module):
 
     def encode_modalities(self, *, input_ids=None, images=None, series=None, audio=None,
                           graph_nodes=None, graph_edges=None, points=None, point_features=None,
-                          tabular_num=None, tabular_cat=None,
+                          tabular_num=None, tabular_cat=None, video=None,
                           attention_mask=None, series_mask=None, audio_mask=None,
-                          graph_mask=None, point_mask=None):
+                          graph_mask=None, point_mask=None, video_mask=None):
         """Représentations contrastives indépendantes de chaque modalité fournie.
 
         Le texte utilise toujours le contexte nul, même si l'alignement a été
@@ -379,7 +402,8 @@ class Blue(nn.Module):
                        audio=audio, audio_mask=audio_mask,
                        graph_nodes=graph_nodes, graph_edges=graph_edges, graph_mask=graph_mask,
                        points=points, point_features=point_features, point_mask=point_mask,
-                       tabular_num=tabular_num, tabular_cat=tabular_cat)
+                       tabular_num=tabular_num, tabular_cat=tabular_cat,
+                       video=video, video_mask=video_mask)
         representations = {}
         if input_ids is not None:
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
@@ -417,6 +441,12 @@ class Blue(nn.Module):
             tokens, mask = self.tabular(tabular_num, tabular_cat)
             pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
             representations['tabular'] = (6, pooled)
+        if video is not None:
+            valid = (torch.ones((video.size(0), video.size(2)), device=video.device, dtype=torch.bool)
+                     if video_mask is None else video_mask.bool())
+            tokens, mask = self.video(video, valid)
+            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
+            representations['video'] = (7, pooled)
         result = {}
         for name, (index, value) in representations.items():
             vector = self._project_alignment(index, value)
@@ -557,8 +587,9 @@ class Blue(nn.Module):
     def forward(
         self, input_ids=None, *, images=None, series=None, audio=None,
         graph_nodes=None, graph_edges=None, points=None, point_features=None,
-        tabular_num=None, tabular_cat=None,
-        attention_mask=None, series_mask=None, audio_mask=None, graph_mask=None, point_mask=None,
+        tabular_num=None, tabular_cat=None, video=None,
+        attention_mask=None, series_mask=None, audio_mask=None, graph_mask=None,
+        point_mask=None, video_mask=None,
         labels=None, class_labels=None, forecast_targets=None, flow_targets=None, alignment_ids=None,
         alignment_cross_rank_views=False, alignment_cross_class_views=False,
         cache: ModelCache | None = None, use_cache=False, reasoning_steps: int | None = None,
@@ -567,7 +598,8 @@ class Blue(nn.Module):
                                reasoning_steps, audio=audio, audio_mask=audio_mask,
                                graph_nodes=graph_nodes, graph_edges=graph_edges, graph_mask=graph_mask,
                                points=points, point_features=point_features, point_mask=point_mask,
-                               tabular_num=tabular_num, tabular_cat=tabular_cat)
+                               tabular_num=tabular_num, tabular_cat=tabular_cat,
+                               video=video, video_mask=video_mask)
         distributed_alignment = (self.config.alignment_scope == "global" and self.training and dist.is_available()
                                  and dist.is_initialized() and dist.get_world_size() > 1)
         if type(alignment_cross_rank_views) is not bool and not distributed_alignment:
@@ -663,6 +695,15 @@ class Blue(nn.Module):
                 pooled_tab = (tab_tokens * tab_valid.unsqueeze(-1)).sum(1)
                 pooled_tab = pooled_tab / tab_valid.sum(1, keepdim=True).clamp_min(1)
                 align_vectors.append((6, pooled_tab))
+            if video is not None:
+                vid_frames_valid = (torch.ones((video.size(0), video.size(2)), device=video.device, dtype=torch.bool)
+                                    if video_mask is None else video_mask.bool())
+                vid_tokens, vid_valid = self.video(video, vid_frames_valid)
+                contexts.append(vid_tokens + self.video_modality)
+                masks.append(vid_valid)
+                pooled_vid = (vid_tokens * vid_valid.unsqueeze(-1)).sum(1)
+                pooled_vid = pooled_vid / vid_valid.sum(1, keepdim=True).clamp_min(1)
+                align_vectors.append((7, pooled_vid))
             latents = self.resampler(contexts, masks, batch)
         else:
             latents, mean, scale = cache.latents, cache.series_mean, cache.series_scale
@@ -751,8 +792,9 @@ class Blue(nn.Module):
                 self._alignment_group = dist.new_group()
                 self._alignment_world = dist.group.WORLD
             vectors = {i: self._project_alignment(i, v) for i, v in align_vectors}
-            n_mod = (7 if c.tabular_enabled else
-                     (6 if c.pointcloud_enabled else (5 if c.graph_enabled else (4 if c.audio_enabled else 3))))
+            n_mod = (8 if c.video_enabled else
+                     (7 if c.tabular_enabled else
+                      (6 if c.pointcloud_enabled else (5 if c.graph_enabled else (4 if c.audio_enabled else 3)))))
             losses["alignment"] = distributed_alignment_loss(vectors, class_labels, c.alignment_temperature,
                                                               c.alignment_mode, group=self._alignment_group,
                                                               text_view=c.alignment_text_view, sample_ids=alignment_ids,
