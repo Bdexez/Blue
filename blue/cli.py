@@ -113,6 +113,7 @@ def inspect_config(config):
             "ssm_state_dim": config.ssm_state_dim,
             "ttt_state_dim": config.ttt_state_dim,
             "shared_expert_gate": config.shared_expert_gate,
+            "moe_null_experts": config.moe_null_experts,
             "router_bias_update_rate": config.router_bias_update_rate,
             "depth_routing_capacity": config.depth_routing_capacity,
             "vision_rope_2d": config.vision_rope_2d,
