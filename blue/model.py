@@ -83,11 +83,13 @@ class Blue(nn.Module):
             self.reasoning_norm = RMSNorm(d, config.norm_eps)
             self.reasoning_adapter = nn.Linear(2 * d, d, bias=False)
             self.reasoning_gate = nn.Parameter(torch.full((d,), -1.0))
+            self.ponder_halt = nn.Linear(d, 1, bias=True) if config.latent_reasoning_adaptive else None
         else:
             self.reasoning_step_embed = None
             self.reasoning_norm = None
             self.reasoning_adapter = None
             self.reasoning_gate = None
+            self.ponder_halt = None
         self.norm = RMSNorm(d, config.norm_eps)
         self.episodic_memory = (EpisodicMemoryBank(d, config.memory_slots, config.n_heads, norm_eps=config.norm_eps)
                                 if config.memory_slots > 0 else None)
@@ -137,6 +139,9 @@ class Blue(nn.Module):
             self.audio.spectral.reset_spectral_parameters()
         if self.reasoning_gate is not None:
             nn.init.constant_(self.reasoning_gate, -1.0)
+        if self.ponder_halt is not None:
+            p = self.config.ponder_prior
+            nn.init.constant_(self.ponder_halt.bias, math.log(p / (1.0 - p)))
         if self.flow_head is not None:
             self.flow_head.reset_adaln_parameters()
         if self.episodic_memory is not None:
@@ -415,6 +420,9 @@ class Blue(nn.Module):
         x = initial
         balance_losses, z_losses, depth_losses, next_layers = [], [], [], []
         layer_usage = [None] * self.config.n_layers
+        adaptive = self.ponder_halt is not None and steps > 1
+        step_states = [] if adaptive else None
+        halt_hazards = [] if adaptive else None
         for rec_step in range(steps):
             x = self._prepare_reasoning_step(x, initial, valid, rec_step)
             for index, block in enumerate(self.blocks):
@@ -439,13 +447,45 @@ class Blue(nn.Module):
                 if depth_loss is not None:
                     depth_losses.append(depth_loss)
                 layer_usage[index] = expert_usage if layer_usage[index] is None else layer_usage[index] + expert_usage
+            if adaptive:
+                collapsed_step = self._collapse_streams(x)
+                step_states.append(collapsed_step)
+                with torch.autocast(device_type=collapsed_step.device.type, enabled=False):
+                    normed = self.reasoning_norm(collapsed_step).float()
+                    hazard = torch.sigmoid(F.linear(
+                        normed, self.ponder_halt.weight.float(), self.ponder_halt.bias.float()
+                    )).squeeze(-1)
+                halt_hazards.append(hazard)
         usage = [value / steps for value in layer_usage]
-        collapsed = self._collapse_streams(x)
+        ponder_kl = None
+        if adaptive:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                rem = torch.ones_like(halt_hazards[0])
+                probs = []
+                for idx in range(steps):
+                    if idx < steps - 1:
+                        p_step = rem * halt_hazards[idx]
+                        rem = rem * (1.0 - halt_hazards[idx])
+                    else:
+                        p_step = rem
+                    probs.append(p_step)
+                halt_probs = torch.stack(probs, dim=-1)  # [B, T, R]
+                prior_raw = torch.tensor(
+                    [((1.0 - self.config.ponder_prior) ** idx) * self.config.ponder_prior for idx in range(steps)],
+                    device=x.device, dtype=torch.float32,
+                )
+                prior = prior_raw / prior_raw.sum()
+                kl_per_token = (halt_probs * (halt_probs.clamp_min(1e-8).log() - prior.clamp_min(1e-8).log())).sum(-1)
+                ponder_kl = (kl_per_token * valid.float()).sum() / valid.sum().clamp_min(1)
+            stacked_states = torch.stack(step_states, dim=-2)  # [B, T, R, D]
+            collapsed = (stacked_states * halt_probs.to(stacked_states.dtype).unsqueeze(-1)).sum(dim=-2)
+        else:
+            collapsed = self._collapse_streams(x)
         next_memory = None
         if self.episodic_memory is not None:
             prev_mem = None if cache is None else cache.episodic_memory
             collapsed, next_memory = self.episodic_memory(collapsed, valid, prev_mem)
-        return self.norm(collapsed), balance_losses, z_losses, depth_losses, usage, next_layers, next_memory
+        return self.norm(collapsed), balance_losses, z_losses, depth_losses, ponder_kl, usage, next_layers, next_memory
 
     def _isolated_text_representation(self, input_ids, valid):
         """Encoder le texte avec le contexte nul, sans image ni série associée."""
@@ -570,7 +610,7 @@ class Blue(nn.Module):
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
                      if attention_mask is None else attention_mask.bool())
         offset = 0 if cache is None else cache.offset
-        hidden, balance_losses, z_losses, depth_losses, usage, next_layers, next_memory = self._run_decoder_stack(
+        hidden, balance_losses, z_losses, depth_losses, ponder_kl, usage, next_layers, next_memory = self._run_decoder_stack(
             x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
             reasoning_steps=reasoning_steps,
         )
@@ -601,6 +641,9 @@ class Blue(nn.Module):
         if depth_losses:
             losses["depth_budget"] = torch.stack(depth_losses).mean()
             total = total + c.depth_budget_weight * losses["depth_budget"]
+        if ponder_kl is not None:
+            losses["ponder_kl"] = ponder_kl
+            total = total + c.ponder_kl_weight * losses["ponder_kl"]
         if labels is not None:
             targets = labels.masked_fill(~valid, -100)
             shifted = targets[:, 1:].masked_fill(~valid[:, :-1], -100)

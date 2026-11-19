@@ -27,6 +27,8 @@ def observed_objective(output, local_counts, total_counts, config, *, world, acc
     loss = (config.balance_weight * losses["balance"] + config.router_z_weight * losses["router_z"]) / accumulation
     if "depth_budget" in losses:
         loss = loss + config.depth_budget_weight * losses["depth_budget"] / accumulation
+    if "ponder_kl" in losses:
+        loss = loss + config.ponder_kl_weight * losses["ponder_kl"] / accumulation
     if "alignment" in losses:
         loss = loss + config.alignment_weight * losses["alignment"] / accumulation
     for index, (name, weight) in enumerate((("text", config.text_weight),
