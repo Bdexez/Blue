@@ -10,6 +10,67 @@ def _fmt_int(value: int) -> str:
     return f"{value:,}".replace(",", " ")
 
 
+def _build_mermaid(config: BlueConfig, modalities: list[str]) -> list[str]:
+    mod_nodes = [
+        ("IMG", "Images (2D-RoPE)" if config.vision_rope_2d else "Images"),
+        ("SER", "Séries (RevIN + rFFT)" if config.temporal_spectral_mixing else "Séries (RevIN)"),
+    ]
+    if config.audio_enabled:
+        mod_nodes.append(("AUD", "Audio 1D"))
+    if config.graph_enabled:
+        mod_nodes.append(("GRP", "Graphes (RWSE + Evoformer)"))
+    if config.pointcloud_enabled:
+        mod_nodes.append(("PTS", "Nuages 3D SE(3)"))
+    if config.tabular_enabled:
+        mod_nodes.append(("TAB", "Tabulaire (PLR + Cat)"))
+    if config.video_enabled:
+        mod_nodes.append(("VID", "Vidéo (Tubelets + 3D-RoPE)"))
+
+    res_label = f"LatentResampler ({config.n_latents} latents"
+    if config.hierarchical_resampler:
+        res_label += ", hiérarchique 2 niveaux"
+    if config.latent_fsq_levels:
+        res_label += f", FSQ {_fmt_int(math.prod(config.latent_fsq_levels))}"
+    res_label += ")"
+
+    attn_parts = ["MLA" if config.kv_lora_rank else "GQA"]
+    if config.differential_attention:
+        attn_parts.append("DiffAttn")
+    if config.attention_sinks:
+        attn_parts.append(f"{config.attention_sinks} Sinks")
+    if config.value_residual:
+        attn_parts.append("ResFormer V-Res")
+    mixer_parts = [" + ".join(attn_parts), "CausalConv"]
+    if config.ssm_state_dim:
+        mixer_parts.append("GatedDeltaNet WY")
+    if config.ttt_state_dim:
+        mixer_parts.append("TTT-Linear")
+    dec_label = f"Décodeur {config.n_layers}x ({' + '.join(mixer_parts)})"
+    if config.residual_streams > 1:
+        dec_label += f" [mHC {config.residual_streams} flux]"
+    if config.latent_reasoning_steps > 1:
+        dec_label += f" [Raisonnement {config.latent_reasoning_steps}x{' PonderNet' if config.latent_reasoning_adaptive else ''}]"
+
+    lines = ["```mermaid", "flowchart TD"]
+    for node_id, label in mod_nodes:
+        lines.append(f'    {node_id}["{label}"] --> RES["{res_label}"]')
+    lines.append('    TXT["Texte UTF-8"] --> DEC["' + dec_label + '"]')
+    lines.append(f'    RES --> DEC')
+    if config.memory_slots > 0:
+        lines.append(f'    DEC --> MEM["Mémoire épisodique ({config.memory_slots} emplacements)"]')
+        head_src = "MEM"
+    else:
+        head_src = "DEC"
+    lines.append(f'    {head_src} --> LM["Texte + Multi-Token ({config.prediction_steps} pas)"]')
+    lines.append(f'    {head_src} --> CLS["Classification ({config.num_classes} classes)"]')
+    lines.append(f'    {head_src} --> FC["Prévision quantiles ({config.forecast_horizon} pas)"]')
+    if config.flow_matching_dim > 0:
+        lines.append(f'    {head_src} --> FM["Conditional Flow Matching (dim={config.flow_matching_dim})"]')
+    lines.append(f'    RES --> ALN["Alignement {config.alignment_geometry} ({len(modalities) * (len(modalities) - 1) // 2} paires)"]')
+    lines.append("```")
+    return lines
+
+
 def generate_model_card(config: BlueConfig, *, name: str | None = None,
                         seq_len: int = 2048, batch_size: int = 1) -> str:
     """Générer une fiche technique Markdown complète sans allouer les poids."""
@@ -20,6 +81,10 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
     fsq_size = math.prod(config.latent_fsq_levels) if config.latent_fsq_levels else 0
     lines = [
         title,
+        "",
+        "## Schéma architectural dynamique",
+        "",
+        *_build_mermaid(config, report["modalities"]),
         "",
         "## Synthèse",
         "",
