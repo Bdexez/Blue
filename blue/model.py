@@ -13,6 +13,7 @@ from .distributed_alignment import distributed_alignment_loss
 from .flow_matching import ConditionalFlowHead
 from .graph import GraphEncoder
 from .hyperbolic import poincare_exp0, poincare_pairwise_distance
+from .jepa import MultimodalJEPAPredictor
 from .losses import quantile_pinball_loss, symmetric_contrastive_loss
 from .memory import EpisodicMemoryBank
 from .forecast_adapter import ForecastAdapter, ForecastAdapterContext
@@ -113,6 +114,7 @@ class Blue(nn.Module):
         self.classifier = nn.Linear(d, config.num_classes)
         self.forecaster = QuantileForecastHead(config)
         self.flow_head = ConditionalFlowHead(config) if config.flow_matching_dim > 0 else None
+        self.jepa = MultimodalJEPAPredictor(d, norm_eps=config.norm_eps) if config.jepa_weight > 0 else None
         self.alignment = nn.ModuleList([nn.Linear(d, d, bias=False) for _ in range(3)])
         self.audio_alignment = nn.Linear(d, d, bias=False) if config.audio_enabled else None
         self.graph_alignment = nn.Linear(d, d, bias=False) if config.graph_enabled else None
@@ -166,6 +168,8 @@ class Blue(nn.Module):
             nn.init.constant_(self.ponder_halt.bias, math.log(p / (1.0 - p)))
         if self.flow_head is not None:
             self.flow_head.reset_adaln_parameters()
+        if self.jepa is not None:
+            self.jepa.reset_jepa_parameters()
         if self.episodic_memory is not None:
             self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
@@ -801,6 +805,9 @@ class Blue(nn.Module):
         if flow_targets is not None:
             losses["flow"] = self.flow_head.loss(flow_targets, forecast_pooled)
             total = total + c.flow_matching_weight * losses["flow"]
+        if self.jepa is not None and len(align_vectors) >= 2:
+            losses["jepa"] = self.jepa(align_vectors)
+            total = total + c.jepa_weight * losses["jepa"]
         # En entraînement distribué, toutes les paires effectivement présentes
         # peuvent partager leurs exemples négatifs entre rangs.
         if (c.alignment_text_view == "isolated" and input_ids is not None

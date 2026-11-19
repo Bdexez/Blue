@@ -125,6 +125,7 @@ def inspect_config(config):
             "hierarchical_resampler": config.hierarchical_resampler,
             "latent_fsq_levels": list(config.latent_fsq_levels),
             "flow_matching_dim": config.flow_matching_dim,
+            "jepa_weight": config.jepa_weight,
             "memory_slots": config.memory_slots,
             "alignment_geometry": config.alignment_geometry,
             "latent_reasoning_steps": config.latent_reasoning_steps,
