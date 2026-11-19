@@ -16,9 +16,11 @@ from .config import BlueConfig
 from .data import JointDataset, collate_records, synthetic_batch
 from .forecast_adapter import fit_forecast_adapter
 from .embedding_search import search_embeddings
+from .lora import merge_dora
 from .model import Blue
 from .modality_batch_sampler import OrderedModalityBatchSampler
 from .profiler import profile_architecture
+from .quantize import quantize_model_int8
 from .retrieval_evaluation import evaluate_retrieval
 from .retrieval_relevance import write_class_relevance
 from .series_classifier import SeriesClassifier, fit_series_classifier
@@ -184,6 +186,12 @@ def main(argv=None):
                           help="Optimiseur : adamw (défaut) ou muon (Newton-Schulz + AdamW) ; restauré à la reprise")
     training.add_argument("--ema-decay", type=float,
                           help="Décroissance EMA des poids dans [0, 1[ (0 désactive) ; restaurée à la reprise")
+    training.add_argument("--dora-rank", type=int,
+                          help="Rang DoRA/LoRA pour affinage efficace (gèle les poids de base) ; restauré à la reprise")
+    training.add_argument("--dora-alpha", type=float,
+                          help="Facteur alpha DoRA/LoRA (défaut : 2 * dora-rank)")
+    training.add_argument("--dora-mode", choices=("dora", "lora"),
+                          help="Variante d'adaptation : dora (défaut) ou lora")
     training.add_argument("--weight-decay", type=float, default=0.01)
     training.add_argument("--grad-clip", type=float, default=1.0)
     training.add_argument("--warmup", type=int, default=10)
@@ -309,6 +317,12 @@ def main(argv=None):
                         help="Activer la normalisation RMS stable dans un nouveau checkpoint d'inférence")
     export.add_argument("--use-ema", action="store_true",
                         help="Exporter les poids EMA enregistrés dans le checkpoint source")
+    export.add_argument("--merge-dora", action="store_true",
+                        help="Fusionner algébriquement les adaptateurs DoRA/LoRA en couches linéaires standards")
+    export.add_argument("--quantize-int8", action="store_true",
+                        help="Quantifier les grandes couches linéaires en INT8 symétrique par canal")
+    export.add_argument("--int8-min-numel", type=int, default=1024,
+                        help="Taille minimale d'un tenseur linéaire pour la quantification INT8 (défaut : 1024)")
     evaluation = commands.add_parser("evaluate", help="Évaluer un checkpoint sur un fichier JSONL indépendant")
     evaluation.add_argument("--checkpoint", required=True)
     evaluation.add_argument("--data", required=True)
@@ -640,7 +654,9 @@ def main(argv=None):
         with prediction_stream(args.output) as stream, torch.inference_mode(), autocast:
             for batch in loader:
                 inputs = {key: value.to(args.device) for key, value in batch.items()
-                          if key in ("input_ids", "attention_mask", "images", "series", "series_mask")}
+                          if key in ("input_ids", "attention_mask", "images", "series", "series_mask",
+                                     "audio", "audio_mask", "graph_nodes", "graph_edges", "graph_mask",
+                                     "points", "point_features", "point_mask", "tabular_num", "tabular_cat")}
                 vectors = {name: value.cpu().tolist() for name, value in model.encode_modalities(**inputs).items()}
                 size = len(next(iter(vectors.values())))
                 for offset in range(size):
@@ -707,10 +723,13 @@ def main(argv=None):
         if args.output:
             print(f"Évaluation écrite dans {args.output}")
     elif args.command == "export":
-        if args.stable_rms_norm and same_file(args.output, args.checkpoint):
-            parser.error("Le checkpoint stable doit être distinct du checkpoint source")
+        transforms = args.stable_rms_norm or args.merge_dora or args.quantize_int8
+        if transforms and same_file(args.output, args.checkpoint):
+            parser.error("Le checkpoint exporté doit être distinct du checkpoint source")
+        if args.int8_min_numel < 1:
+            parser.error("int8-min-numel doit être >= 1")
         parent_sha = file_sha256(args.checkpoint) if args.stable_rms_norm else None
-        model, payload = load_checkpoint(args.checkpoint, mmap=not args.stable_rms_norm,
+        model, payload = load_checkpoint(args.checkpoint, mmap=not transforms,
                                          overrides={"stable_rms_norm": True} if args.stable_rms_norm else None)
         step = payload["step"]
         trainer = dict(payload.get("trainer", {}), inference_only=True)
@@ -727,6 +746,19 @@ def main(argv=None):
                     params[name].copy_(shadow.to(device=params[name].device, dtype=params[name].dtype))
                 model.lm_head.weight = model.embedding.weight
             trainer["exported_ema"] = True
+        if args.merge_dora:
+            merged_count = merge_dora(model)
+            if merged_count == 0:
+                raise ValueError("Le checkpoint source ne contient aucun adaptateur DoRA/LoRA à fusionner")
+            trainer.pop("dora", None)
+            trainer["merged_dora"] = merged_count
+        if args.quantize_int8:
+            if trainer.get("dora") is not None:
+                raise ValueError("Fusionner d'abord DoRA avec --merge-dora avant --quantize-int8")
+            if trainer.get("quantized_int8") is not None:
+                raise ValueError("Le checkpoint source est déjà quantifié en INT8")
+            q_stats = quantize_model_int8(model, min_numel=args.int8_min_numel)
+            trainer["quantized_int8"] = {"min_numel": args.int8_min_numel, **q_stats}
         if args.stable_rms_norm:
             if file_sha256(args.checkpoint) != parent_sha:
                 raise ValueError("Le checkpoint source a changé pendant l'export")
