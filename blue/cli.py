@@ -106,6 +106,7 @@ def inspect_config(config):
             "cross_differential_attention": config.cross_differential_attention,
             "kv_lora_rank": config.kv_lora_rank,
             "attention_sinks": config.attention_sinks,
+            "value_residual": config.value_residual,
             "ssm_state_dim": config.ssm_state_dim,
             "ttt_state_dim": config.ttt_state_dim,
             "shared_expert_gate": config.shared_expert_gate,

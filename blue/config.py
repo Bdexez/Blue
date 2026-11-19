@@ -31,6 +31,7 @@ class BlueConfig:
     cross_differential_attention: bool = False
     kv_lora_rank: int = 0
     attention_sinks: int = 0
+    value_residual: bool = False
     ssm_state_dim: int = 0
     ssm_heads: int | None = None
     ssm_chunk_size: int = 32
@@ -151,6 +152,8 @@ class BlueConfig:
                 raise ValueError("kv_lora_rank + differential_attention nécessite d_model / n_heads divisible par 8")
         if type(self.attention_sinks) is not int or self.attention_sinks < 0:
             raise ValueError("attention_sinks doit être un entier positif ou nul")
+        if type(self.value_residual) is not bool:
+            raise ValueError("value_residual doit être booléen")
         if type(self.ssm_state_dim) is not int or self.ssm_state_dim < 0:
             raise ValueError("ssm_state_dim doit être un entier positif ou nul")
         if self.ssm_heads is not None:
