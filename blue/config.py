@@ -67,6 +67,7 @@ class BlueConfig:
     n_latents: int = 16
     resampler_layers: int = 2
     hierarchical_resampler: bool = False
+    latent_fsq_levels: tuple[int, ...] = ()
     num_classes: int = 6
     forecast_horizon: int = 12
     forecast_context: int = 32
@@ -243,6 +244,9 @@ class BlueConfig:
             raise ValueError("pointcloud_features doit être un entier positif ou nul")
         if type(self.hierarchical_resampler) is not bool:
             raise ValueError("hierarchical_resampler doit être booléen")
+        self.latent_fsq_levels = tuple(self.latent_fsq_levels)
+        if any(type(level) is not int or level < 2 for level in self.latent_fsq_levels):
+            raise ValueError("latent_fsq_levels doit contenir des entiers >= 2")
         if type(self.forecast_adapter_relative) is not bool:
             raise ValueError("forecast_adapter_relative doit être booléen")
         if type(self.forecast_adapter_missing_gate) is not bool:
