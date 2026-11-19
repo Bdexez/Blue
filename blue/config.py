@@ -34,6 +34,9 @@ class BlueConfig:
     ssm_state_dim: int = 0
     ssm_heads: int | None = None
     ssm_chunk_size: int = 32
+    ttt_state_dim: int = 0
+    ttt_heads: int | None = None
+    ttt_base_lr: float = 0.5
     residual_streams: int = 1
     latent_reasoning_steps: int = 1
     latent_reasoning_adaptive: bool = False
@@ -159,6 +162,15 @@ class BlueConfig:
                 raise ValueError("d_model doit être divisible par ssm_heads")
         if type(self.ssm_chunk_size) is not int or self.ssm_chunk_size < 1:
             raise ValueError("ssm_chunk_size doit être un entier strictement positif")
+        if type(self.ttt_state_dim) is not int or self.ttt_state_dim < 0:
+            raise ValueError("ttt_state_dim doit être un entier positif ou nul")
+        if self.ttt_heads is not None:
+            if type(self.ttt_heads) is not int or self.ttt_heads < 1:
+                raise ValueError("ttt_heads doit être un entier strictement positif")
+            if self.ttt_state_dim == 0:
+                raise ValueError("ttt_heads nécessite ttt_state_dim > 0")
+        if not math.isfinite(self.ttt_base_lr) or self.ttt_base_lr <= 0:
+            raise ValueError("ttt_base_lr doit être fini et strictement positif")
         if type(self.residual_streams) is not int or self.residual_streams < 1:
             raise ValueError("residual_streams doit être un entier strictement positif")
         if type(self.latent_reasoning_steps) is not int or self.latent_reasoning_steps < 1:
