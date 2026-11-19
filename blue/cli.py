@@ -110,6 +110,7 @@ def inspect_config(config):
             "audio_enabled": config.audio_enabled,
             "graph_enabled": config.graph_enabled,
             "pointcloud_enabled": config.pointcloud_enabled,
+            "hierarchical_resampler": config.hierarchical_resampler,
             "flow_matching_dim": config.flow_matching_dim,
             "memory_slots": config.memory_slots,
             "latent_reasoning_steps": config.latent_reasoning_steps,
