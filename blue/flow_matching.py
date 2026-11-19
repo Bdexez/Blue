@@ -22,7 +22,8 @@ class SinusoidalTimeEmbedding(nn.Module):
             emb = torch.cat((angles.sin(), angles.cos()), dim=-1)
             if self.dim % 2:
                 emb = F.pad(emb, (0, 1))
-        return self.mlp(emb.to(self.mlp[0].weight.dtype))
+        target_dtype = self.mlp[0].weight.dtype if hasattr(self.mlp[0], "weight") else emb.dtype
+        return self.mlp(emb.to(target_dtype))
 
 
 class AdaLNZeroBlock(nn.Module):
