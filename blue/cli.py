@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 
 from .augmentation import SeriesAugmentation
 from .calibration import ForecastCalibration, file_sha256, fit_calibration
+from .card import generate_model_card
 from .config import BlueConfig
 from .data import JointDataset, collate_records, synthetic_batch
 from .forecast_adapter import fit_forecast_adapter
@@ -147,6 +148,10 @@ def main(argv=None):
     prof.add_argument("--measure", action="store_true", help="Mesurer aussi une passe avant/arrière réelle")
     prof.add_argument("--device", default="cpu")
     prof.add_argument("--output", help="Rapport JSON ; sinon sortie standard")
+    card = commands.add_parser("card", help="Générer une fiche technique Markdown de l'architecture sans allouer les poids")
+    card.add_argument("--seq-len", type=int, default=2048)
+    card.add_argument("--batch-size", type=int, default=1)
+    card.add_argument("--output", help="Fichier Markdown de sortie ; sinon stdout")
     audit = commands.add_parser("audit-splits", help="Détecter des exemples ou fenêtres partagés entre jeux JSONL")
     audit.add_argument("--split", action="append", required=True, metavar="NOM=FICHIER",
                        help="Jeu nommé ; indiquer au moins deux fois")
@@ -169,7 +174,7 @@ def main(argv=None):
     prepare.add_argument("--gap", type=int, default=0, help="Positions exclues après chaque coupure")
     demo = commands.add_parser("demo", help="Exécuter les trois modalités et les trois sorties")
     training = commands.add_parser("train", help="Entraînement conjoint réel")
-    for command in (inspect, prof, demo, training):
+    for command in (inspect, prof, card, demo, training):
         command.add_argument("--preset", choices=("tiny", "small", "workstation", "base", "large", "ultra", "hyper", "titan"), default="tiny")
         command.add_argument("--config", help="Configuration JSON personnalisée")
     demo.add_argument("--checkpoint")
@@ -482,6 +487,15 @@ def main(argv=None):
             with prediction_stream(args.output) as stream:
                 stream.write(content)
         print(content, end="")
+    elif args.command == "card":
+        label = Path(args.config).stem if args.config else args.preset
+        markdown = generate_model_card(get_config(args), name=label,
+                                       seq_len=args.seq_len, batch_size=args.batch_size)
+        if args.output:
+            with prediction_stream(args.output) as stream:
+                stream.write(markdown)
+        else:
+            print(markdown, end="")
     elif args.command == "train":
         if args.model_overrides and not args.init_from:
             parser.error("model-overrides nécessite init-from ; utiliser config pour un nouveau modèle")
