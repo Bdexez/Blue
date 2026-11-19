@@ -18,6 +18,7 @@ from .forecast_adapter import fit_forecast_adapter
 from .embedding_search import search_embeddings
 from .model import Blue
 from .modality_batch_sampler import OrderedModalityBatchSampler
+from .profiler import profile_architecture
 from .retrieval_evaluation import evaluate_retrieval
 from .retrieval_relevance import write_class_relevance
 from .series_classifier import SeriesClassifier, fit_series_classifier
@@ -135,6 +136,12 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect", help="Compter les paramètres sans allouer les poids")
     inspect.add_argument("--all", action="store_true", help="Inspecter tous les presets")
+    prof = commands.add_parser("profile", help="Profiler paramètres, empreinte cache KV/SSM/mémoire et latence")
+    prof.add_argument("--seq-len", type=int, default=1024)
+    prof.add_argument("--batch-size", type=int, default=1)
+    prof.add_argument("--measure", action="store_true", help="Mesurer aussi une passe avant/arrière réelle")
+    prof.add_argument("--device", default="cpu")
+    prof.add_argument("--output", help="Rapport JSON ; sinon sortie standard")
     audit = commands.add_parser("audit-splits", help="Détecter des exemples ou fenêtres partagés entre jeux JSONL")
     audit.add_argument("--split", action="append", required=True, metavar="NOM=FICHIER",
                        help="Jeu nommé ; indiquer au moins deux fois")
@@ -157,7 +164,7 @@ def main(argv=None):
     prepare.add_argument("--gap", type=int, default=0, help="Positions exclues après chaque coupure")
     demo = commands.add_parser("demo", help="Exécuter les trois modalités et les trois sorties")
     training = commands.add_parser("train", help="Entraînement conjoint réel")
-    for command in (inspect, demo, training):
+    for command in (inspect, prof, demo, training):
         command.add_argument("--preset", choices=("tiny", "small", "workstation", "base", "large", "ultra", "hyper", "titan"), default="tiny")
         command.add_argument("--config", help="Configuration JSON personnalisée")
     demo.add_argument("--checkpoint")
@@ -449,6 +456,15 @@ def main(argv=None):
         else:
             report = inspect_config(get_config(args))
         print(json.dumps(report, indent=2))
+    elif args.command == "profile":
+        report = profile_architecture(get_config(args), seq_len=args.seq_len,
+                                      batch_size=args.batch_size, measure=args.measure,
+                                      device=args.device)
+        content = json.dumps(report, indent=2, allow_nan=False) + "\n"
+        if args.output:
+            with prediction_stream(args.output) as stream:
+                stream.write(content)
+        print(content, end="")
     elif args.command == "train":
         if args.model_overrides and not args.init_from:
             parser.error("model-overrides nécessite init-from ; utiliser config pour un nouveau modèle")
