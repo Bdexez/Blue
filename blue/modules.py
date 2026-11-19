@@ -13,6 +13,7 @@ from .hyper_connections import ManifoldHyperConnection
 from .spectral import SpectralTemporalMixer
 from .ssm import GatedDeltaNet
 from .temporal_precision import temporal_work_dtype
+from .ttt import TTTLinear
 
 
 class RMSNorm(nn.Module):
@@ -139,6 +140,7 @@ class LayerCache:
     context_key: torch.Tensor | None = None
     context_value: torch.Tensor | None = None
     ssm_state: torch.Tensor | None = None
+    ttt_state: torch.Tensor | None = None
 
 
 class GroupedQueryAttention(nn.Module):
@@ -678,6 +680,15 @@ class DecoderBlock(nn.Module):
         else:
             self.ssm = None
             self.ssm_gate = None
+        if config.ttt_state_dim > 0:
+            ttt_heads = config.n_heads if config.ttt_heads is None else config.ttt_heads
+            self.ttt = TTTLinear(config.d_model, config.ttt_state_dim, ttt_heads,
+                                 norm_cls=RMSNorm, norm_eps=config.norm_eps,
+                                 base_lr=config.ttt_base_lr)
+            self.ttt_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
+        else:
+            self.ttt = None
+            self.ttt_gate = None
         self.cross = CrossAttention(config, layer_index=index)
         self.cross_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         self.moe = SparseMoE(config)
@@ -715,6 +726,10 @@ class DecoderBlock(nn.Module):
         if self.ssm is not None:
             recurrent, ssm_state = self.ssm(h, valid, None if cache is None else cache.ssm_state)
             mixed = mixed + torch.sigmoid(self.ssm_gate) * recurrent
+        ttt_state = None
+        if self.ttt is not None:
+            fast_weight_out, ttt_state = self.ttt(h, valid, None if cache is None else cache.ttt_state)
+            mixed = mixed + torch.sigmoid(self.ttt_gate) * fast_weight_out
         if self.hc_attn is not None:
             x = self.hc_attn.update_streams(x, self.dropout(mixed), h_post, h_res)
         else:
@@ -753,7 +768,7 @@ class DecoderBlock(nn.Module):
         else:
             x = (x + self.dropout(update)) * valid.unsqueeze(-1)
         next_cache = (LayerCache(k, v, key_valid, conv_state, offset + x.size(1) - k.size(-2),
-                                 *context_kv, ssm_state=ssm_state)
+                                 *context_kv, ssm_state=ssm_state, ttt_state=ttt_state)
                       if use_cache else None)
         return x, balance, z_loss, usage, next_cache, depth_loss
 

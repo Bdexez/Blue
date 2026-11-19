@@ -50,9 +50,10 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"vers {config.n_latents} latents "
         f"({'hiérarchique 2 niveaux' if config.hierarchical_resampler else '1 niveau'}"
         f"{f', goulot discret FSQ ({_fmt_int(fsq_size)} codes)' if fsq_size else ''}).",
-        f"- **Branche récurrente / SSM** : "
+        f"- **Branche récurrente / SSM / TTT** : "
         f"Convolution causale (k={config.conv_kernel})"
-        f"{f' + Gated DeltaNet (état {config.ssm_state_dim}, {config.ssm_heads or config.n_heads} têtes)' if config.ssm_state_dim else ''}.",
+        f"{f' + Gated DeltaNet (état {config.ssm_state_dim}, {config.ssm_heads or config.n_heads} têtes, blocs WY {config.ssm_chunk_size})' if config.ssm_state_dim else ''}"
+        f"{f' + Test-Time Training TTT-Linear (état {config.ttt_state_dim}, {config.ttt_heads or config.n_heads} têtes)' if config.ttt_state_dim else ''}.",
         f"- **MoE & Profondeur dynamique** : "
         f"SwiGLU MoE top-{config.top_k}/{config.n_experts}"
         f"{' + porte partagée' if config.shared_expert_gate else ''}"
@@ -76,6 +77,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"| Ratio de compression KV | {cache['kv_compression_ratio']:.3f}× |",
         f"| État convolution causale O(1) (FP32) | {cache['conv_state_mib_fp32']:.4f} Mio |",
         f"| État Gated DeltaNet O(1) (FP32) | {cache['ssm_state_mib_fp32']:.4f} Mio |",
+        f"| État Test-Time Training O(1) (FP32) | {cache['ttt_state_mib_fp32']:.4f} Mio |",
         f"| Mémoire épisodique O(1) (FP32) | {cache['episodic_memory_mib_fp32']:.4f} Mio |",
         "",
         "## Répartition des paramètres par module",

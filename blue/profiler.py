@@ -47,6 +47,10 @@ def profile_architecture(config: BlueConfig, *, seq_len: int = 1024, batch_size:
     ssm_bytes_fp32 = (batch_size * config.n_layers * config.latent_reasoning_steps
                       * ssm_heads * config.ssm_state_dim * (config.d_model // ssm_heads) * 4
                       if config.ssm_state_dim > 0 else 0)
+    ttt_heads = config.n_heads if config.ttt_heads is None else config.ttt_heads
+    ttt_bytes_fp32 = (batch_size * config.n_layers * config.latent_reasoning_steps
+                      * ttt_heads * (config.ttt_state_dim + 1) * config.ttt_state_dim * 4
+                      if config.ttt_state_dim > 0 else 0)
     memory_bytes_fp32 = batch_size * config.memory_slots * config.d_model * 4 if config.memory_slots > 0 else 0
 
     modalities = ["text", "image", "series"]
@@ -79,6 +83,7 @@ def profile_architecture(config: BlueConfig, *, seq_len: int = 1024, batch_size:
             "kv_compression_ratio": round(std_kv_bytes_bf16 / max(kv_bytes_bf16, 1), 3),
             "conv_state_mib_fp32": round(conv_bytes_fp32 / 2**20, 4),
             "ssm_state_mib_fp32": round(ssm_bytes_fp32 / 2**20, 4),
+            "ttt_state_mib_fp32": round(ttt_bytes_fp32 / 2**20, 4),
             "episodic_memory_mib_fp32": round(memory_bytes_fp32 / 2**20, 4),
         },
         "modules": {name: sum(p.numel() for p in module.parameters())

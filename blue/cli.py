@@ -107,6 +107,7 @@ def inspect_config(config):
             "kv_lora_rank": config.kv_lora_rank,
             "attention_sinks": config.attention_sinks,
             "ssm_state_dim": config.ssm_state_dim,
+            "ttt_state_dim": config.ttt_state_dim,
             "shared_expert_gate": config.shared_expert_gate,
             "router_bias_update_rate": config.router_bias_update_rate,
             "depth_routing_capacity": config.depth_routing_capacity,
