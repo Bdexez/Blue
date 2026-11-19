@@ -118,7 +118,8 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{f' + Soft-Cap (attn={config.attn_logit_softcap}, lm={config.logit_softcap})' if (config.attn_logit_softcap > 0 or config.logit_softcap > 0) else ''}"
         f", RoPE `{config.rope_scaling_type}` (×{config.rope_scaling_factor}, contexte max {_fmt_int(config.max_seq_len)}).",
         f"- **Attention croisée multimodale** : "
-        f"{'Differential Cross-Attention' if config.cross_differential_attention else 'Cross-Attention standard'} "
+        f"{'Differential Cross-Attention' if config.cross_differential_attention else 'Cross-Attention standard'}"
+        f"{f' + Latent KV (rang {config.cross_kv_lora_rank})' if config.cross_kv_lora_rank else ''} "
         f"vers {config.n_latents} latents "
         f"({'hiérarchique 2 niveaux' if config.hierarchical_resampler else '1 niveau'}"
         f"{f', goulot discret FSQ ({_fmt_int(fsq_size)} codes)' if fsq_size else ''}).",
