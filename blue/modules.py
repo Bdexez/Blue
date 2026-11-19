@@ -153,6 +153,8 @@ class GroupedQueryAttention(nn.Module):
         self.differential = config.differential_attention
         self.kv_lora_rank = config.kv_lora_rank
         self.attention_sinks = config.attention_sinks if causal else 0
+        self.value_residual = config.value_residual and causal
+        self.layer_index = layer_index
         self.q = nn.Linear(config.d_model, config.d_model, bias=False)
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
         if self.kv_lora_rank > 0:
@@ -206,15 +208,25 @@ class GroupedQueryAttention(nn.Module):
             sink_heads = self.n_heads if self.kv_lora_rank > 0 else self.n_kv_heads
             self.sink_k = nn.Parameter(torch.empty(1, sink_heads, self.attention_sinks, self.head_dim))
             self.sink_v = nn.Parameter(torch.empty(1, sink_heads, self.attention_sinks, self.head_dim))
-            self.reset_sink_parameters()
         else:
             self.sink_k = self.sink_v = None
+        if self.value_residual and layer_index > 0:
+            if self.kv_lora_rank > 0:
+                self.v_res_gate = nn.Parameter(torch.full((1, 1, 1, self.kv_lora_rank), -2.0))
+            else:
+                self.v_res_gate = nn.Parameter(torch.full((1, self.n_kv_heads, 1, 1), -2.0))
+        else:
+            self.v_res_gate = None
+        self.reset_sink_parameters()
 
     def reset_sink_parameters(self):
         if self.sink_k is not None:
             with torch.no_grad():
                 nn.init.normal_(self.sink_k, std=0.02)
                 nn.init.zeros_(self.sink_v)
+        if self.v_res_gate is not None:
+            with torch.no_grad():
+                self.v_res_gate.fill_(-2.0)
 
     def _compute_differential_lambda(self, device, dtype):
         with torch.autocast(device_type=device.type, enabled=False):
@@ -222,10 +234,17 @@ class GroupedQueryAttention(nn.Module):
             dot2 = (self.lambda_q2.float() * self.lambda_k2.float()).sum().clamp(-10.0, 10.0)
             return (dot1.exp() - dot2.exp() + self.lambda_init).to(dtype)
 
-    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False):
+    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None):
         b, t, _ = x.shape
+        v_first = None
         if self.kv_lora_rank > 0:
             c_kv = self.kv_norm(self.kv_down(x)).unsqueeze(1)
+            if self.value_residual:
+                if self.layer_index == 0:
+                    v_first = c_kv
+                elif v0 is not None and self.v_res_gate is not None:
+                    lam_v = torch.sigmoid(self.v_res_gate).to(c_kv.dtype)
+                    c_kv = (1.0 - lam_v) * c_kv + lam_v * v0.to(c_kv.dtype)
             if self.differential:
                 sub = self.head_dim // 2
                 q1, q2 = self.q(x).view(b, t, self.n_heads, 2, sub).unbind(3)
@@ -251,11 +270,24 @@ class GroupedQueryAttention(nn.Module):
             k1, k2 = k.view(b, t, self.n_kv_heads, 2, sub).unbind(3)
             k1 = self.rope(self.k_norm(k1.transpose(1, 2)), offset)
             k2 = self.rope(self.k_norm(k2.transpose(1, 2)), offset)
-            cache_k, cache_v = torch.cat((k1, k2), dim=-1), v.transpose(1, 2)
+            v_cur = v.transpose(1, 2)
+            if self.value_residual:
+                if self.layer_index == 0:
+                    v_first = v_cur
+                elif v0 is not None and self.v_res_gate is not None:
+                    lam_v = torch.sigmoid(self.v_res_gate).to(v_cur.dtype)
+                    v_cur = (1.0 - lam_v) * v_cur + lam_v * v0.to(v_cur.dtype)
+            cache_k, cache_v = torch.cat((k1, k2), dim=-1), v_cur
         else:
             q = self.q(x).view(b, t, self.n_heads, self.head_dim).transpose(1, 2)
             k, v = self.kv(x).view(b, t, 2, self.n_kv_heads, self.head_dim).unbind(2)
             k, v = k.transpose(1, 2), v.transpose(1, 2)
+            if self.value_residual:
+                if self.layer_index == 0:
+                    v_first = v
+                elif v0 is not None and self.v_res_gate is not None:
+                    lam_v = torch.sigmoid(self.v_res_gate).to(v.dtype)
+                    v = (1.0 - lam_v) * v + lam_v * v0.to(v.dtype)
             q = self.rope(self.q_norm(q), offset)
             cache_k, cache_v = self.rope(self.k_norm(k), offset), v
 
@@ -347,7 +379,7 @@ class GroupedQueryAttention(nn.Module):
             # clone libère réellement le stockage du préremplissage, même avec B=H=1.
             cache_k, cache_v = cache_k[:, :, begin:].clone(), cache_v[:, :, begin:].clone()
             key_valid = key_valid[:, begin:].clone()
-        return self.out(y) * valid.unsqueeze(-1), (cache_k, cache_v, key_valid)
+        return self.out(y) * valid.unsqueeze(-1), (cache_k, cache_v, key_valid, v_first)
 
 
 class CrossAttention(nn.Module):
@@ -713,13 +745,15 @@ class DecoderBlock(nn.Module):
                 p = min(max(self.depth_capacity, 1e-4), 1.0 - 1e-4)
                 self.depth_router.bias.fill_(math.log(p / (1.0 - p)))
 
-    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False):
+    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None):
         if self.hc_attn is not None:
             h_pre, h_post, h_res = self.hc_attn.routing_weights(x)
             h = self.norm1(self.hc_attn.combine_input(x, h_pre))
         else:
             h = self.norm1(x)
-        attention, (k, v, key_valid) = self.attn(h, valid, offset=offset, cache=cache, use_cache=use_cache)
+        attention, (k, v, key_valid, v_first) = self.attn(
+            h, valid, offset=offset, cache=cache, use_cache=use_cache, v0=v0,
+        )
         local, conv_state = self.conv(h, valid, None if cache is None else cache.conv_state)
         mixed = attention + torch.sigmoid(self.mix_gate) * local
         ssm_state = None
@@ -770,6 +804,8 @@ class DecoderBlock(nn.Module):
         next_cache = (LayerCache(k, v, key_valid, conv_state, offset + x.size(1) - k.size(-2),
                                  *context_kv, ssm_state=ssm_state, ttt_state=ttt_state)
                       if use_cache else None)
+        if self.attn.value_residual and self.attn.layer_index == 0:
+            return x, balance, z_loss, usage, next_cache, depth_loss, v_first
         return x, balance, z_loss, usage, next_cache, depth_loss
 
 

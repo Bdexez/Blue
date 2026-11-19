@@ -464,21 +464,40 @@ class Blue(nn.Module):
         halt_hazards = [] if adaptive else None
         for rec_step in range(steps):
             x = self._prepare_reasoning_step(x, initial, valid, rec_step)
+            v0 = None
             for index, block in enumerate(self.blocks):
                 cache_slot = rec_step * self.config.n_layers + index
                 if self.config.gradient_checkpointing and self.training:
-                    def run(hidden, memory, current=block):
-                        result = current(hidden, valid, memory)
-                        d_loss = result[5] if result[5] is not None else hidden.sum() * 0
-                        return result[0], result[1], result[2], result[3], d_loss
-                    x, balance, z_loss, expert_usage, depth_loss = checkpoint(run, x, latents, use_reentrant=False)
+                    if self.config.value_residual and index == 0:
+                        def run0(hidden, memory, current=block):
+                            result = current(hidden, valid, memory)
+                            d_loss = result[5] if result[5] is not None else hidden.sum() * 0
+                            return result[0], result[1], result[2], result[3], d_loss, result[6]
+                        x, balance, z_loss, expert_usage, depth_loss, v0 = checkpoint(run0, x, latents, use_reentrant=False)
+                    elif self.config.value_residual and v0 is not None:
+                        def run_v(hidden, memory, v_first, current=block):
+                            result = current(hidden, valid, memory, v0=v_first)
+                            d_loss = result[5] if result[5] is not None else hidden.sum() * 0
+                            return result[0], result[1], result[2], result[3], d_loss
+                        x, balance, z_loss, expert_usage, depth_loss = checkpoint(run_v, x, latents, v0, use_reentrant=False)
+                    else:
+                        def run(hidden, memory, current=block):
+                            result = current(hidden, valid, memory)
+                            d_loss = result[5] if result[5] is not None else hidden.sum() * 0
+                            return result[0], result[1], result[2], result[3], d_loss
+                        x, balance, z_loss, expert_usage, depth_loss = checkpoint(run, x, latents, use_reentrant=False)
                     if block.depth_router is None:
                         depth_loss = None
                 else:
-                    x, balance, z_loss, expert_usage, layer_cache, depth_loss = block(
+                    result = block(
                         x, valid, latents, offset=offset,
-                        cache=None if cache is None else cache.layers[cache_slot], use_cache=use_cache,
+                        cache=None if cache is None else cache.layers[cache_slot],
+                        use_cache=use_cache, v0=v0,
                     )
+                    if self.config.value_residual and index == 0:
+                        x, balance, z_loss, expert_usage, layer_cache, depth_loss, v0 = result
+                    else:
+                        x, balance, z_loss, expert_usage, layer_cache, depth_loss = result
                     if use_cache:
                         next_layers.append(layer_cache)
                 balance_losses.append(balance)
