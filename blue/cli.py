@@ -119,6 +119,7 @@ def inspect_config(config):
             "ttt_every": config.ttt_every,
             "shared_expert_gate": config.shared_expert_gate,
             "moe_null_experts": config.moe_null_experts,
+            "moe_router_geometry": config.moe_router_geometry,
             "router_bias_update_rate": config.router_bias_update_rate,
             "depth_routing_capacity": config.depth_routing_capacity,
             "vision_rope_2d": config.vision_rope_2d,
