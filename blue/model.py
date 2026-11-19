@@ -742,7 +742,7 @@ class Blue(nn.Module):
             x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
             reasoning_steps=reasoning_steps,
         )
-        logits = self.lm_head(hidden) if input_ids is not None else None
+        logits = self._lm_logits(hidden) if input_ids is not None else None
         if input_ids is None:
             class_pooled, forecast_pooled = hidden.unbind(1)
         else:
@@ -780,7 +780,7 @@ class Blue(nn.Module):
             mtp_losses, mtp_active = [], []
             for distance, head in enumerate(self.future_heads, start=2):
                 if hidden.size(1) > distance:
-                    future_logits = self.lm_head(head(hidden[:, :-distance]))
+                    future_logits = self._lm_logits(head(hidden[:, :-distance]))
                     future_targets = targets[:, distance:].masked_fill(~valid[:, :-distance], -100)
                     head_loss = masked_cross_entropy(future_logits, future_targets)
                     head_count = (future_targets != -100).sum()
@@ -871,10 +871,17 @@ class Blue(nn.Module):
         finally:
             self.train(was_training)
 
+    def _lm_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        logits = self.lm_head(hidden)
+        cap = self.config.logit_softcap
+        if cap > 0.0:
+            logits = (cap * torch.tanh(logits.float() / cap)).to(logits.dtype)
+        return logits
+
     def _draft_future_tokens(self, last_hidden: torch.Tensor, count: int) -> list[torch.Tensor]:
         drafts = []
         for head in self.future_heads[:count]:
-            scores = self.lm_head(head(last_hidden))[:, -1].float()
+            scores = self._lm_logits(head(last_hidden))[:, -1].float()
             scores[:, [0, 1, 3]] = -torch.inf
             drafts.append(scores.argmax(-1))
         return drafts

@@ -33,6 +33,8 @@ class BlueConfig:
     kv_lora_rank: int = 0
     attention_sinks: int = 0
     value_residual: bool = False
+    logit_softcap: float = 0.0
+    attn_logit_softcap: float = 0.0
     ssm_state_dim: int = 0
     ssm_heads: int | None = None
     ssm_chunk_size: int = 32
@@ -166,6 +168,10 @@ class BlueConfig:
             raise ValueError("attention_sinks doit être un entier positif ou nul")
         if type(self.value_residual) is not bool:
             raise ValueError("value_residual doit être booléen")
+        if not math.isfinite(self.logit_softcap) or self.logit_softcap < 0:
+            raise ValueError("logit_softcap doit être fini et positif ou nul")
+        if not math.isfinite(self.attn_logit_softcap) or self.attn_logit_softcap < 0:
+            raise ValueError("attn_logit_softcap doit être fini et positif ou nul")
         if type(self.ssm_state_dim) is not int or self.ssm_state_dim < 0:
             raise ValueError("ssm_state_dim doit être un entier positif ou nul")
         if self.ssm_heads is not None:
