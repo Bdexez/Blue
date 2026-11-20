@@ -13,11 +13,15 @@ class ModelCardTests(unittest.TestCase):
     def test_generate_model_card_titan_and_cli(self):
         card = generate_model_card(BlueConfig.preset("titan"), name="titan", seq_len=8192)
         self.assertIn("# BLUE — Fiche d'architecture (titan)", card)
+        self.assertIn("```mermaid", card)
+        self.assertIn("flowchart TD", card)
         self.assertIn("Differential Cross-Attention", card)
         self.assertIn("PonderNet", card)
-        self.assertIn("tabular", card)
-        self.assertIn("127", card)
-        self.assertIn("21", card)
+        self.assertIn("TTT-Linear", card)
+        self.assertIn("ResFormer", card)
+        self.assertIn("video", card)
+        self.assertIn("255", card)
+        self.assertIn("28", card)
         self.assertIn("hyperbolic", card)
 
         with tempfile.TemporaryDirectory() as tmp:
