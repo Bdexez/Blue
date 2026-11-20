@@ -20,6 +20,7 @@ from .modules import (
     DecoderBlock, LayerCache, LatentResampler, QuantileForecastHead,
     RMSNorm, TemporalEncoder, VisionEncoder,
 )
+from .ngram import ByteNGramEmbedding
 from .pointcloud import PointCloudEncoder
 from .tabular import TabularEncoder
 from .video import VideoEncoder
@@ -35,6 +36,8 @@ class ModelCache:
     forecast_baseline: torch.Tensor | None = None
     forecast_adapter_context: ForecastAdapterContext | None = None
     episodic_memory: torch.Tensor | None = None
+    ngram_tail: torch.Tensor | None = None
+    ngram_tail_valid: torch.Tensor | None = None
 
 
 @dataclass
@@ -68,6 +71,7 @@ class Blue(nn.Module):
         self._alignment_world = None
         d = config.d_model
         self.embedding = nn.Embedding(config.vocab_size, d)
+        self.ngram = ByteNGramEmbedding(config.ngram_vocab_size, d, norm_eps=config.norm_eps) if config.ngram_vocab_size else None
         self.vision = VisionEncoder(config)
         self.temporal = TemporalEncoder(config)
         self.audio = AudioEncoder(config) if config.audio_enabled else None
@@ -149,6 +153,8 @@ class Blue(nn.Module):
             nn.init.normal_(self.video_modality, std=0.02)
         if self.video is not None:
             self.video.reset_video_parameters()
+        if self.ngram is not None:
+            self.ngram.reset_ngram_parameters()
         if self.resampler.local_latents is not None:
             nn.init.normal_(self.resampler.local_latents, std=0.02)
         if self.audio is not None and self.audio.spectral is not None:
@@ -352,6 +358,9 @@ class Blue(nn.Module):
             if (c.memory_slots > 0 and (cache.episodic_memory is None
                                         or cache.episodic_memory.shape != (batch, c.memory_slots, c.d_model))):
                 raise ValueError("Mémoire épisodique incompatible dans le cache")
+            if (c.ngram_vocab_size > 0 and (cache.ngram_tail is None or cache.ngram_tail.shape != (batch, 3)
+                                            or cache.ngram_tail_valid is None or cache.ngram_tail_valid.shape != (batch, 3))):
+                raise ValueError("État N-grammes incompatible dans le cache")
             if cache.offset < 1 or any(
                 layer.start_pos < 0 or layer.start_pos + layer.key.size(-2) != cache.offset
                 or (layer.key.shape != layer.value.shape if not c.kv_lora_rank
@@ -575,11 +584,21 @@ class Blue(nn.Module):
             collapsed, next_memory = self.episodic_memory(collapsed, valid, prev_mem)
         return self.norm(collapsed), balance_losses, z_losses, depth_losses, ponder_kl, usage, next_layers, next_memory
 
+    def _embed_text(self, input_ids: torch.Tensor, valid: torch.Tensor, cache: ModelCache | None = None):
+        x = self.embedding(input_ids)
+        if self.ngram is None:
+            return x, None, None
+        prev_b = None if cache is None else cache.ngram_tail
+        prev_v = None if cache is None else cache.ngram_tail_valid
+        ng, next_b, next_v = self.ngram(input_ids, valid, prev_b, prev_v)
+        return x + ng.to(x.dtype), next_b, next_v
+
     def _isolated_text_representation(self, input_ids, valid):
         """Encoder le texte avec le contexte nul, sans image ni série associée."""
         batch = input_ids.size(0)
         memory = self.resampler([], [], batch)
-        hidden, *_ = self._run_decoder_stack(self.embedding(input_ids), valid, memory)
+        x, _, _ = self._embed_text(input_ids, valid)
+        hidden, *_ = self._run_decoder_stack(x, valid, memory)
         last = torch.arange(valid.size(1), device=hidden.device)[None, :].expand_as(valid)
         last = last.masked_fill(~valid, -1).max(-1).values
         return hidden[torch.arange(batch, device=hidden.device), last]
@@ -710,13 +729,14 @@ class Blue(nn.Module):
             baseline = cache.forecast_baseline
             adapter_context = cache.forecast_adapter_context
 
+        next_ngram_tail = next_ngram_valid = None
         if input_ids is None:
             x = self.task_queries.expand(batch, -1, -1)
             valid = torch.ones(x.shape[:2], device=x.device, dtype=torch.bool)
         else:
-            x = self.embedding(input_ids)
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
                      if attention_mask is None else attention_mask.bool())
+            x, next_ngram_tail, next_ngram_valid = self._embed_text(input_ids, valid, cache=cache)
         offset = 0 if cache is None else cache.offset
         hidden, balance_losses, z_losses, depth_losses, ponder_kl, usage, next_layers, next_memory = self._run_decoder_stack(
             x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
@@ -821,7 +841,8 @@ class Blue(nn.Module):
             losses["alignment"] = torch.stack(contrastive).mean()
             total = total + c.alignment_weight * losses["alignment"]
         next_cache = (ModelCache(next_layers, latents, offset + hidden.size(1), mean, scale, baseline,
-                                 adapter_context, episodic_memory=next_memory)
+                                 adapter_context, episodic_memory=next_memory,
+                                 ngram_tail=next_ngram_tail, ngram_tail_valid=next_ngram_valid)
                       if use_cache else None)
         return BlueOutput(logits, class_logits, forecast, total if supervised else None,
                           losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum(),

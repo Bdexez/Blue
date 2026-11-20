@@ -54,7 +54,10 @@ def _build_mermaid(config: BlueConfig, modalities: list[str]) -> list[str]:
     lines = ["```mermaid", "flowchart TD"]
     for node_id, label in mod_nodes:
         lines.append(f'    {node_id}["{label}"] --> RES["{res_label}"]')
-    lines.append('    TXT["Texte UTF-8"] --> DEC["' + dec_label + '"]')
+    lines.append(
+        f'    TXT["Texte UTF-8{f" + Byte-NGrams ({_fmt_int(config.ngram_vocab_size)})" if config.ngram_vocab_size else ""}"]'
+        f' --> DEC["{dec_label}"]'
+    )
     lines.append(f'    RES --> DEC')
     if config.memory_slots > 0:
         lines.append(f'    DEC --> MEM["Mémoire épisodique ({config.memory_slots} emplacements)"]')
