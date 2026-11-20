@@ -23,6 +23,8 @@ class FlowMatchingTests(unittest.TestCase):
             dict(flow_matching_dim=True),
             dict(flow_matching_layers=0),
             dict(flow_matching_weight=-0.1),
+            dict(flow_cfg_dropout=-0.1),
+            dict(flow_cfg_dropout=1.0),
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 replace(base, **bad)
@@ -31,6 +33,47 @@ class FlowMatchingTests(unittest.TestCase):
             model(input_ids=torch.tensor([[1, 20]]), flow_targets=torch.randn(1, 8))
         with self.assertRaises(ValueError):
             model.sample_flow(input_ids=torch.tensor([[1, 20]]))
+
+    def test_cfg_dropout_guidance_scale_and_rk4_accuracy(self):
+        torch.manual_seed(390)
+        cfg = replace(BlueConfig.preset("tiny"), flow_matching_dim=8, flow_matching_layers=1,
+                      flow_cfg_dropout=0.5)
+        model = Blue(cfg)
+        batch = synthetic_batch(cfg, batch_size=4, seed=391)
+        targets = torch.randn(4, 8)
+
+        # CFG dropout trains null_cond alongside conditional path.
+        out = model(**batch, flow_targets=targets)
+        out.loss.backward()
+        self.assertIsNotNone(model.flow_head.null_cond.grad)
+        self.assertGreater(model.flow_head.null_cond.grad.abs().sum().item(), 0.0)
+
+        # Guidance scale != 1.0 shifts samples smoothly vs guidance_scale == 1.0, and RK4 works.
+        inputs = {k: v for k, v in batch.items() if k not in ("labels", "class_labels", "forecast_targets")}
+        noise = torch.randn(4, 8)
+        s_uncond = model.sample_flow(steps=4, solver="rk4", guidance_scale=0.0, initial_noise=noise, **inputs)
+        s_cond = model.sample_flow(steps=4, solver="rk4", guidance_scale=1.0, initial_noise=noise, **inputs)
+        s_cfg = model.sample_flow(steps=4, solver="rk4", guidance_scale=2.5, initial_noise=noise, **inputs)
+        self.assertTrue(torch.isfinite(s_cfg).all())
+        self.assertGreater((s_cfg - s_cond).abs().max().item(), 1e-5)
+        self.assertGreater((s_cond - s_uncond).abs().max().item(), 1e-5)
+
+        # Analytical ODE check: dz/dt = z, z(0) = 1 -> exact z(1) = e.
+        head = model.flow_head.eval()
+        orig_velocity = head.velocity
+        try:
+            head.velocity = lambda z_t, t, cond: z_t
+            z0 = torch.ones(2, 8)
+            cond = torch.zeros(2, cfg.d_model)
+            exact = torch.full((2, 8), float(torch.e))
+            err_euler = (head.sample(cond, steps=4, solver="euler", initial_noise=z0) - exact).abs().max().item()
+            err_heun = (head.sample(cond, steps=4, solver="heun", initial_noise=z0) - exact).abs().max().item()
+            err_rk4 = (head.sample(cond, steps=4, solver="rk4", initial_noise=z0) - exact).abs().max().item()
+            self.assertLess(err_heun, err_euler * 0.15)
+            self.assertLess(err_rk4, err_heun * 0.02)
+            self.assertLess(err_rk4, 1e-4)
+        finally:
+            head.velocity = orig_velocity
 
     def test_adaln_zero_learning_ode_solvers_5modalities_and_checkpoint(self):
         torch.manual_seed(9951)
