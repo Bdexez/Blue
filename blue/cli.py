@@ -108,6 +108,8 @@ def inspect_config(config):
             "kv_lora_rank": config.kv_lora_rank,
             "attention_sinks": config.attention_sinks,
             "value_residual": config.value_residual,
+            "logit_softcap": config.logit_softcap,
+            "attn_logit_softcap": config.attn_logit_softcap,
             "ssm_state_dim": config.ssm_state_dim,
             "ttt_state_dim": config.ttt_state_dim,
             "shared_expert_gate": config.shared_expert_gate,
