@@ -105,6 +105,7 @@ def inspect_config(config):
             "ngram_vocab_size": config.ngram_vocab_size,
             "differential_attention": config.differential_attention,
             "cross_differential_attention": config.cross_differential_attention,
+            "multimodal_adaln": config.multimodal_adaln,
             "kv_lora_rank": config.kv_lora_rank,
             "cross_kv_lora_rank": config.cross_kv_lora_rank,
             "attention_sinks": config.attention_sinks,
