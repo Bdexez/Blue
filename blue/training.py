@@ -29,7 +29,7 @@ from .gradient_clipping import clip_grad_norm
 from .lora import DoRALinear, inject_dora
 from .modules import RotaryEmbedding
 from .optimizer import build_optimizer
-from .quantize import quantize_model_int8
+from .quantize import quantize_model_int4, quantize_model_int8
 
 
 def seed_everything(seed):
@@ -140,11 +140,15 @@ def load_checkpoint(path, device="cpu", *, mmap=True, overrides=None):
     trainer_meta = payload.get("trainer") or {}
     dora_meta = trainer_meta.get("dora")
     int8_meta = trainer_meta.get("quantized_int8")
+    int4_meta = trainer_meta.get("quantized_int4")
     if dora_meta is not None:
         inject_dora(model, rank=int(dora_meta["rank"]), alpha=float(dora_meta["alpha"]),
                     use_dora=bool(dora_meta.get("use_dora", True)))
     if int8_meta is not None:
         quantize_model_int8(model, min_numel=int(int8_meta.get("min_numel", 1024)))
+    if int4_meta is not None:
+        quantize_model_int4(model, min_numel=int(int4_meta.get("min_numel", 1024)),
+                            group_size=int(int4_meta.get("group_size", 32)))
     model.load_state_dict(state, strict=True, assign=True)
     # assign remplace les Parameters ; rétablir explicitement le poids partagé et requires_grad.
     model.lm_head.weight = model.embedding.weight

@@ -21,7 +21,7 @@ from .lora import merge_dora
 from .model import Blue
 from .modality_batch_sampler import OrderedModalityBatchSampler
 from .profiler import profile_architecture
-from .quantize import quantize_model_int8
+from .quantize import quantize_model_int4, quantize_model_int8
 from .retrieval_evaluation import evaluate_retrieval
 from .retrieval_relevance import write_class_relevance
 from .series_classifier import SeriesClassifier, fit_series_classifier
@@ -338,8 +338,12 @@ def main(argv=None):
                         help="Fusionner algébriquement les adaptateurs DoRA/LoRA en couches linéaires standards")
     export.add_argument("--quantize-int8", action="store_true",
                         help="Quantifier les grandes couches linéaires en INT8 symétrique par canal")
+    export.add_argument("--quantize-int4", action="store_true",
+                        help="Quantifier les grandes couches linéaires en 4-bit packé (2 poids/octet) par groupes")
     export.add_argument("--int8-min-numel", type=int, default=1024,
-                        help="Taille minimale d'un tenseur linéaire pour la quantification INT8 (défaut : 1024)")
+                        help="Taille minimale d'un tenseur linéaire pour la quantification INT8/INT4 (défaut : 1024)")
+    export.add_argument("--int4-group-size", type=int, default=32,
+                        help="Taille de groupe paire pour la quantification INT4 (défaut : 32)")
     evaluation = commands.add_parser("evaluate", help="Évaluer un checkpoint sur un fichier JSONL indépendant")
     evaluation.add_argument("--checkpoint", required=True)
     evaluation.add_argument("--data", required=True)
@@ -750,7 +754,9 @@ def main(argv=None):
         if args.output:
             print(f"Évaluation écrite dans {args.output}")
     elif args.command == "export":
-        transforms = args.stable_rms_norm or args.merge_dora or args.quantize_int8
+        if args.quantize_int8 and args.quantize_int4:
+            parser.error("Choisir soit --quantize-int8 soit --quantize-int4, pas les deux")
+        transforms = args.stable_rms_norm or args.merge_dora or args.quantize_int8 or args.quantize_int4
         if transforms and same_file(args.output, args.checkpoint):
             parser.error("Le checkpoint exporté doit être distinct du checkpoint source")
         if args.int8_min_numel < 1:
@@ -779,13 +785,18 @@ def main(argv=None):
                 raise ValueError("Le checkpoint source ne contient aucun adaptateur DoRA/LoRA à fusionner")
             trainer.pop("dora", None)
             trainer["merged_dora"] = merged_count
-        if args.quantize_int8:
+        if args.quantize_int8 or args.quantize_int4:
             if trainer.get("dora") is not None:
-                raise ValueError("Fusionner d'abord DoRA avec --merge-dora avant --quantize-int8")
-            if trainer.get("quantized_int8") is not None:
-                raise ValueError("Le checkpoint source est déjà quantifié en INT8")
-            q_stats = quantize_model_int8(model, min_numel=args.int8_min_numel)
-            trainer["quantized_int8"] = {"min_numel": args.int8_min_numel, **q_stats}
+                raise ValueError("Fusionner d'abord DoRA avec --merge-dora avant la quantification")
+            if trainer.get("quantized_int8") is not None or trainer.get("quantized_int4") is not None:
+                raise ValueError("Le checkpoint source est déjà quantifié")
+            if args.quantize_int8:
+                q_stats = quantize_model_int8(model, min_numel=args.int8_min_numel)
+                trainer["quantized_int8"] = {"min_numel": args.int8_min_numel, **q_stats}
+            else:
+                q_stats = quantize_model_int4(model, min_numel=args.int8_min_numel,
+                                              group_size=args.int4_group_size)
+                trainer["quantized_int4"] = {"min_numel": args.int8_min_numel, **q_stats}
         if args.stable_rms_norm:
             if file_sha256(args.checkpoint) != parent_sha:
                 raise ValueError("Le checkpoint source a changé pendant l'export")
