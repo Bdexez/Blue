@@ -185,7 +185,11 @@ def main(argv=None):
     generate.add_argument("--top-p", type=float, default=0.95)
     generate.add_argument("--reasoning-steps", type=int, help="Nombre d'itérations latentes à l'inférence")
     generate.add_argument("--speculative", action="store_true",
-                          help="Activer le décodage auto-spéculatif greedy via future_heads")
+                          help="Activer le décodage auto-spéculatif via future_heads")
+    generate.add_argument("--jacobi", action="store_true",
+                          help="Activer le décodage parallèle par point fixe de Jacobi (temperature=0)")
+    generate.add_argument("--jacobi-window", type=int, default=4,
+                          help="Taille de la fenêtre lookahead de Jacobi (défaut : 4)")
     generate.add_argument("--device", default="cpu")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
@@ -450,7 +454,8 @@ def main(argv=None):
         tokens = torch.tensor([ByteTokenizer().encode(args.prompt, eos=False)], device=args.device)
         generated = model.generate(tokens, max_new_tokens=args.max_new_tokens,
                                    temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
-                                   reasoning_steps=args.reasoning_steps, speculative=args.speculative)
+                                   reasoning_steps=args.reasoning_steps, speculative=args.speculative,
+                                   jacobi=args.jacobi, jacobi_window=args.jacobi_window)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
         if args.max_new_tokens < 0:

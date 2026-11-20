@@ -977,7 +977,8 @@ class Blue(nn.Module):
     @torch.inference_mode()
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,
                  top_p=0.95, eos_id=2, reasoning_steps: int | None = None,
-                 speculative: bool = False, **context):
+                 speculative: bool = False, jacobi: bool = False,
+                 jacobi_window: int = 4, **context):
         if input_ids.ndim != 2 or input_ids.size(1) < 1:
             raise ValueError("Le prompt doit avoir la forme [B, T] avec T > 0")
         if type(max_new_tokens) is not int or max_new_tokens < 0:
@@ -988,6 +989,12 @@ class Blue(nn.Module):
             raise ValueError("top_k doit être un entier positif ou nul")
         if type(speculative) is not bool:
             raise ValueError("speculative doit être booléen")
+        if type(jacobi) is not bool:
+            raise ValueError("jacobi doit être booléen")
+        if type(jacobi_window) is not int or jacobi_window < 1:
+            raise ValueError("jacobi_window doit être un entier >= 1")
+        if jacobi and temperature != 0:
+            raise ValueError("Le décodage par point fixe de Jacobi nécessite temperature=0")
         if input_ids.size(1) + max_new_tokens > self.config.max_seq_len:
             raise ValueError("Prompt + génération dépassent max_seq_len")
         if eos_id is not None and (type(eos_id) is not int or not 0 <= eos_id < self.config.vocab_size
@@ -1000,6 +1007,11 @@ class Blue(nn.Module):
         was_training = self.training
         self.eval()
         try:
+            if jacobi and input_ids.size(0) == 1 and max_new_tokens > 0:
+                return self._generate_jacobi_greedy(
+                    input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id,
+                    reasoning_steps=reasoning_steps, jacobi_window=jacobi_window, **context,
+                )
             if (speculative and input_ids.size(0) == 1
                     and max_new_tokens > 0 and len(self.future_heads) > 0):
                 if temperature == 0:
@@ -1155,6 +1167,88 @@ class Blue(nn.Module):
                                                temperature=temperature, top_k=top_k, top_p=top_p)
                 emitted_list.append(torch.multinomial(p_bonus, 1).squeeze(-1))
             emitted = torch.cat(emitted_list, dim=0)
+            stop_now = False
+            if eos_id is not None:
+                eos_positions = (emitted == eos_id).nonzero(as_tuple=True)[0]
+                if eos_positions.numel():
+                    emitted = emitted[:eos_positions[0].item() + 1]
+                    stop_now = True
+            result = torch.cat((result, emitted[None, :]), -1)
+            generated += emitted.numel()
+            if stop_now or generated >= max_new_tokens:
+                break
+            next_token = emitted[-1:]
+            if accepted == n_draft:
+                cache = verify_out.cache
+                last_hidden = verify_out.last_hidden
+            else:
+                sync_tokens = candidate[:, :accepted + 1]
+                sync_out = self(sync_tokens, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+                cache = sync_out.cache
+                last_hidden = sync_out.last_hidden
+        return result
+
+    def _generate_jacobi_greedy(self, input_ids, *, max_new_tokens, eos_id,
+                                reasoning_steps, jacobi_window, **context):
+        """Décodage parallèle par itération de point fixe de Jacobi (lookahead exact sans future_heads requis)."""
+        result = input_ids
+        output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
+        cache = output.cache
+        scores = output.logits[:, -1].float()
+        scores[:, [0, 1, 3]] = -torch.inf
+        next_token = scores.argmax(-1)
+        result = torch.cat((result, next_token[:, None]), -1)
+        generated = 1
+        if eos_id is not None and next_token.item() == eos_id:
+            return result
+        last_hidden = output.last_hidden
+        carry: list[torch.Tensor] = []
+        while generated < max_new_tokens:
+            remaining = max_new_tokens - generated
+            n_draft = min(jacobi_window, remaining - 1)
+            if n_draft == 0:
+                step_out = self(next_token[:, None], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+                step_scores = step_out.logits[:, -1].float()
+                step_scores[:, [0, 1, 3]] = -torch.inf
+                next_token = step_scores.argmax(-1)
+                result = torch.cat((result, next_token[:, None]), -1)
+                break
+            drafts = list(carry[:n_draft])
+            if len(drafts) < n_draft and len(self.future_heads) > 0 and last_hidden is not None:
+                fh_drafts = self._draft_future_tokens(last_hidden, min(n_draft, len(self.future_heads)))
+                for j in range(len(drafts), min(n_draft, len(fh_drafts))):
+                    drafts.append(fh_drafts[j])
+            while len(drafts) < n_draft:
+                fallback = drafts[-1] if drafts else next_token
+                drafts.append(fallback)
+            candidate = torch.stack([next_token, *drafts], dim=1)
+            verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+            v_scores = verify_out.logits[0].float()
+            v_scores[:, [0, 1, 3]] = -torch.inf
+            verified = v_scores.argmax(-1)
+            accepted = 0
+            for j in range(n_draft):
+                if verified[j].item() == drafts[j].item():
+                    accepted += 1
+                else:
+                    break
+            if accepted == 0:
+                # Raffinement de point fixe de Jacobi sur la trajectoire mise à jour :
+                # drafts[0] = verified[0] est désormais exact, garantissant accepted >= 1.
+                drafts = [verified[j].unsqueeze(0) for j in range(n_draft)]
+                candidate = torch.stack([next_token, *drafts], dim=1)
+                verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+                v_scores = verify_out.logits[0].float()
+                v_scores[:, [0, 1, 3]] = -torch.inf
+                verified = v_scores.argmax(-1)
+                accepted = 0
+                for j in range(n_draft):
+                    if verified[j].item() == drafts[j].item():
+                        accepted += 1
+                    else:
+                        break
+            emitted = verified[:accepted + 1]
+            carry = [verified[j].unsqueeze(0) for j in range(accepted + 1, n_draft + 1)]
             stop_now = False
             if eos_id is not None:
                 eos_positions = (emitted == eos_id).nonzero(as_tuple=True)[0]
