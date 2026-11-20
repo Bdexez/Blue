@@ -79,6 +79,13 @@ class BlueConfig:
     tabular_cat_cardinality: int = 32
     tabular_layers: int = 2
     tabular_plr_frequencies: int = 16
+    video_enabled: bool = False
+    video_channels: int = 3
+    video_size: int = 32
+    video_patch_size: int = 8
+    video_tubelet_size: int = 2
+    max_video_frames: int = 16
+    video_layers: int = 2
     n_latents: int = 16
     resampler_layers: int = 2
     hierarchical_resampler: bool = False
@@ -122,6 +129,8 @@ class BlueConfig:
             "max_graph_nodes", "graph_layers", "graph_rwse_steps",
             "max_pointcloud_points", "pointcloud_layers",
             "tabular_num_features", "tabular_layers", "tabular_plr_frequencies",
+            "video_channels", "video_size", "video_patch_size", "video_tubelet_size",
+            "max_video_frames", "video_layers",
             "n_latents", "resampler_layers",
             "num_classes", "forecast_horizon", "forecast_context", "prediction_steps",
             "flow_matching_layers",
@@ -289,6 +298,10 @@ class BlueConfig:
             raise ValueError("tabular_cat_features doit être un entier positif ou nul")
         if type(self.tabular_cat_cardinality) is not int or self.tabular_cat_cardinality < 2:
             raise ValueError("tabular_cat_cardinality doit être un entier >= 2")
+        if type(self.video_enabled) is not bool:
+            raise ValueError("video_enabled doit être booléen")
+        if self.video_size % self.video_patch_size:
+            raise ValueError("video_size doit être divisible par video_patch_size")
         if type(self.hierarchical_resampler) is not bool:
             raise ValueError("hierarchical_resampler doit être booléen")
         self.latent_fsq_levels = tuple(self.latent_fsq_levels)
