@@ -6,6 +6,7 @@
   "n_heads": 48,
   "n_kv_heads": 8,
   "hidden_dim": 16384,
+  "kan_degree": 4,
   "n_experts": 64,
   "top_k": 4,
   "shared_experts": 2,
@@ -63,6 +64,7 @@
   "temporal_statistics": true,
   "temporal_statistics_relative": true,
   "temporal_spectral_mixing": true,
+  "temporal_wavelet_mixing": true,
   "audio_enabled": true,
   "audio_channels": 2,
   "audio_patch_size": 16,
@@ -110,6 +112,7 @@
   "forecast_adapter_relative": false,
   "forecast_adapter_missing_gate": false,
   "forecast_adapter_separate_missing": false,
+  "forecast_tail_power": true,
   "quantiles": [
     0.1,
     0.5,
