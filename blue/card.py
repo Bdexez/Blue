@@ -133,7 +133,9 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{f' + Gated DeltaNet (état {config.ssm_state_dim}, {config.ssm_heads or config.n_heads} têtes, blocs WY {config.ssm_chunk_size}, tous les {config.ssm_every} blocs)' if config.ssm_state_dim else ''}"
         f"{f' + Test-Time Training TTT-Linear (état {config.ttt_state_dim}, {config.ttt_heads or config.n_heads} têtes, tous les {config.ttt_every} blocs)' if config.ttt_state_dim else ''}.",
         f"- **MoE & Profondeur dynamique** : "
-        f"SwiGLU MoE top-{config.top_k}/{config.n_experts}"
+        f"{'KAN-' if config.kan_degree >= 2 else ''}SwiGLU"
+        f"{f' (Tchebychev degré {config.kan_degree})' if config.kan_degree >= 2 else ''} "
+        f"MoE top-{config.top_k}/{config.n_experts}"
         f"{' (routeur hyperbolique Poincaré)' if config.moe_router_geometry == 'hyperbolic' else ''}"
         f"{f' (+ {config.moe_null_experts} experts nuls zéro-FLOP)' if config.moe_null_experts else ''}"
         f"{' + porte partagée' if config.shared_expert_gate else ''}"

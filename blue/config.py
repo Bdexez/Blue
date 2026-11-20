@@ -13,6 +13,7 @@ class BlueConfig:
     n_heads: int = 8
     n_kv_heads: int = 2
     hidden_dim: int = 768
+    kan_degree: int = 0
     n_experts: int = 8
     top_k: int = 2
     shared_experts: int = 1
@@ -291,6 +292,8 @@ class BlueConfig:
             raise ValueError("stable_rms_norm doit être booléen")
         if type(self.dynamic_tanh_norm) is not bool:
             raise ValueError("dynamic_tanh_norm doit être booléen")
+        if type(self.kan_degree) is not int or (self.kan_degree != 0 and not 2 <= self.kan_degree <= 8):
+            raise ValueError("kan_degree doit être 0 ou un entier entre 2 et 8")
         if self.alignment_mode not in ("paired", "class"):
             raise ValueError("alignment_mode doit être paired ou class")
         if self.alignment_scope not in ("local", "global"):
