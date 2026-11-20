@@ -22,6 +22,8 @@ class ModelCardTests(unittest.TestCase):
         self.assertIn("NSA", card)
         self.assertIn("routeur hyperbolique", card)
         self.assertIn("Modulation AdaLN-Zero multimodale", card)
+        self.assertIn("registres cognitifs", card)
+        self.assertIn("diversité orthogonale", card)
         self.assertIn("Byte-NGrams", card)
         self.assertIn("Soft-Cap", card)
         self.assertIn("JEPA", card)
