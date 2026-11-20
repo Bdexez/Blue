@@ -117,6 +117,8 @@ def inspect_config(config):
             "dynamic_tanh_norm": config.dynamic_tanh_norm,
             "kan_degree": config.kan_degree,
             "checkpoint_every": config.checkpoint_every,
+            "evidential_classification": config.evidential_classification,
+            "mtp_kl_weight": config.mtp_kl_weight,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
         "weights_gib_bf16": round(total * 2 / 2**30, 3),
