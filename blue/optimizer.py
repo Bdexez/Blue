@@ -142,6 +142,8 @@ def build_optimizer(model, *, name: str = "adamw", lr: float, weight_decay: floa
         excluded_muon_ids.add(id(model.ngram.table.weight))
     if getattr(model, "tabular", None) is not None and model.tabular.cat_embed is not None:
         excluded_muon_ids.add(id(model.tabular.cat_embed.weight))
+    if getattr(model, "jepa", None) is not None:
+        excluded_muon_ids.add(id(model.jepa.target_embed.weight))
     muon_params, adamw_params = [], []
     for p in trainable:
         if id(p) in temporal_ids:

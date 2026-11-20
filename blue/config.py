@@ -118,6 +118,7 @@ class BlueConfig:
     flow_matching_dim: int = 0
     flow_matching_layers: int = 2
     flow_matching_weight: float = 0.25
+    jepa_weight: float = 0.0
     gradient_checkpointing: bool = False
     top1_gate: str = "normalized"
 
@@ -279,7 +280,8 @@ class BlueConfig:
         if 0.5 not in self.quantiles:
             raise ValueError("Le quantile médian 0.5 est requis")
         for name in ("balance_weight", "router_z_weight", "mtp_weight", "alignment_weight",
-                     "text_weight", "classification_weight", "forecast_weight", "flow_matching_weight"):
+                     "text_weight", "classification_weight", "forecast_weight",
+                     "flow_matching_weight", "jepa_weight"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
