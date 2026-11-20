@@ -71,6 +71,7 @@ class BlueConfig:
     temporal_statistics: bool = False
     temporal_statistics_relative: bool = False
     temporal_spectral_mixing: bool = False
+    temporal_wavelet_mixing: bool = False
     audio_enabled: bool = False
     audio_channels: int = 1
     audio_patch_size: int = 16
@@ -112,6 +113,7 @@ class BlueConfig:
     forecast_adapter_relative: bool = False
     forecast_adapter_missing_gate: bool = False
     forecast_adapter_separate_missing: bool = False
+    forecast_tail_power: bool = False
     quantiles: tuple[float, ...] = (0.1, 0.5, 0.9)
     prediction_steps: int = 2
     balance_weight: float = 0.01
@@ -333,6 +335,8 @@ class BlueConfig:
             raise ValueError("temporal_statistics_relative doit être booléen")
         if type(self.temporal_spectral_mixing) is not bool:
             raise ValueError("temporal_spectral_mixing doit être booléen")
+        if type(self.temporal_wavelet_mixing) is not bool:
+            raise ValueError("temporal_wavelet_mixing doit être booléen")
         if type(self.audio_enabled) is not bool:
             raise ValueError("audio_enabled doit être booléen")
         if type(self.graph_enabled) is not bool:
@@ -364,6 +368,8 @@ class BlueConfig:
             raise ValueError("forecast_adapter_missing_gate doit être booléen")
         if type(self.forecast_adapter_separate_missing) is not bool:
             raise ValueError("forecast_adapter_separate_missing doit être booléen")
+        if type(self.forecast_tail_power) is not bool:
+            raise ValueError("forecast_tail_power doit être booléen")
         if self.forecast_adapter_separate_missing and not (self.forecast_adapter_missing_gate
                                                            and self.forecast_adapter_context):
             raise ValueError("forecast_adapter_separate_missing nécessite l'adaptateur et sa porte de valeurs manquantes")

@@ -16,6 +16,7 @@ from .spectral import SpectralTemporalMixer
 from .ssm import GatedDeltaNet
 from .temporal_precision import temporal_work_dtype
 from .ttt import TTTLinear
+from .wavelet import HaarWaveletMixer
 
 
 class RMSNorm(nn.Module):
@@ -699,6 +700,8 @@ class TemporalEncoder(nn.Module):
         self.conv = GatedCausalConv(config.d_model, config.conv_kernel)
         self.spectral = (SpectralTemporalMixer(config.d_model, norm_cls=RMSNorm, norm_eps=config.norm_eps)
                          if config.temporal_spectral_mixing else None)
+        self.wavelet = (HaarWaveletMixer(config.d_model, norm_cls=RMSNorm, norm_eps=config.norm_eps)
+                        if config.temporal_wavelet_mixing else None)
         self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.temporal_layers)])
         self.norm = RMSNorm(config.d_model, config.norm_eps)
         self.forecast_context = config.forecast_context
@@ -756,6 +759,8 @@ class TemporalEncoder(nn.Module):
         x = x + self.conv(x, valid)[0]
         if self.spectral is not None:
             x = x + self.spectral(x, valid)
+        if self.wavelet is not None:
+            x = x + self.wavelet(x, valid)
         for block in self.blocks:
             x = block(x, valid)
         # Connexion temporelle directe : partir de la persistance puis apprendre
@@ -966,12 +971,24 @@ class QuantileForecastHead(nn.Module):
             RMSNorm(config.d_model), nn.Linear(config.d_model, config.hidden_dim),
             nn.SiLU(), nn.Linear(config.hidden_dim, self.horizon * self.features * len(self.quantiles)),
         )
+        self.tail_log_scale = (
+            nn.Parameter(torch.zeros(1, 1, self.features, len(self.quantiles) - 1))
+            if config.forecast_tail_power else None
+        )
+
+    def reset_tail_parameters(self):
+        if self.tail_log_scale is not None:
+            with torch.no_grad():
+                self.tail_log_scale.zero_()
 
     def forward(self, pooled, mean=None, scale=None, baseline=None):
         raw = self.proj(pooled).view(-1, self.horizon, self.features, len(self.quantiles))
         # Centre médian libre et incréments positifs : aucun croisement de quantiles.
         center_index = self.quantiles.index(0.5)
         increments = F.softplus(raw[..., 1:])
+        if self.tail_log_scale is not None:
+            tail_mult = torch.exp(self.tail_log_scale.float().clamp(-3.0, 3.0)).to(increments.dtype)
+            increments = increments * tail_mult
         offsets = torch.cat((torch.zeros_like(raw[..., :1]), increments.cumsum(-1)), -1)
         result = raw[..., :1] + offsets - offsets[..., center_index:center_index + 1]
         if mean is not None:
