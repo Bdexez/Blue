@@ -128,6 +128,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{f' + Test-Time Training TTT-Linear (état {config.ttt_state_dim}, {config.ttt_heads or config.n_heads} têtes)' if config.ttt_state_dim else ''}.",
         f"- **MoE & Profondeur dynamique** : "
         f"SwiGLU MoE top-{config.top_k}/{config.n_experts}"
+        f"{f' (+ {config.moe_null_experts} experts nuls zéro-FLOP)' if config.moe_null_experts else ''}"
         f"{' + porte partagée' if config.shared_expert_gate else ''}"
         f"{f' + équilibrage sans perte auxiliaire (rate={config.router_bias_update_rate})' if config.router_bias_update_rate > 0 else ''}"
         f"{f' + Causal Mixture-of-Depths (capacité={config.depth_routing_capacity})' if config.depth_routing_capacity < 1.0 else ''}.",

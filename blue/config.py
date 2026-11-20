@@ -16,6 +16,7 @@ class BlueConfig:
     n_experts: int = 8
     top_k: int = 2
     shared_experts: int = 1
+    moe_null_experts: int = 0
     shared_expert_gate: bool = False
     router_bias_update_rate: float = 0.0
     depth_routing_capacity: float = 1.0
@@ -213,6 +214,8 @@ class BlueConfig:
             raise ValueError("d_model doit être divisible par 4 et n_heads par n_kv_heads")
         if self.top_k > self.n_experts:
             raise ValueError("top_k ne peut pas dépasser n_experts")
+        if type(self.moe_null_experts) is not int or self.moe_null_experts < 0:
+            raise ValueError("moe_null_experts doit être un entier positif ou nul")
         if self.top1_gate not in ("normalized", "probability"):
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):

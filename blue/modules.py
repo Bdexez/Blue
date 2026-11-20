@@ -496,14 +496,16 @@ class GatedCausalConv(nn.Module):
 
 
 class SparseMoE(nn.Module):
-    """Top-k sans abandon de tokens, experts partagés, équilibrage et router z-loss."""
+    """Top-k sans abandon de tokens, experts partagés, experts nuls zéro-calcul, équilibrage et z-loss."""
 
     def __init__(self, config):
         super().__init__()
         self.n_experts, self.top_k = config.n_experts, config.top_k
+        self.n_null = config.moe_null_experts
+        self.total_slots = self.n_experts + self.n_null
         self.top1_gate = config.top1_gate
         self.router_bias_update_rate = config.router_bias_update_rate
-        self.router = nn.Linear(config.d_model, config.n_experts, bias=False)
+        self.router = nn.Linear(config.d_model, self.total_slots, bias=False)
         self.experts = nn.ModuleList([
             SwiGLU(config.d_model, config.hidden_dim) for _ in range(config.n_experts)
         ])
@@ -513,6 +515,7 @@ class SparseMoE(nn.Module):
             self.register_buffer("expert_bias", torch.zeros(config.n_experts, dtype=torch.float32))
         else:
             self.expert_bias = None
+        self.last_null_fraction: float = 0.0
 
     @torch.no_grad()
     def update_expert_bias(self, usage: torch.Tensor):
@@ -530,13 +533,16 @@ class SparseMoE(nn.Module):
         tokens = flat[indices]
         if tokens.size(0) == 0:
             zero = x.sum() * 0
+            self.last_null_fraction = 0.0
             return torch.zeros_like(x), zero, zero, x.new_zeros(self.n_experts)
         # Router en fp32 pour éviter la saturation en bf16/fp16.
         with torch.autocast(device_type=tokens.device.type, enabled=False):
             scores = F.linear(tokens.float(), self.router.weight.float())
             probs = scores.softmax(-1)
             if self.expert_bias is not None:
-                _, selected = (probs + self.expert_bias.float()).topk(self.top_k, dim=-1)
+                bias = (F.pad(self.expert_bias.float(), (0, self.n_null))
+                        if self.n_null > 0 else self.expert_bias.float())
+                _, selected = (probs + bias).topk(self.top_k, dim=-1)
                 weights = probs.gather(-1, selected)
             else:
                 weights, selected = probs.topk(self.top_k, dim=-1)
@@ -553,10 +559,11 @@ class SparseMoE(nn.Module):
                 contribution = expert_output * weights[rows, slots, None].to(expert_output.dtype)
                 mixed = mixed.index_add(0, rows, contribution)
         result = torch.zeros_like(flat).index_copy(0, indices, mixed.to(flat.dtype)).view_as(x)
-        fraction = F.one_hot(selected, self.n_experts).float().mean((0, 1))
-        balance = self.n_experts * (probs.mean(0) * fraction).sum()
+        full_fraction = F.one_hot(selected, self.total_slots).float().mean((0, 1))
+        self.last_null_fraction = float(full_fraction[self.n_experts:].sum().item()) if self.n_null > 0 else 0.0
+        balance = self.total_slots * (probs.mean(0) * full_fraction).sum()
         z_loss = scores.logsumexp(-1).square().mean()
-        return result, balance, z_loss, fraction.detach()
+        return result, balance, z_loss, full_fraction[:self.n_experts].detach()
 
 
 class EncoderBlock(nn.Module):
