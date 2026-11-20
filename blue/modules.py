@@ -10,6 +10,7 @@ from torch.nn import functional as F
 from .config import BlueConfig
 from .fsq import FiniteScalarQuantizer
 from .hyper_connections import ManifoldHyperConnection
+from .hyperbolic import poincare_exp0, poincare_pairwise_distance
 from .sparse_attention import CompressedBlockSparseAttention
 from .spectral import SpectralTemporalMixer
 from .ssm import GatedDeltaNet
@@ -540,6 +541,8 @@ class SparseMoE(nn.Module):
         self.n_null = config.moe_null_experts
         self.total_slots = self.n_experts + self.n_null
         self.top1_gate = config.top1_gate
+        self.router_geometry = config.moe_router_geometry
+        self.router_curvature = float(config.alignment_curvature)
         self.router_bias_update_rate = config.router_bias_update_rate
         self.router = nn.Linear(config.d_model, self.total_slots, bias=False)
         self.experts = nn.ModuleList([
@@ -573,7 +576,13 @@ class SparseMoE(nn.Module):
             return torch.zeros_like(x), zero, zero, x.new_zeros(self.n_experts)
         # Router en fp32 pour éviter la saturation en bf16/fp16.
         with torch.autocast(device_type=tokens.device.type, enabled=False):
-            scores = F.linear(tokens.float(), self.router.weight.float())
+            if self.router_geometry == "hyperbolic":
+                inv_sqrt_d = 1.0 / math.sqrt(tokens.size(-1))
+                tok_h = poincare_exp0(tokens.float() * inv_sqrt_d, self.router_curvature)
+                exp_h = poincare_exp0(self.router.weight.float() * inv_sqrt_d, self.router_curvature)
+                scores = -poincare_pairwise_distance(tok_h, exp_h, self.router_curvature)
+            else:
+                scores = F.linear(tokens.float(), self.router.weight.float())
             probs = scores.softmax(-1)
             if self.expert_bias is not None:
                 bias = (F.pad(self.expert_bias.float(), (0, self.n_null))
