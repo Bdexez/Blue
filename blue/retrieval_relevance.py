@@ -8,7 +8,10 @@ from .data import JointDataset, file_identity
 from .embedding_search import EmbeddingFile
 
 
-_MODALITY_BITS = {'text': 1, 'image': 2, 'series': 4}
+_MODALITY_BITS = {
+    'text': 1, 'image': 2, 'series': 4, 'audio': 8,
+    'graph': 16, 'pointcloud': 32, 'tabular': 64, 'video': 128,
+}
 
 
 def _label(dataset, index):

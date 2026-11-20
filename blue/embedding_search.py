@@ -9,6 +9,9 @@ import torch
 
 from .calibration import file_sha256
 from .data import file_identity
+from .hyperbolic import poincare_pairwise_distance
+
+ALL_VECTOR_MODALITIES = ("text", "image", "series", "audio", "graph", "pointcloud", "tabular", "video")
 
 
 class EmbeddingFile:
@@ -17,11 +20,12 @@ class EmbeddingFile:
     fields = ('format_version', 'checkpoint_sha256', 'dataset_sha256', 'dataset_images_sha256',
               'alignment_text_view', 'amp', 'device', 'batch_size', 'torch_version')
 
-    def __init__(self, path, modality, *, skip_missing=False, track_presence=False):
+    def __init__(self, path, modality, *, skip_missing=False, track_presence=False, normalize=True):
         self.path = Path(path)
         self.modality = modality
         self.skip_missing = skip_missing
         self.track_presence = track_presence
+        self.normalize = normalize
         self.presence = None
         self.total_rows = None
         self.identity = file_identity(self.path.stat())
@@ -68,7 +72,7 @@ class EmbeddingFile:
                         raise ValueError('métadonnées incohérentes')
                     modalities = row['vectors']
                     if (not isinstance(modalities, dict) or not modalities
-                            or not any(name in modalities for name in ('text', 'image', 'series'))):
+                            or not any(name in modalities for name in ALL_VECTOR_MODALITIES)):
                         raise ValueError('modalités de vecteurs invalides')
                     present = self.modality in modalities
                     if not present and not self.skip_missing:
@@ -86,8 +90,9 @@ class EmbeddingFile:
                         scale = vector.abs().max()
                         if not torch.isfinite(scale) or scale == 0:
                             raise ValueError('vecteur nul ou hors limites')
-                        vector = vector / scale
-                        vector = vector / vector.norm()
+                        if self.normalize:
+                            vector = vector / scale
+                            vector = vector / vector.norm()
                 except (ValueError, TypeError, KeyError, OverflowError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                     raise ValueError(f'{self.path}:{count + 1}: vecteur invalide : {exc}') from exc
                 if presence is not None:
@@ -113,12 +118,18 @@ class EmbeddingFile:
 
 
 def search_embeddings(query_path, candidate_path, query_modality, candidate_modality, *, top_k=5,
-                      query_batch_size=16, candidate_batch_size=1024, exclude_self=False, skip_missing=False):
+                      query_batch_size=16, candidate_batch_size=1024, exclude_self=False, skip_missing=False,
+                      geometry="euclidean", curvature=1.0):
     """Produire les voisins exacts, triés par score décroissant puis indice croissant."""
     if min(top_k, query_batch_size, candidate_batch_size) < 1:
         raise ValueError('top_k et les tailles de lot doivent être positifs')
-    queries = EmbeddingFile(query_path, query_modality, skip_missing=skip_missing)
-    candidates = EmbeddingFile(candidate_path, candidate_modality, skip_missing=skip_missing)
+    if geometry not in ("euclidean", "hyperbolic"):
+        raise ValueError("geometry doit être euclidean ou hyperbolic")
+    if not math.isfinite(curvature) or curvature <= 0:
+        raise ValueError("curvature doit être fini et > 0")
+    norm_vecs = geometry == "euclidean"
+    queries = EmbeddingFile(query_path, query_modality, skip_missing=skip_missing, normalize=norm_vecs)
+    candidates = EmbeddingFile(candidate_path, candidate_modality, skip_missing=skip_missing, normalize=norm_vecs)
     for query_vectors, query_indices in queries.batches(query_batch_size):
         best_scores = torch.empty((len(query_indices), 0), dtype=torch.float64)
         best_indices = torch.empty((len(query_indices), 0), dtype=torch.long)
@@ -128,7 +139,12 @@ def search_embeddings(query_path, candidate_path, query_modality, candidate_moda
                     raise ValueError(f'Fichiers de vecteurs incompatibles : {field}')
             if queries.dim != candidates.dim:
                 raise ValueError('Dimensions des vecteurs incompatibles')
-            scores = (query_vectors @ candidate_vectors.T).clamp(-1, 1)
+            if geometry == "hyperbolic":
+                scores = -poincare_pairwise_distance(
+                    query_vectors.float(), candidate_vectors.float(), curvature,
+                ).double()
+            else:
+                scores = (query_vectors @ candidate_vectors.T).clamp(-1, 1)
             same_data = all(queries.metadata[key] == candidates.metadata[key]
                             for key in ('dataset_sha256', 'dataset_images_sha256'))
             if exclude_self and same_data:
