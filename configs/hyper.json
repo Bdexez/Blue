@@ -95,6 +95,7 @@
   "video_layers": 4,
   "n_latents": 48,
   "register_latents": 8,
+  "cross_modal_fusion_layers": 2,
   "resampler_layers": 3,
   "hierarchical_resampler": true,
   "latent_fsq_levels": [
@@ -138,5 +139,6 @@
   "jepa_weight": 0.1,
   "adaptive_loss_weighting": true,
   "gradient_checkpointing": true,
+  "checkpoint_every": 2,
   "top1_gate": "normalized"
 }
