@@ -111,6 +111,7 @@ class BlueConfig:
     latent_diversity_weight: float = 0.0
     num_classes: int = 6
     evidential_classification: bool = False
+    head_cross_pool: bool = False
     forecast_horizon: int = 12
     forecast_context: int = 32
     forecast_adapter_context: int = 0
@@ -333,6 +334,8 @@ class BlueConfig:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
         if type(self.evidential_classification) is not bool:
             raise ValueError("evidential_classification doit être booléen")
+        if type(self.head_cross_pool) is not bool:
+            raise ValueError("head_cross_pool doit être booléen")
         if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
             raise ValueError("flow_matching_dim doit être un entier positif ou nul")
         if not math.isfinite(self.flow_cfg_dropout) or not 0.0 <= self.flow_cfg_dropout < 1.0:
@@ -482,6 +485,7 @@ class BlueConfig:
                           latent_fsq_levels=(8, 5, 5, 5),
                           latent_diversity_weight=0.02,
                           evidential_classification=True,
+                          head_cross_pool=True,
                           mtp_kl_weight=0.05,
                           alignment_geometry="hyperbolic",
                           prediction_steps=4, stable_rms_norm=True,
@@ -533,6 +537,7 @@ class BlueConfig:
                           latent_fsq_levels=(8, 8, 5, 5, 5),
                           latent_diversity_weight=0.02,
                           evidential_classification=True,
+                          head_cross_pool=True,
                           mtp_kl_weight=0.05,
                           alignment_geometry="hyperbolic",
                           prediction_steps=4, stable_rms_norm=True,
