@@ -811,6 +811,7 @@ class DecoderBlock(nn.Module):
         self.moe = SparseMoE(config)
         self.depth_capacity = config.depth_routing_capacity
         self.depth_router = nn.Linear(config.d_model, 1, bias=True) if config.depth_routing_capacity < 1.0 else None
+        self.adaln_mod = nn.Linear(config.d_model, 3 * config.d_model, bias=True) if config.multimodal_adaln else None
         self.reset_depth_router()
         self.dropout = nn.Dropout(config.dropout)
         self.residual_streams = config.residual_streams
@@ -829,6 +830,10 @@ class DecoderBlock(nn.Module):
             with torch.no_grad():
                 p = min(max(self.depth_capacity, 1e-4), 1.0 - 1e-4)
                 self.depth_router.bias.fill_(math.log(p / (1.0 - p)))
+        if self.adaln_mod is not None:
+            with torch.no_grad():
+                self.adaln_mod.weight.zero_()
+                self.adaln_mod.bias.zero_()
 
     def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None):
         if self.hc_attn is not None:
@@ -869,6 +874,10 @@ class DecoderBlock(nn.Module):
             moe_in = self.norm3(self.hc_moe.combine_input(x, m_pre))
         else:
             moe_in = self.norm3(x)
+        adaln_gate = None
+        if self.adaln_mod is not None:
+            shift, scale, adaln_gate = self.adaln_mod(F.silu(context.mean(dim=1))).unsqueeze(1).chunk(3, dim=-1)
+            moe_in = moe_in * (1.0 + scale.to(moe_in.dtype)) + shift.to(moe_in.dtype)
         depth_loss = None
         if self.depth_router is not None:
             with torch.autocast(device_type=moe_in.device.type, enabled=False):
@@ -882,6 +891,8 @@ class DecoderBlock(nn.Module):
             update = update * depth_prob.to(update.dtype).unsqueeze(-1)
         else:
             update, balance, z_loss, usage = self.moe(moe_in, valid)
+        if adaln_gate is not None:
+            update = update * (1.0 + adaln_gate.to(update.dtype))
         if self.hc_moe is not None:
             x = self.hc_moe.update_streams(x, self.dropout(update), m_post, m_res) * valid[:, :, None, None]
         else:

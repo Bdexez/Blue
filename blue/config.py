@@ -32,6 +32,7 @@ class BlueConfig:
     rope_original_max_seq_len: int | None = None
     differential_attention: bool = False
     cross_differential_attention: bool = False
+    multimodal_adaln: bool = False
     kv_lora_rank: int = 0
     cross_kv_lora_rank: int = 0
     attention_sinks: int = 0
@@ -166,6 +167,8 @@ class BlueConfig:
             raise ValueError("cross_differential_attention doit être booléen")
         if self.cross_differential_attention and (self.d_model // self.n_heads) % 4:
             raise ValueError("cross_differential_attention nécessite d_model / n_heads divisible par 4")
+        if type(self.multimodal_adaln) is not bool:
+            raise ValueError("multimodal_adaln doit être booléen")
         if type(self.kv_lora_rank) is not int or self.kv_lora_rank < 0:
             raise ValueError("kv_lora_rank doit être un entier positif ou nul")
         if type(self.cross_kv_lora_rank) is not int or self.cross_kv_lora_rank < 0:
