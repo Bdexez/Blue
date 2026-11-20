@@ -128,6 +128,10 @@ class Blue(nn.Module):
             for module in self.modules():
                 if isinstance(module, RMSNorm):
                     module.stable = True
+        if config.dynamic_tanh_norm:
+            for module in self.modules():
+                if isinstance(module, RMSNorm):
+                    module.enable_dyt(0.5)
         nn.init.zeros_(self.temporal.forecast_skip.weight)
         if self.temporal.statistics_proj is not None:
             nn.init.zeros_(self.temporal.statistics_proj.weight)

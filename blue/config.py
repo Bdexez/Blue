@@ -58,6 +58,7 @@ class BlueConfig:
     dropout: float = 0.0
     norm_eps: float = 1e-6
     stable_rms_norm: bool = False
+    dynamic_tanh_norm: bool = False
     image_size: int = 64
     image_channels: int = 3
     patch_size: int = 8
@@ -286,6 +287,8 @@ class BlueConfig:
             raise ValueError("norm_eps doit être fini et > 0")
         if type(self.stable_rms_norm) is not bool:
             raise ValueError("stable_rms_norm doit être booléen")
+        if type(self.dynamic_tanh_norm) is not bool:
+            raise ValueError("dynamic_tanh_norm doit être booléen")
         if self.alignment_mode not in ("paired", "class"):
             raise ValueError("alignment_mode doit être paired ou class")
         if self.alignment_scope not in ("local", "global"):
