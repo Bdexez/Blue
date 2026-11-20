@@ -116,9 +116,9 @@ def inspect_config(config):
     }
 
 
-def run_demo(args):
+def run_demo(args, *, load_checkpoint_fn=load_checkpoint):
     torch.manual_seed(42)
-    model = (load_checkpoint(args.checkpoint, args.device)[0] if args.checkpoint
+    model = (load_checkpoint_fn(args.checkpoint, args.device)[0] if args.checkpoint
              else Blue(get_config(args)).to(args.device))
     model.eval()
     batch = synthetic_batch(model.config, batch_size=2, seed=7, device=args.device)
@@ -149,7 +149,8 @@ def run_demo(args):
         Path(args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def run_export(args, parser):
+def run_export(args, parser, *, load_checkpoint_fn=load_checkpoint,
+               save_checkpoint_fn=save_checkpoint, file_sha256_fn=file_sha256):
     if args.quantize_int8 and args.quantize_int4:
         parser.error("Choisir soit --quantize-int8 soit --quantize-int4, pas les deux")
     transforms = args.stable_rms_norm or args.merge_dora or args.quantize_int8 or args.quantize_int4
@@ -157,9 +158,9 @@ def run_export(args, parser):
         parser.error("Le checkpoint exporté doit être distinct du checkpoint source")
     if args.int8_min_numel < 1:
         parser.error("int8-min-numel doit être >= 1")
-    parent_sha = file_sha256(args.checkpoint) if args.stable_rms_norm else None
-    model, payload = load_checkpoint(args.checkpoint, mmap=not transforms,
-                                     overrides={"stable_rms_norm": True} if args.stable_rms_norm else None)
+    parent_sha = file_sha256_fn(args.checkpoint) if args.stable_rms_norm else None
+    model, payload = load_checkpoint_fn(args.checkpoint, mmap=not transforms,
+                                        overrides={"stable_rms_norm": True} if args.stable_rms_norm else None)
     step = payload["step"]
     trainer = dict(payload.get("trainer", {}), inference_only=True)
     if args.use_ema:
@@ -194,9 +195,9 @@ def run_export(args, parser):
                                           group_size=args.int4_group_size)
             trainer["quantized_int4"] = {"min_numel": args.int8_min_numel, **q_stats}
     if args.stable_rms_norm:
-        if file_sha256(args.checkpoint) != parent_sha:
+        if file_sha256_fn(args.checkpoint) != parent_sha:
             raise ValueError("Le checkpoint source a changé pendant l'export")
         trainer.update(stable_rms_norm_parent_sha256=parent_sha)
     del payload
-    save_checkpoint(args.output, model, step=step, trainer=trainer)
+    save_checkpoint_fn(args.output, model, step=step, trainer=trainer)
     print(f"Poids d'inférence écrits dans {args.output}")
