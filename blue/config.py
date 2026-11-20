@@ -20,6 +20,8 @@ class BlueConfig:
     moe_null_experts: int = 0
     moe_shared_latent_dim: int = 0
     moe_router_geometry: str = "euclidean"
+    moe_router_temperature: bool = False
+    moe_entropy_weight: float = 0.0
     shared_expert_gate: bool = False
     router_bias_update_rate: float = 0.0
     depth_routing_capacity: float = 1.0
@@ -42,6 +44,7 @@ class BlueConfig:
     logit_softcap: float = 0.0
     attn_logit_softcap: float = 0.0
     dynamic_attn_scale: bool = False
+    forgetting_attention: bool = False
     nsa_block_size: int = 0
     nsa_top_k: int = 4
     ssm_state_dim: int = 0
@@ -202,6 +205,8 @@ class BlueConfig:
             raise ValueError("attn_logit_softcap doit être fini et positif ou nul")
         if type(self.dynamic_attn_scale) is not bool:
             raise ValueError("dynamic_attn_scale doit être booléen")
+        if type(self.forgetting_attention) is not bool:
+            raise ValueError("forgetting_attention doit être booléen")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
             raise ValueError("nsa_block_size doit être 0 ou un entier >= 2")
         if type(self.nsa_top_k) is not int or self.nsa_top_k < 1:
@@ -254,6 +259,10 @@ class BlueConfig:
             raise ValueError("moe_shared_latent_dim doit être un entier positif ou nul")
         if self.moe_router_geometry not in ("euclidean", "hyperbolic"):
             raise ValueError("moe_router_geometry doit être euclidean ou hyperbolic")
+        if type(self.moe_router_temperature) is not bool:
+            raise ValueError("moe_router_temperature doit être booléen")
+        if not math.isfinite(self.moe_entropy_weight) or self.moe_entropy_weight < 0:
+            raise ValueError("moe_entropy_weight doit être fini et positif ou nul")
         if self.top1_gate not in ("normalized", "probability"):
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):

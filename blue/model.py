@@ -175,6 +175,8 @@ class Blue(nn.Module):
             self.temporal.spectral.reset_spectral_parameters()
         if self.temporal.wavelet is not None:
             self.temporal.wavelet.reset_wavelet_parameters()
+        if self.temporal.freq_wavelet_gate is not None:
+            nn.init.zeros_(self.temporal.freq_wavelet_gate)
         self.forecaster.reset_tail_parameters()
         if self.forecast_adapter is not None:
             nn.init.zeros_(self.forecast_adapter.proj.weight)
@@ -557,7 +559,7 @@ class Blue(nn.Module):
         steps = self.config.latent_reasoning_steps if reasoning_steps is None else reasoning_steps
         initial = self._expand_streams(x_raw)
         x = initial
-        balance_losses, z_losses, depth_losses, next_layers = [], [], [], []
+        balance_losses, z_losses, depth_losses, entropy_losses, next_layers = [], [], [], [], []
         layer_usage = [None] * self.config.n_layers
         adaptive = self.ponder_halt is not None and steps > 1
         step_states = [] if adaptive else None
@@ -577,20 +579,23 @@ class Blue(nn.Module):
                         def run0(hidden, memory, current=block):
                             result = current(hidden, valid, memory)
                             d_loss = result[5] if result[5] is not None else hidden.sum() * 0
-                            return result[0], result[1], result[2], result[3], d_loss, result[6]
-                        x, balance, z_loss, expert_usage, depth_loss, v0 = checkpoint(run0, x, latents, use_reentrant=False)
+                            e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
+                            return result[0], result[1], result[2], result[3], d_loss, result[6], e_loss
+                        x, balance, z_loss, expert_usage, depth_loss, v0, ent_loss = checkpoint(run0, x, latents, use_reentrant=False)
                     elif self.config.value_residual and v0 is not None:
                         def run_v(hidden, memory, v_first, current=block):
                             result = current(hidden, valid, memory, v0=v_first)
                             d_loss = result[5] if result[5] is not None else hidden.sum() * 0
-                            return result[0], result[1], result[2], result[3], d_loss
-                        x, balance, z_loss, expert_usage, depth_loss = checkpoint(run_v, x, latents, v0, use_reentrant=False)
+                            e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
+                            return result[0], result[1], result[2], result[3], d_loss, e_loss
+                        x, balance, z_loss, expert_usage, depth_loss, ent_loss = checkpoint(run_v, x, latents, v0, use_reentrant=False)
                     else:
                         def run(hidden, memory, current=block):
                             result = current(hidden, valid, memory)
                             d_loss = result[5] if result[5] is not None else hidden.sum() * 0
-                            return result[0], result[1], result[2], result[3], d_loss
-                        x, balance, z_loss, expert_usage, depth_loss = checkpoint(run, x, latents, use_reentrant=False)
+                            e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
+                            return result[0], result[1], result[2], result[3], d_loss, e_loss
+                        x, balance, z_loss, expert_usage, depth_loss, ent_loss = checkpoint(run, x, latents, use_reentrant=False)
                     if block.depth_router is None:
                         depth_loss = None
                 else:
@@ -603,10 +608,13 @@ class Blue(nn.Module):
                         x, balance, z_loss, expert_usage, layer_cache, depth_loss, v0 = result
                     else:
                         x, balance, z_loss, expert_usage, layer_cache, depth_loss = result
+                    ent_loss = block.moe.last_router_entropy
                     if use_cache:
                         next_layers.append(layer_cache)
                 balance_losses.append(balance)
                 z_losses.append(z_loss)
+                if ent_loss is not None:
+                    entropy_losses.append(ent_loss)
                 if depth_loss is not None:
                     depth_losses.append(depth_loss)
                 layer_usage[index] = expert_usage if layer_usage[index] is None else layer_usage[index] + expert_usage
@@ -648,7 +656,7 @@ class Blue(nn.Module):
         if self.episodic_memory is not None:
             prev_mem = None if cache is None else cache.episodic_memory
             collapsed, next_memory = self.episodic_memory(collapsed, valid, prev_mem)
-        return self.norm(collapsed), balance_losses, z_losses, depth_losses, ponder_kl, usage, next_layers, next_memory
+        return self.norm(collapsed), balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory
 
     def _embed_text(self, input_ids: torch.Tensor, valid: torch.Tensor, cache: ModelCache | None = None):
         x = self.embedding(input_ids)
@@ -804,7 +812,7 @@ class Blue(nn.Module):
                      if attention_mask is None else attention_mask.bool())
             x, next_ngram_tail, next_ngram_valid = self._embed_text(input_ids, valid, cache=cache)
         offset = 0 if cache is None else cache.offset
-        hidden, balance_losses, z_losses, depth_losses, ponder_kl, usage, next_layers, next_memory = self._run_decoder_stack(
+        hidden, balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory = self._run_decoder_stack(
             x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
             reasoning_steps=reasoning_steps,
         )
@@ -840,6 +848,9 @@ class Blue(nn.Module):
         }
         c = self.config
         total = c.balance_weight * losses["balance"] + c.router_z_weight * losses["router_z"]
+        if c.moe_entropy_weight > 0.0 and entropy_losses:
+            losses["router_entropy"] = torch.stack(entropy_losses).mean()
+            total = total + c.moe_entropy_weight * losses["router_entropy"]
         if depth_losses:
             losses["depth_budget"] = torch.stack(depth_losses).mean()
             total = total + c.depth_budget_weight * losses["depth_budget"]
