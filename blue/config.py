@@ -18,6 +18,7 @@ class BlueConfig:
     top_k: int = 2
     shared_experts: int = 1
     moe_null_experts: int = 0
+    moe_shared_latent_dim: int = 0
     moe_router_geometry: str = "euclidean"
     shared_expert_gate: bool = False
     router_bias_update_rate: float = 0.0
@@ -40,6 +41,7 @@ class BlueConfig:
     value_residual: bool = False
     logit_softcap: float = 0.0
     attn_logit_softcap: float = 0.0
+    dynamic_attn_scale: bool = False
     nsa_block_size: int = 0
     nsa_top_k: int = 4
     ssm_state_dim: int = 0
@@ -195,6 +197,8 @@ class BlueConfig:
             raise ValueError("logit_softcap doit être fini et positif ou nul")
         if not math.isfinite(self.attn_logit_softcap) or self.attn_logit_softcap < 0:
             raise ValueError("attn_logit_softcap doit être fini et positif ou nul")
+        if type(self.dynamic_attn_scale) is not bool:
+            raise ValueError("dynamic_attn_scale doit être booléen")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
             raise ValueError("nsa_block_size doit être 0 ou un entier >= 2")
         if type(self.nsa_top_k) is not int or self.nsa_top_k < 1:
@@ -243,6 +247,8 @@ class BlueConfig:
             raise ValueError("top_k ne peut pas dépasser n_experts")
         if type(self.moe_null_experts) is not int or self.moe_null_experts < 0:
             raise ValueError("moe_null_experts doit être un entier positif ou nul")
+        if type(self.moe_shared_latent_dim) is not int or self.moe_shared_latent_dim < 0:
+            raise ValueError("moe_shared_latent_dim doit être un entier positif ou nul")
         if self.moe_router_geometry not in ("euclidean", "hyperbolic"):
             raise ValueError("moe_router_geometry doit être euclidean ou hyperbolic")
         if self.top1_gate not in ("normalized", "probability"):

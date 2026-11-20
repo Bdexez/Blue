@@ -201,6 +201,7 @@ class Blue(nn.Module):
                     hc.reset_manifold_parameters()
             for expert in [*block.moe.experts, block.moe.shared]:
                 nn.init.normal_(expert.down.weight, std=0.02 / math.sqrt(2 * config.n_layers))
+            block.moe.reset_moe_parameters(config.n_layers)
 
     def __getstate__(self):
         # Les groupes de communication sont propres au processus et ne doivent
