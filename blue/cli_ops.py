@@ -114,6 +114,7 @@ def inspect_config(config):
             "latent_reasoning_adaptive": config.latent_reasoning_adaptive,
             "dynamic_tanh_norm": config.dynamic_tanh_norm,
             "kan_degree": config.kan_degree,
+            "checkpoint_every": config.checkpoint_every,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
         "weights_gib_bf16": round(total * 2 / 2**30, 3),

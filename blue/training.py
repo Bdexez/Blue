@@ -167,9 +167,17 @@ def load_checkpoint(path, device="cpu", *, mmap=True, overrides=None):
     return model.to(device), payload
 
 
-def learning_rate(step, total_steps, peak, warmup):
+def learning_rate(step, total_steps, peak, warmup, *, schedule="cosine", wsd_decay_fraction=0.2):
     if step < warmup:
         return peak * (step + 1) / max(warmup, 1)
+    if schedule == "wsd":
+        post_warmup = max(total_steps - warmup, 1)
+        decay_steps = int(round(post_warmup * wsd_decay_fraction))
+        stable_end = max(warmup, total_steps - decay_steps)
+        if step < stable_end or decay_steps <= 0:
+            return peak
+        progress = (step - stable_end + 1) / max(decay_steps, 1)
+        return peak * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(progress, 1.0))))
     progress = (step - warmup) / max(total_steps - warmup - 1, 1)
     return peak * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(progress, 1))))
 
@@ -270,6 +278,21 @@ def train(args, config):
         raise ValueError("optimizer doit être adamw ou muon")
     if args.resume and args.optimizer != previous_optimizer:
         raise ValueError(f"Reprise : optimizer diffère du checkpoint ({previous_optimizer!r})")
+    previous_schedule = previous.get("lr_schedule", "cosine")
+    args.lr_schedule = getattr(args, "lr_schedule", None) or previous_schedule
+    if args.lr_schedule not in ("cosine", "wsd"):
+        raise ValueError("lr_schedule doit être cosine ou wsd")
+    if args.resume and args.lr_schedule != previous_schedule:
+        raise ValueError(f"Reprise : lr_schedule diffère du checkpoint ({previous_schedule!r})")
+    previous_wsd_fraction = previous.get("wsd_decay_fraction", 0.2)
+    requested_wsd_fraction = getattr(args, "wsd_decay_fraction", None)
+    args.wsd_decay_fraction = (
+        previous_wsd_fraction if requested_wsd_fraction is None else float(requested_wsd_fraction)
+    )
+    if not math.isfinite(args.wsd_decay_fraction) or not 0.0 <= args.wsd_decay_fraction <= 1.0:
+        raise ValueError("wsd_decay_fraction doit être fini et appartenir à [0, 1]")
+    if args.resume and args.wsd_decay_fraction != previous_wsd_fraction:
+        raise ValueError(f"Reprise : wsd_decay_fraction diffère du checkpoint ({previous_wsd_fraction!r})")
     previous_ema_decay = previous.get("ema_decay", 0.0)
     requested_ema_decay = getattr(args, "ema_decay", None)
     args.ema_decay = previous_ema_decay if requested_ema_decay is None else requested_ema_decay
@@ -399,6 +422,8 @@ def train(args, config):
             "amp", "data", "modality_dropout", "modality_policy", "shuffle", "val_data", "eval_every", "patience", "min_delta", "monitor", "loss_normalization")
     trainer = {key: getattr(args, key) for key in keys}
     trainer["optimizer"] = args.optimizer
+    trainer["lr_schedule"] = args.lr_schedule
+    trainer["wsd_decay_fraction"] = args.wsd_decay_fraction
     trainer["ema_decay"] = args.ema_decay
     if dora_spec is not None:
         trainer["dora"] = dora_spec
@@ -515,7 +540,10 @@ def train(args, config):
     for step in range(start, end_step):
         optimizer.zero_grad(set_to_none=True)
         for group in optimizer.param_groups:
-            group["lr"] = learning_rate(step, args.steps, args.lr, args.warmup) * group["lr_scale"]
+            group["lr"] = learning_rate(
+                step, args.steps, args.lr, args.warmup,
+                schedule=args.lr_schedule, wsd_decay_fraction=args.wsd_decay_fraction,
+            ) * group["lr_scale"]
         metrics, modality_batches, series_statistics = {}, {}, {}
         expert_totals = torch.zeros(config.n_layers, config.n_experts, device=device, dtype=torch.float64)
         expert_tokens = torch.zeros((), device=device, dtype=torch.long)

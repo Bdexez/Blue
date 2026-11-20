@@ -533,7 +533,12 @@ class Blue(nn.Module):
             v0 = None
             for index, block in enumerate(self.blocks):
                 cache_slot = rec_step * self.config.n_layers + index
-                if self.config.gradient_checkpointing and self.training:
+                use_ckpt = (
+                    self.config.gradient_checkpointing
+                    and self.training
+                    and (index % self.config.checkpoint_every == 0)
+                )
+                if use_ckpt:
                     if self.config.value_residual and index == 0:
                         def run0(hidden, memory, current=block):
                             result = current(hidden, valid, memory)

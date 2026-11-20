@@ -112,6 +112,10 @@ def main(argv=None):
     training.add_argument("--loss-normalization", choices=("batch", "observed"),
                           help="Pondération des pertes supervisées : par micro-lot (défaut) ou par cible observée")
     training.add_argument("--lr", type=float, default=3e-4)
+    training.add_argument("--lr-schedule", choices=("cosine", "wsd"),
+                          help="Planning du taux d'apprentissage : cosine (défaut) ou wsd (Warmup-Stable-Decay)")
+    training.add_argument("--wsd-decay-fraction", type=float,
+                          help="Fraction finale de décroissance WSD dans [0, 1] (défaut : 0.2)")
     training.add_argument("--optimizer", choices=("adamw", "muon"),
                           help="Optimiseur : adamw (défaut) ou muon (Newton-Schulz + AdamW) ; restauré à la reprise")
     training.add_argument("--ema-decay", type=float,
