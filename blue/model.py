@@ -18,7 +18,7 @@ from .losses import quantile_pinball_loss, symmetric_contrastive_loss
 from .memory import EpisodicMemoryBank
 from .forecast_adapter import ForecastAdapter, ForecastAdapterContext
 from .modules import (
-    DecoderBlock, LayerCache, LatentResampler, QuantileForecastHead,
+    CrossAttention, DecoderBlock, LayerCache, LatentResampler, QuantileForecastHead,
     RMSNorm, TemporalEncoder, VisionEncoder,
 )
 from .ngram import ByteNGramEmbedding
@@ -136,6 +136,12 @@ class Blue(nn.Module):
             for _ in range(config.prediction_steps - 1)
         ])
         self.fusion = nn.Sequential(nn.Linear(2 * d, d), nn.SiLU(), RMSNorm(d))
+        if config.head_cross_pool:
+            self.head_pool_norm = RMSNorm(d, config.norm_eps)
+            self.head_pool_attn = CrossAttention(config)
+            self.head_pool_gate = nn.Parameter(torch.full((2, 1, d), 0.1))
+        else:
+            self.head_pool_norm = self.head_pool_attn = self.head_pool_gate = None
         self.classifier = nn.Linear(d, config.num_classes)
         self.forecaster = QuantileForecastHead(config)
         self.flow_head = ConditionalFlowHead(config) if config.flow_matching_dim > 0 else None
@@ -212,6 +218,8 @@ class Blue(nn.Module):
             self.jepa.reset_jepa_parameters()
         if self.task_log_vars is not None:
             nn.init.zeros_(self.task_log_vars)
+        if self.head_pool_gate is not None:
+            nn.init.constant_(self.head_pool_gate, 0.1)
         if self.episodic_memory is not None:
             self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
@@ -810,8 +818,16 @@ class Blue(nn.Module):
             class_pooled = forecast_pooled = pooled
             align_vectors.append((2, pooled))
         memory_pooled = latents.mean(1)
-        class_pooled = self.fusion(torch.cat((class_pooled, memory_pooled), -1))
-        forecast_pooled = self.fusion(torch.cat((forecast_pooled, memory_pooled), -1))
+        if self.head_pool_attn is not None:
+            task_q = torch.stack((class_pooled, forecast_pooled), dim=1)
+            attended = self.head_pool_attn(self.head_pool_norm(task_q), self.head_pool_norm(latents))
+            g_cls, g_fc = torch.tanh(self.head_pool_gate).unbind(0)
+            cls_memory = memory_pooled + g_cls.to(memory_pooled.dtype) * attended[:, 0]
+            fc_memory = memory_pooled + g_fc.to(memory_pooled.dtype) * attended[:, 1]
+        else:
+            cls_memory = fc_memory = memory_pooled
+        class_pooled = self.fusion(torch.cat((class_pooled, cls_memory), -1))
+        forecast_pooled = self.fusion(torch.cat((forecast_pooled, fc_memory), -1))
         class_logits = self.classifier(class_pooled)
         forecast = self.forecaster(forecast_pooled, mean, scale, baseline)
         if self.forecast_adapter is not None and adapter_context is not None:

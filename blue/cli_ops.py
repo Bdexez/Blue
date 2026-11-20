@@ -118,6 +118,7 @@ def inspect_config(config):
             "kan_degree": config.kan_degree,
             "checkpoint_every": config.checkpoint_every,
             "evidential_classification": config.evidential_classification,
+            "head_cross_pool": config.head_cross_pool,
             "mtp_kl_weight": config.mtp_kl_weight,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
