@@ -910,6 +910,27 @@ class Blue(nn.Module):
             logits = (cap * torch.tanh(logits.float() / cap)).to(logits.dtype)
         return logits
 
+    @staticmethod
+    def _filtered_probs(scores: torch.Tensor, *, temperature: float, top_k: int, top_p: float) -> torch.Tensor:
+        scores = scores.float()
+        scores[:, [0, 1, 3]] = -torch.inf
+        if not torch.finfo(torch.float32).tiny <= temperature <= torch.finfo(torch.float32).max:
+            scores = scores.double()
+        peak = scores.amax(-1, keepdim=True)
+        if not torch.isfinite(peak).all():
+            raise FloatingPointError("Les logits générables doivent avoir un maximum fini")
+        scores = (scores - peak) / temperature
+        if top_k:
+            threshold = scores.topk(min(top_k, scores.size(-1)), dim=-1).values[:, -1:]
+            scores = scores.masked_fill(scores < threshold, -torch.inf)
+        ordered, order = scores.sort(descending=True)
+        ordered_probs = ordered.softmax(-1)
+        cumulative = ordered_probs.cumsum(-1)
+        remove = cumulative - ordered_probs >= top_p
+        ordered = ordered.masked_fill(remove, -torch.inf)
+        scores = torch.full_like(scores, -torch.inf).scatter(-1, order, ordered)
+        return scores.softmax(-1)
+
     def _draft_future_tokens(self, last_hidden: torch.Tensor, count: int) -> list[torch.Tensor]:
         drafts = []
         for head in self.future_heads[:count]:
@@ -917,6 +938,18 @@ class Blue(nn.Module):
             scores[:, [0, 1, 3]] = -torch.inf
             drafts.append(scores.argmax(-1))
         return drafts
+
+    def _draft_future_stochastic(self, last_hidden: torch.Tensor, count: int, *,
+                                 temperature: float, top_k: int, top_p: float):
+        drafts, q_probs = [], []
+        for head in self.future_heads[:count]:
+            probs = self._filtered_probs(
+                self._lm_logits(head(last_hidden))[:, -1],
+                temperature=temperature, top_k=top_k, top_p=top_p,
+            )
+            drafts.append(torch.multinomial(probs, 1).squeeze(-1))
+            q_probs.append(probs)
+        return drafts, q_probs
 
     @torch.inference_mode()
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,
@@ -944,10 +977,16 @@ class Blue(nn.Module):
         was_training = self.training
         self.eval()
         try:
-            if (speculative and temperature == 0 and input_ids.size(0) == 1
+            if (speculative and input_ids.size(0) == 1
                     and max_new_tokens > 0 and len(self.future_heads) > 0):
-                return self._generate_speculative_greedy(
-                    input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id,
+                if temperature == 0:
+                    return self._generate_speculative_greedy(
+                        input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id,
+                        reasoning_steps=reasoning_steps, **context,
+                    )
+                return self._generate_speculative_stochastic(
+                    input_ids, max_new_tokens=max_new_tokens, temperature=temperature,
+                    top_k=top_k, top_p=top_p, eos_id=eos_id,
                     reasoning_steps=reasoning_steps, **context,
                 )
             result = input_ids
@@ -964,24 +1003,9 @@ class Blue(nn.Module):
                 if temperature == 0:
                     next_token = scores.argmax(-1)
                 else:
-                    # Centrer avant division évite les +inf lorsque la température
-                    # est petite ; FP64 représente les températures hors plage FP32.
-                    if not torch.finfo(torch.float32).tiny <= temperature <= torch.finfo(torch.float32).max:
-                        scores = scores.double()
-                    peak = scores.amax(-1, keepdim=True)
-                    if not torch.isfinite(peak).all():
-                        raise FloatingPointError("Les logits générables doivent avoir un maximum fini")
-                    scores = scores - peak
-                    scores = scores / temperature
-                    if top_k:
-                        threshold = scores.topk(min(top_k, scores.size(-1)), dim=-1).values[:, -1:]
-                        scores = scores.masked_fill(scores < threshold, -torch.inf)
-                    ordered, order = scores.sort(descending=True)
-                    cumulative = ordered.softmax(-1).cumsum(-1)
-                    remove = cumulative - ordered.softmax(-1) >= top_p
-                    ordered = ordered.masked_fill(remove, -torch.inf)
-                    scores = torch.full_like(scores, -torch.inf).scatter(-1, order, ordered)
-                    next_token = torch.multinomial(scores.softmax(-1), 1).squeeze(-1)
+                    probs = self._filtered_probs(output.logits[:, -1],
+                                                 temperature=temperature, top_k=top_k, top_p=top_p)
+                    next_token = torch.multinomial(probs, 1).squeeze(-1)
                 if eos_id is not None:
                     next_token = torch.where(finished, eos_id, next_token)
                     finished = finished | (next_token == eos_id)
@@ -1046,6 +1070,83 @@ class Blue(nn.Module):
                 last_hidden = verify_out.last_hidden
             else:
                 # Resynchroniser exactement le cache sur les seuls tokens validés.
+                sync_tokens = candidate[:, :accepted + 1]
+                sync_out = self(sync_tokens, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+                cache = sync_out.cache
+                last_hidden = sync_out.last_hidden
+        return result
+
+    def _generate_speculative_stochastic(self, input_ids, *, max_new_tokens, temperature,
+                                         top_k, top_p, eos_id, reasoning_steps, **context):
+        """Décodage auto-spéculatif stochastique exact (échantillonnage par rejet de Leviathan et al.)."""
+        result = input_ids
+        output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
+        cache = output.cache
+        p0 = self._filtered_probs(output.logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p)
+        next_token = torch.multinomial(p0, 1).squeeze(-1)
+        result = torch.cat((result, next_token[:, None]), -1)
+        generated = 1
+        if eos_id is not None and next_token.item() == eos_id:
+            return result
+        last_hidden = output.last_hidden
+        while generated < max_new_tokens:
+            remaining = max_new_tokens - generated
+            n_draft = min(len(self.future_heads), remaining - 1)
+            if n_draft == 0:
+                step_out = self(next_token[:, None], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+                p_last = self._filtered_probs(step_out.logits[:, -1],
+                                              temperature=temperature, top_k=top_k, top_p=top_p)
+                next_token = torch.multinomial(p_last, 1).squeeze(-1)
+                result = torch.cat((result, next_token[:, None]), -1)
+                break
+            drafts, q_probs = self._draft_future_stochastic(
+                last_hidden, n_draft, temperature=temperature, top_k=top_k, top_p=top_p,
+            )
+            candidate = torch.stack([next_token, *drafts], dim=1)  # [1, 1 + n_draft]
+            verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+            accepted = 0
+            emitted_list = []
+            rejected = False
+            for j in range(n_draft):
+                p_j = self._filtered_probs(verify_out.logits[:, j],
+                                           temperature=temperature, top_k=top_k, top_p=top_p)
+                tok = drafts[j].item()
+                p_tok = p_j[0, tok].item()
+                q_tok = q_probs[j][0, tok].item()
+                u = torch.rand((), device=input_ids.device).item()
+                if q_tok > 0.0 and u <= min(1.0, p_tok / q_tok):
+                    emitted_list.append(drafts[j])
+                    accepted += 1
+                else:
+                    residual = (p_j - q_probs[j]).clamp_min(0.0)
+                    res_sum = residual.sum().item()
+                    if res_sum > 0.0:
+                        corrected = torch.multinomial(residual / res_sum, 1).squeeze(-1)
+                    else:
+                        corrected = torch.multinomial(p_j, 1).squeeze(-1)
+                    emitted_list.append(corrected)
+                    rejected = True
+                    break
+            if not rejected:
+                p_bonus = self._filtered_probs(verify_out.logits[:, n_draft],
+                                               temperature=temperature, top_k=top_k, top_p=top_p)
+                emitted_list.append(torch.multinomial(p_bonus, 1).squeeze(-1))
+            emitted = torch.cat(emitted_list, dim=0)
+            stop_now = False
+            if eos_id is not None:
+                eos_positions = (emitted == eos_id).nonzero(as_tuple=True)[0]
+                if eos_positions.numel():
+                    emitted = emitted[:eos_positions[0].item() + 1]
+                    stop_now = True
+            result = torch.cat((result, emitted[None, :]), -1)
+            generated += emitted.numel()
+            if stop_now or generated >= max_new_tokens:
+                break
+            next_token = emitted[-1:]
+            if accepted == n_draft:
+                cache = verify_out.cache
+                last_hidden = verify_out.last_hidden
+            else:
                 sync_tokens = candidate[:, :accepted + 1]
                 sync_out = self(sync_tokens, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
                 cache = sync_out.cache
