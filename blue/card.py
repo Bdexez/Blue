@@ -69,6 +69,8 @@ def _build_mermaid(config: BlueConfig, modalities: list[str]) -> list[str]:
     lines.append(f'    {head_src} --> FC["Prévision quantiles ({config.forecast_horizon} pas)"]')
     if config.flow_matching_dim > 0:
         lines.append(f'    {head_src} --> FM["Conditional Flow Matching (dim={config.flow_matching_dim})"]')
+    if config.jepa_weight > 0:
+        lines.append(f'    RES --> JEPA["Prédicteur Latent JEPA (w={config.jepa_weight})"]')
     lines.append(f'    RES --> ALN["Alignement {config.alignment_geometry} ({len(modalities) * (len(modalities) - 1) // 2} paires)"]')
     lines.append("```")
     return lines
@@ -136,7 +138,8 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"- **Alignement & Génération continue** : "
         f"géométrie `{config.alignment_geometry}`"
         f"{f' (courbure c={config.alignment_curvature})' if config.alignment_geometry == 'hyperbolic' else ''}"
-        f"{f', Conditional Flow Matching (dim={config.flow_matching_dim}, {config.flow_matching_layers} blocs AdaLN-Zero)' if config.flow_matching_dim else ''}.",
+        f"{f', Conditional Flow Matching (dim={config.flow_matching_dim}, {config.flow_matching_layers} blocs AdaLN-Zero)' if config.flow_matching_dim else ''}"
+        f"{f', Multimodal-JEPA (poids={config.jepa_weight})' if config.jepa_weight > 0 else ''}.",
         "",
         f"## Empreinte mémoire de génération (seq_len={cache['seq_len']}, batch={cache['batch_size']})",
         "",
