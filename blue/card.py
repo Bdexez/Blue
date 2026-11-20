@@ -117,6 +117,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{f' + {config.attention_sinks} Attention Sinks' if config.attention_sinks else ''}"
         f"{' + Value Residual (ResFormer)' if config.value_residual else ''}"
         f"{f' + Soft-Cap (attn={config.attn_logit_softcap}, lm={config.logit_softcap})' if (config.attn_logit_softcap > 0 or config.logit_softcap > 0) else ''}"
+        f"{f' + NSA (bloc {config.nsa_block_size}, top-{config.nsa_top_k})' if config.nsa_block_size > 0 else ''}"
         f", RoPE `{config.rope_scaling_type}` (×{config.rope_scaling_factor}, contexte max {_fmt_int(config.max_seq_len)}).",
         f"- **Attention croisée multimodale** : "
         f"{'Differential Cross-Attention' if config.cross_differential_attention else 'Cross-Attention standard'}"
