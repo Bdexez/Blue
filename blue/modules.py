@@ -420,8 +420,15 @@ class CrossAttention(nn.Module):
         super().__init__()
         self.heads, self.head_dim = config.n_heads, config.d_model // config.n_heads
         self.differential = config.cross_differential_attention
+        self.kv_lora_rank = config.cross_kv_lora_rank
         self.q = nn.Linear(config.d_model, config.d_model, bias=False)
-        self.kv = nn.Linear(config.d_model, 2 * config.d_model, bias=False)
+        if self.kv_lora_rank > 0:
+            self.kv_down = nn.Linear(config.d_model, self.kv_lora_rank, bias=False)
+            self.kv_norm = RMSNorm(self.kv_lora_rank, config.norm_eps)
+            self.k_up = nn.Linear(self.kv_lora_rank, config.d_model, bias=False)
+            self.v_up = nn.Linear(self.kv_lora_rank, config.d_model, bias=False)
+        else:
+            self.kv = nn.Linear(config.d_model, 2 * config.d_model, bias=False)
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
         norm_dim = self.head_dim // 2 if self.differential else self.head_dim
         self.q_norm = RMSNorm(norm_dim, config.norm_eps)
@@ -439,20 +446,32 @@ class CrossAttention(nn.Module):
             nn.init.normal_(self.lambda_q2, std=0.1)
             nn.init.normal_(self.lambda_k2, std=0.1)
 
-    def project_context(self, context):
-        b = context.size(0)
-        k, v = self.kv(context).view(b, -1, 2, self.heads, self.head_dim).unbind(2)
+    def _format_k(self, k: torch.Tensor) -> torch.Tensor:
         if self.differential:
+            b = k.size(0)
             sub = self.head_dim // 2
             k1, k2 = k.view(b, -1, self.heads, 2, sub).unbind(3)
             k1 = self.k_norm(k1.transpose(1, 2))
             k2 = self.k_norm(k2.transpose(1, 2))
-            return torch.cat((k1, k2), dim=-1), v.transpose(1, 2)
-        return self.k_norm(k.transpose(1, 2)), v.transpose(1, 2)
+            return torch.cat((k1, k2), dim=-1)
+        return self.k_norm(k.transpose(1, 2))
+
+    def project_context(self, context):
+        if self.kv_lora_rank > 0:
+            return self.kv_norm(self.kv_down(context)), None
+        b = context.size(0)
+        k, v = self.kv(context).view(b, -1, 2, self.heads, self.head_dim).unbind(2)
+        return self._format_k(k), v.transpose(1, 2)
 
     def forward(self, queries, context=None, valid=None, *, projected=None):
         b, t, d = queries.shape
-        k, v = self.project_context(context) if projected is None else projected
+        proj = self.project_context(context) if projected is None else projected
+        if self.kv_lora_rank > 0:
+            c_kv = proj[0]
+            k = self._format_k(self.k_up(c_kv).view(b, -1, self.heads, self.head_dim))
+            v = self.v_up(c_kv).view(b, -1, self.heads, self.head_dim).transpose(1, 2)
+        else:
+            k, v = proj
         mask = None if valid is None else valid[:, None, None, :]
         dropout_p = self.dropout if self.training else 0.0
         if self.differential:

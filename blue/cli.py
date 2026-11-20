@@ -106,6 +106,7 @@ def inspect_config(config):
             "differential_attention": config.differential_attention,
             "cross_differential_attention": config.cross_differential_attention,
             "kv_lora_rank": config.kv_lora_rank,
+            "cross_kv_lora_rank": config.cross_kv_lora_rank,
             "attention_sinks": config.attention_sinks,
             "value_residual": config.value_residual,
             "logit_softcap": config.logit_softcap,
