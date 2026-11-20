@@ -119,6 +119,7 @@ class BlueConfig:
     flow_matching_layers: int = 2
     flow_matching_weight: float = 0.25
     jepa_weight: float = 0.0
+    adaptive_loss_weighting: bool = False
     gradient_checkpointing: bool = False
     top1_gate: str = "normalized"
 
@@ -289,6 +290,8 @@ class BlueConfig:
             raise ValueError("flow_matching_dim doit être un entier positif ou nul")
         if type(self.gradient_checkpointing) is not bool:
             raise ValueError("gradient_checkpointing doit être booléen")
+        if type(self.adaptive_loss_weighting) is not bool:
+            raise ValueError("adaptive_loss_weighting doit être booléen")
         if type(self.temporal_statistics) is not bool:
             raise ValueError("temporal_statistics doit être booléen")
         if type(self.temporal_statistics_relative) is not bool:

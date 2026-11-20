@@ -115,6 +115,7 @@ class Blue(nn.Module):
         self.forecaster = QuantileForecastHead(config)
         self.flow_head = ConditionalFlowHead(config) if config.flow_matching_dim > 0 else None
         self.jepa = MultimodalJEPAPredictor(d, norm_eps=config.norm_eps) if config.jepa_weight > 0 else None
+        self.task_log_vars = nn.Parameter(torch.zeros(7)) if config.adaptive_loss_weighting else None
         self.alignment = nn.ModuleList([nn.Linear(d, d, bias=False) for _ in range(3)])
         self.audio_alignment = nn.Linear(d, d, bias=False) if config.audio_enabled else None
         self.graph_alignment = nn.Linear(d, d, bias=False) if config.graph_enabled else None
@@ -170,6 +171,8 @@ class Blue(nn.Module):
             self.flow_head.reset_adaln_parameters()
         if self.jepa is not None:
             self.jepa.reset_jepa_parameters()
+        if self.task_log_vars is not None:
+            nn.init.zeros_(self.task_log_vars)
         if self.episodic_memory is not None:
             self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
@@ -780,7 +783,7 @@ class Blue(nn.Module):
             targets = labels.masked_fill(~valid, -100)
             shifted = targets[:, 1:].masked_fill(~valid[:, :-1], -100)
             losses["text"] = masked_cross_entropy(logits[:, :-1], shifted)
-            total = total + c.text_weight * losses["text"]
+            total = total + self._weight_task_loss("text", c.text_weight, losses["text"])
             mtp_losses, mtp_active = [], []
             for distance, head in enumerate(self.future_heads, start=2):
                 if hidden.size(1) > distance:
@@ -795,19 +798,19 @@ class Blue(nn.Module):
                 # Les horizons sans cible ne doivent pas diluer les horizons actifs.
                 active = torch.stack(mtp_active).to(dtype=mtp_losses[0].dtype)
                 losses["multi_token"] = (torch.stack(mtp_losses) * active).sum() / active.sum().clamp_min(1)
-                total = total + c.mtp_weight * losses["multi_token"]
+                total = total + self._weight_task_loss("multi_token", c.mtp_weight, losses["multi_token"])
         if class_labels is not None:
             losses["classification"] = masked_cross_entropy(class_logits, class_labels)
-            total = total + c.classification_weight * losses["classification"]
+            total = total + self._weight_task_loss("classification", c.classification_weight, losses["classification"])
         if forecast_targets is not None:
             losses["forecast"] = quantile_pinball_loss(forecast, forecast_targets, c.quantiles)
-            total = total + c.forecast_weight * losses["forecast"]
+            total = total + self._weight_task_loss("forecast", c.forecast_weight, losses["forecast"])
         if flow_targets is not None:
             losses["flow"] = self.flow_head.loss(flow_targets, forecast_pooled)
-            total = total + c.flow_matching_weight * losses["flow"]
+            total = total + self._weight_task_loss("flow", c.flow_matching_weight, losses["flow"])
         if self.jepa is not None and len(align_vectors) >= 2:
             losses["jepa"] = self.jepa(align_vectors)
-            total = total + c.jepa_weight * losses["jepa"]
+            total = total + self._weight_task_loss("jepa", c.jepa_weight, losses["jepa"])
         # En entraînement distribué, toutes les paires effectivement présentes
         # peuvent partager leurs exemples négatifs entre rangs.
         if (c.alignment_text_view == "isolated" and input_ids is not None
@@ -830,7 +833,7 @@ class Blue(nn.Module):
                                                               num_modalities=n_mod,
                                                               geometry=c.alignment_geometry,
                                                               curvature=c.alignment_curvature)
-            total = total + c.alignment_weight * losses["alignment"]
+            total = total + self._weight_task_loss("alignment", c.alignment_weight, losses["alignment"])
         elif len(align_vectors) > 1 and batch > 1:
             vectors = [self._project_alignment(i, v) for i, v in align_vectors]
             contrastive = []
@@ -846,7 +849,7 @@ class Blue(nn.Module):
                         similarity, class_labels if c.alignment_mode == "class" else None, sample_ids=alignment_ids,
                     ))
             losses["alignment"] = torch.stack(contrastive).mean()
-            total = total + c.alignment_weight * losses["alignment"]
+            total = total + self._weight_task_loss("alignment", c.alignment_weight, losses["alignment"])
         next_cache = (ModelCache(next_layers, latents, offset + hidden.size(1), mean, scale, baseline,
                                  adapter_context, episodic_memory=next_memory,
                                  ngram_tail=next_ngram_tail, ngram_tail_valid=next_ngram_valid)
@@ -877,6 +880,20 @@ class Blue(nn.Module):
                                          generator=generator, initial_noise=initial_noise)
         finally:
             self.train(was_training)
+
+    _TASK_LOG_VAR_INDEX = {
+        "text": 0, "multi_token": 1, "classification": 2,
+        "forecast": 3, "flow": 4, "alignment": 5, "jepa": 6,
+    }
+
+    def _weight_task_loss(self, name: str, base_weight: float, value: torch.Tensor) -> torch.Tensor:
+        if self.task_log_vars is None or base_weight == 0.0:
+            return base_weight * value
+        idx = self._TASK_LOG_VAR_INDEX[name]
+        with torch.autocast(device_type=value.device.type, enabled=False):
+            s = self.task_log_vars[idx].float().clamp(-4.0, 4.0)
+            weighted = base_weight * (torch.exp(-s) * value.float() + F.softplus(s))
+        return weighted.to(value.dtype)
 
     def _lm_logits(self, hidden: torch.Tensor) -> torch.Tensor:
         logits = self.lm_head(hidden)
