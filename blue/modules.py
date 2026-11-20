@@ -776,6 +776,23 @@ class TemporalEncoder(nn.Module):
         return self.norm(x), valid, mean.squeeze(1), scale.squeeze(1), baseline
 
 
+class CrossModalFusionBlock(nn.Module):
+    """Bloc d'interaction inter-modalités pré-resampler invariant par permutation et au padding."""
+
+    def __init__(self, config, layer_index: int = 0):
+        super().__init__()
+        self.norm1 = RMSNorm(config.d_model, config.norm_eps)
+        self.norm2 = RMSNorm(config.d_model, config.norm_eps)
+        self.attn = CrossAttention(config, layer_index=layer_index)
+        self.ffn = SwiGLU(config.d_model, config.hidden_dim)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        h = self.norm1(x)
+        x = (x + self.dropout(self.attn(h, h, valid))) * valid.unsqueeze(-1)
+        return (x + self.dropout(self.ffn(self.norm2(x)))) * valid.unsqueeze(-1)
+
+
 class LatentResampler(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -786,6 +803,9 @@ class LatentResampler(nn.Module):
         self.registers = (nn.Parameter(torch.empty(1, self.n_registers, config.d_model))
                           if self.n_registers > 0 else None)
         self.null_context = nn.Parameter(torch.empty(1, 1, config.d_model))
+        self.fusion_blocks = nn.ModuleList([
+            CrossModalFusionBlock(config, i) for i in range(config.cross_modal_fusion_layers)
+        ])
         if self.hierarchical:
             local_count = max(4, config.n_latents // 2)
             self.local_latents = nn.Parameter(torch.empty(1, local_count, config.d_model))
@@ -804,6 +824,13 @@ class LatentResampler(nn.Module):
 
     def forward(self, contexts, masks, batch_size):
         null = self.null_context.expand(batch_size, -1, -1)
+        if len(self.fusion_blocks) > 0 and contexts:
+            lengths = [ctx.size(1) for ctx in contexts]
+            joint = torch.cat(contexts, dim=1)
+            joint_valid = torch.cat(masks, dim=1)
+            for fusion_block in self.fusion_blocks:
+                joint = fusion_block(joint, joint_valid)
+            contexts = list(torch.split(joint, lengths, dim=1))
         if self.hierarchical and contexts:
             stage1_contexts, stage1_masks = [], []
             local_queries = self.local_latents.expand(batch_size, -1, -1)

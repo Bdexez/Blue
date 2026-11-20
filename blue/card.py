@@ -126,6 +126,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{' + Modulation AdaLN-Zero multimodale' if config.multimodal_adaln else ''} "
         f"vers {config.n_latents} latents "
         f"({'hiérarchique 2 niveaux' if config.hierarchical_resampler else '1 niveau'}"
+        f"{f', fusion pré-resampler {config.cross_modal_fusion_layers}x' if config.cross_modal_fusion_layers else ''}"
         f"{f', + {config.register_latents} registres cognitifs' if config.register_latents else ''}"
         f"{f', goulot discret FSQ ({_fmt_int(fsq_size)} codes)' if fsq_size else ''}"
         f"{f', diversité orthogonale (w={config.latent_diversity_weight})' if config.latent_diversity_weight > 0 else ''}).",

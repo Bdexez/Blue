@@ -101,6 +101,7 @@ def inspect_config(config):
             "tabular_enabled": config.tabular_enabled,
             "video_enabled": config.video_enabled,
             "hierarchical_resampler": config.hierarchical_resampler,
+            "cross_modal_fusion_layers": config.cross_modal_fusion_layers,
             "register_latents": config.register_latents,
             "latent_fsq_levels": list(config.latent_fsq_levels),
             "latent_diversity_weight": config.latent_diversity_weight,
