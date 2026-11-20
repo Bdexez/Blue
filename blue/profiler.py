@@ -62,6 +62,8 @@ def profile_architecture(config: BlueConfig, *, seq_len: int = 1024, batch_size:
         modalities.append("pointcloud")
     if config.tabular_enabled:
         modalities.append("tabular")
+    if config.video_enabled:
+        modalities.append("video")
     n_mod = len(modalities)
 
     report = {
