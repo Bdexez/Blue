@@ -34,6 +34,7 @@ from .split_audit import audit_splits
 from .temporal_splits import prepare_temporal_splits
 from .tokenizer import ByteTokenizer
 from .training import evaluate, load_checkpoint, save_checkpoint, train
+from .verifier import verify_architecture
 
 
 def audit_series_calibration(data, dataset_sha256, references, *, output, subject="calibration"):
@@ -72,6 +73,10 @@ def main(argv=None):
     card.add_argument("--seq-len", type=int, default=2048)
     card.add_argument("--batch-size", type=int, default=1)
     card.add_argument("--output", help="Fichier Markdown de sortie ; sinon stdout")
+    verify = commands.add_parser("verify", help="Auditer causalité, cache, invariances géométriques/padding et gradients")
+    verify.add_argument("--seed", type=int, default=0)
+    verify.add_argument("--device", default="cpu")
+    verify.add_argument("--output", help="Rapport JSON ; sinon sortie standard")
     audit = commands.add_parser("audit-splits", help="Détecter des exemples ou fenêtres partagés entre jeux JSONL")
     audit.add_argument("--split", action="append", required=True, metavar="NOM=FICHIER",
                        help="Jeu nommé ; indiquer au moins deux fois")
@@ -94,7 +99,7 @@ def main(argv=None):
     prepare.add_argument("--gap", type=int, default=0, help="Positions exclues après chaque coupure")
     demo = commands.add_parser("demo", help="Exécuter les trois modalités et les trois sorties")
     training = commands.add_parser("train", help="Entraînement conjoint réel")
-    for command in (inspect, prof, card, demo, training):
+    for command in (inspect, prof, card, verify, demo, training):
         command.add_argument("--preset", choices=("tiny", "small", "workstation", "base", "large", "ultra", "hyper", "titan"), default="tiny")
         command.add_argument("--config", help="Configuration JSON personnalisée")
     demo.add_argument("--checkpoint")
@@ -425,6 +430,15 @@ def main(argv=None):
                 stream.write(markdown)
         else:
             print(markdown, end="")
+    elif args.command == "verify":
+        report = verify_architecture(get_config(args), seed=args.seed, device=args.device)
+        content = json.dumps(report, indent=2, allow_nan=False) + "\n"
+        if args.output:
+            with prediction_stream(args.output) as stream:
+                stream.write(content)
+        print(content, end="")
+        if not report["passed"]:
+            raise SystemExit(2)
     elif args.command == "train":
         if args.model_overrides and not args.init_from:
             parser.error("model-overrides nécessite init-from ; utiliser config pour un nouveau modèle")
