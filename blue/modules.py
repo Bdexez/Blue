@@ -742,8 +742,12 @@ class TemporalEncoder(nn.Module):
 class LatentResampler(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.n_latents = config.n_latents
+        self.n_registers = config.register_latents
         self.hierarchical = config.hierarchical_resampler
         self.latents = nn.Parameter(torch.empty(1, config.n_latents, config.d_model))
+        self.registers = (nn.Parameter(torch.empty(1, self.n_registers, config.d_model))
+                          if self.n_registers > 0 else None)
         self.null_context = nn.Parameter(torch.empty(1, 1, config.d_model))
         if self.hierarchical:
             local_count = max(4, config.n_latents // 2)
@@ -779,10 +783,14 @@ class LatentResampler(nn.Module):
             torch.ones(batch_size, 1, dtype=torch.bool, device=null.device), *masks
         ], 1)
         x = self.latents.expand(batch_size, -1, -1)
+        if self.registers is not None:
+            x = torch.cat((x, self.registers.expand(batch_size, -1, -1)), dim=1)
         latent_valid = torch.ones(x.shape[:2], dtype=torch.bool, device=x.device)
         for norm, cross, block in zip(self.norms, self.cross, self.blocks):
             x = x + cross(norm(x), context, valid)
             x = block(x, latent_valid)
+        if self.registers is not None:
+            x = x[:, :self.n_latents]
         if self.fsq is not None:
             x, self.last_codes = self.fsq(x)
         else:

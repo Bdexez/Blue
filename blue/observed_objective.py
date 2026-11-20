@@ -29,6 +29,8 @@ def observed_objective(output, local_counts, total_counts, config, *, world, acc
         loss = loss + config.depth_budget_weight * losses["depth_budget"] / accumulation
     if "ponder_kl" in losses:
         loss = loss + config.ponder_kl_weight * losses["ponder_kl"] / accumulation
+    if "latent_diversity" in losses:
+        loss = loss + config.latent_diversity_weight * losses["latent_diversity"] / accumulation
     if "jepa" in losses:
         loss = loss + config.jepa_weight * losses["jepa"] / accumulation
     if "alignment" in losses:

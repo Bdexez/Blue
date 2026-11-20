@@ -355,6 +355,7 @@ def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=
                      ("forecast", "forecast_weight"), ("multi_token", "mtp_weight"),
                      ("balance", "balance_weight"), ("router_z", "router_z_weight"),
                      ("depth_budget", "depth_budget_weight"), ("ponder_kl", "ponder_kl_weight"),
+                     ("latent_diversity", "latent_diversity_weight"),
                      ("flow", "flow_matching_weight"), ("jepa", "jepa_weight"),
                      ("alignment", "alignment_weight"))
             result["observed_loss"] = (
