@@ -62,6 +62,31 @@ def masked_cross_entropy(logits, labels):
     return values.sum() / (labels != -100).sum().clamp_min(1)
 
 
+def evidential_dirichlet_loss(logits: torch.Tensor, labels: torch.Tensor, kl_reg: float = 0.05) -> torch.Tensor:
+    """Perte évidentielle de Dirichlet (risque de Bayes digamma + régularisation KL de l'évidence erronée)."""
+    valid = labels != -100
+    if not bool(valid.any()):
+        return logits.sum() * 0.0
+    z = logits[valid].float()
+    targets = labels[valid]
+    num_classes = z.size(-1)
+    evidence = F.softplus(z)
+    alpha = evidence + 1.0
+    strength = alpha.sum(dim=-1, keepdim=True)
+    one_hot = F.one_hot(targets, num_classes).float()
+    bayes_risk = (one_hot * (torch.digamma(strength) - torch.digamma(alpha))).sum(dim=-1)
+    # Régulariser uniquement l'évidence attribuée aux classes non cibles vers Dir(1, ..., 1)
+    alpha_tilde = one_hot + (1.0 - one_hot) * alpha
+    strength_tilde = alpha_tilde.sum(dim=-1, keepdim=True)
+    kl = (
+        torch.lgamma(strength_tilde.squeeze(-1))
+        - math.lgamma(num_classes)
+        - torch.lgamma(alpha_tilde).sum(dim=-1)
+        + ((alpha_tilde - 1.0) * (torch.digamma(alpha_tilde) - torch.digamma(strength_tilde))).sum(dim=-1)
+    )
+    return (bayes_risk + kl_reg * kl).mean()
+
+
 class Blue(nn.Module):
     """Réseau conjoint : génération causale, classification, prévision probabiliste."""
 
@@ -820,6 +845,7 @@ class Blue(nn.Module):
             losses["text"] = masked_cross_entropy(logits[:, :-1], shifted)
             total = total + self._weight_task_loss("text", c.text_weight, losses["text"])
             mtp_losses, mtp_active = [], []
+            mtp_kl_losses = []
             for distance, head in enumerate(self.future_heads, start=2):
                 if hidden.size(1) > distance:
                     future_logits = self._lm_logits(head(hidden[:, :-distance]))
@@ -829,13 +855,27 @@ class Blue(nn.Module):
                     auxiliary_text_losses[distance] = (head_loss, head_count)
                     mtp_losses.append(head_loss)
                     mtp_active.append(head_count > 0)
+                    if c.mtp_kl_weight > 0.0:
+                        with torch.autocast(device_type=logits.device.type, enabled=False):
+                            teacher_lp = F.log_softmax(logits[:, distance - 1:-1].detach().float(), dim=-1)
+                            student_lp = F.log_softmax(future_logits.float(), dim=-1)
+                            kl_tok = F.kl_div(student_lp, teacher_lp, log_target=True, reduction="none").sum(-1)
+                            kl_mask = (future_targets != -100) & valid[:, distance - 1:-1]
+                            kl_mean = (kl_tok * kl_mask.float()).sum() / kl_mask.sum().clamp_min(1)
+                            mtp_kl_losses.append(kl_mean)
             if mtp_losses:
                 # Les horizons sans cible ne doivent pas diluer les horizons actifs.
                 active = torch.stack(mtp_active).to(dtype=mtp_losses[0].dtype)
                 losses["multi_token"] = (torch.stack(mtp_losses) * active).sum() / active.sum().clamp_min(1)
                 total = total + self._weight_task_loss("multi_token", c.mtp_weight, losses["multi_token"])
+                if mtp_kl_losses:
+                    losses["mtp_kl"] = (torch.stack(mtp_kl_losses) * active).sum() / active.sum().clamp_min(1)
+                    total = total + c.mtp_kl_weight * losses["mtp_kl"]
         if class_labels is not None:
-            losses["classification"] = masked_cross_entropy(class_logits, class_labels)
+            if c.evidential_classification:
+                losses["classification"] = evidential_dirichlet_loss(class_logits, class_labels)
+            else:
+                losses["classification"] = masked_cross_entropy(class_logits, class_labels)
             total = total + self._weight_task_loss("classification", c.classification_weight, losses["classification"])
         if forecast_targets is not None:
             losses["forecast"] = quantile_pinball_loss(forecast, forecast_targets, c.quantiles)
@@ -892,6 +932,24 @@ class Blue(nn.Module):
         return BlueOutput(logits, class_logits, forecast, total if supervised else None,
                           losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum(),
                           last_hidden=hidden[:, -1:] if use_cache else None)
+
+    @staticmethod
+    def dirichlet_uncertainty(classification_logits: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Extraire paramètres de Dirichlet, probabilités, masses de croyance et incertitude épistémique."""
+        z = classification_logits.float()
+        num_classes = z.size(-1)
+        evidence = F.softplus(z)
+        alpha = evidence + 1.0
+        strength = alpha.sum(dim=-1, keepdim=True)
+        belief = evidence / strength
+        uncertainty = (num_classes / strength).squeeze(-1)
+        probabilities = alpha / strength
+        return {
+            "alpha": alpha,
+            "probabilities": probabilities,
+            "belief": belief,
+            "uncertainty": uncertainty,
+        }
 
     @torch.inference_mode()
     def sample_flow(self, *, steps: int = 20, solver: str = "heun", guidance_scale: float = 1.0,

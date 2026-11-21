@@ -110,6 +110,7 @@ class BlueConfig:
     latent_fsq_levels: tuple[int, ...] = ()
     latent_diversity_weight: float = 0.0
     num_classes: int = 6
+    evidential_classification: bool = False
     forecast_horizon: int = 12
     forecast_context: int = 32
     forecast_adapter_context: int = 0
@@ -122,6 +123,7 @@ class BlueConfig:
     balance_weight: float = 0.01
     router_z_weight: float = 0.001
     mtp_weight: float = 0.1
+    mtp_kl_weight: float = 0.0
     alignment_weight: float = 0.05
     alignment_mode: str = "paired"
     alignment_scope: str = "local"
@@ -323,12 +325,14 @@ class BlueConfig:
             raise ValueError("Les quantiles doivent être strictement croissants")
         if 0.5 not in self.quantiles:
             raise ValueError("Le quantile médian 0.5 est requis")
-        for name in ("balance_weight", "router_z_weight", "mtp_weight", "alignment_weight",
+        for name in ("balance_weight", "router_z_weight", "mtp_weight", "mtp_kl_weight", "alignment_weight",
                      "text_weight", "classification_weight", "forecast_weight",
                      "flow_matching_weight", "jepa_weight", "latent_diversity_weight"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
+        if type(self.evidential_classification) is not bool:
+            raise ValueError("evidential_classification doit être booléen")
         if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
             raise ValueError("flow_matching_dim doit être un entier positif ou nul")
         if not math.isfinite(self.flow_cfg_dropout) or not 0.0 <= self.flow_cfg_dropout < 1.0:
