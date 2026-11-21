@@ -338,6 +338,10 @@ class GroupedQueryAttention(nn.Module):
             self.head_mix = nn.Linear(self.n_heads, self.n_heads, bias=False)
         else:
             self.head_mix = None
+        if config.head_confidence_gate and causal:
+            self.head_gate_proj = nn.Linear(config.d_model, self.n_heads, bias=True)
+        else:
+            self.head_gate_proj = None
         self.reset_sink_parameters()
 
     def reset_sink_parameters(self):
@@ -369,6 +373,10 @@ class GroupedQueryAttention(nn.Module):
         if self.head_mix is not None:
             with torch.no_grad():
                 self.head_mix.weight.zero_()
+        if self.head_gate_proj is not None:
+            with torch.no_grad():
+                self.head_gate_proj.weight.zero_()
+                self.head_gate_proj.bias.zero_()
         if self.nsa is not None:
             self.nsa.reset_nsa_parameters()
 
@@ -564,6 +572,9 @@ class GroupedQueryAttention(nn.Module):
                 )
         if self.nsa is not None:
             y = y + self.nsa(q_nsa_src, k_nsa_src, v_nsa_src, key_valid, offset=offset, start_pos=start_pos)
+        if self.head_gate_proj is not None:
+            h_conf = (2.0 * torch.sigmoid(self.head_gate_proj(x))).transpose(1, 2).unsqueeze(-1)
+            y = y * h_conf.to(y.dtype)
         if self.head_mix is not None:
             y = y + self.head_mix(y.transpose(1, 3)).transpose(1, 3)
         y = y.transpose(1, 2).contiguous().view(b, t, -1)

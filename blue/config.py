@@ -53,6 +53,7 @@ class BlueConfig:
     forgetting_attention: bool = False
     gated_value_attention: bool = False
     talking_heads: bool = False
+    head_confidence_gate: bool = False
     nsa_block_size: int = 0
     nsa_top_k: int = 4
     ssm_state_dim: int = 0
@@ -151,6 +152,7 @@ class BlueConfig:
     alignment_curvature: float = 1.0
     alignment_margin: float = 0.0
     text_weight: float = 1.0
+    label_smoothing: float = 0.0
     classification_weight: float = 1.0
     forecast_weight: float = 1.0
     flow_matching_dim: int = 0
@@ -234,6 +236,8 @@ class BlueConfig:
             raise ValueError("gated_value_attention doit être booléen")
         if type(self.talking_heads) is not bool:
             raise ValueError("talking_heads doit être booléen")
+        if type(self.head_confidence_gate) is not bool:
+            raise ValueError("head_confidence_gate doit être booléen")
         if type(self.conv_diff_branch) is not bool:
             raise ValueError("conv_diff_branch doit être booléen")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
@@ -363,6 +367,8 @@ class BlueConfig:
             raise ValueError("alignment_curvature doit être fini et > 0")
         if not math.isfinite(self.alignment_margin) or self.alignment_margin < 0:
             raise ValueError("alignment_margin doit être fini et positif ou nul")
+        if not math.isfinite(self.label_smoothing) or not 0.0 <= self.label_smoothing < 1.0:
+            raise ValueError("label_smoothing doit être fini et appartenir à [0, 1[")
         self.quantiles = tuple(self.quantiles)
         if not self.quantiles or any(not 0 < q < 1 for q in self.quantiles):
             raise ValueError("Les quantiles doivent appartenir à ]0, 1[")

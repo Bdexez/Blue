@@ -35,6 +35,16 @@ def observed_objective(output, local_counts, total_counts, config, *, world, acc
         loss = loss + config.jepa_weight * losses["jepa"] / accumulation
     if "alignment" in losses:
         loss = loss + config.alignment_weight * losses["alignment"] / accumulation
+    if "router_entropy" in losses:
+        loss = loss + config.moe_entropy_weight * losses["router_entropy"] / accumulation
+    if "router_orthogonality" in losses:
+        loss = loss + config.moe_router_orthogonality_weight * losses["router_orthogonality"] / accumulation
+    if "mtp_kl" in losses:
+        loss = loss + config.mtp_kl_weight * losses["mtp_kl"] / accumulation
+    if "lm_z" in losses:
+        loss = loss + config.lm_z_loss_weight * losses["lm_z"] / accumulation
+    if "forecast_smoothness" in losses:
+        loss = loss + config.forecast_smoothness_weight * losses["forecast_smoothness"] / accumulation
     for index, (name, weight) in enumerate((("text", config.text_weight),
                                             ("classification", config.classification_weight),
                                             ("forecast", config.forecast_weight))):
