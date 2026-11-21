@@ -99,9 +99,11 @@ class BlueConfig:
     max_video_frames: int = 16
     video_layers: int = 2
     n_latents: int = 16
+    register_latents: int = 0
     resampler_layers: int = 2
     hierarchical_resampler: bool = False
     latent_fsq_levels: tuple[int, ...] = ()
+    latent_diversity_weight: float = 0.0
     num_classes: int = 6
     forecast_horizon: int = 12
     forecast_context: int = 32
@@ -310,7 +312,7 @@ class BlueConfig:
             raise ValueError("Le quantile médian 0.5 est requis")
         for name in ("balance_weight", "router_z_weight", "mtp_weight", "alignment_weight",
                      "text_weight", "classification_weight", "forecast_weight",
-                     "flow_matching_weight", "jepa_weight"):
+                     "flow_matching_weight", "jepa_weight", "latent_diversity_weight"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
@@ -348,6 +350,8 @@ class BlueConfig:
             raise ValueError("video_size doit être divisible par video_patch_size")
         if type(self.hierarchical_resampler) is not bool:
             raise ValueError("hierarchical_resampler doit être booléen")
+        if type(self.register_latents) is not int or self.register_latents < 0:
+            raise ValueError("register_latents doit être un entier positif ou nul")
         self.latent_fsq_levels = tuple(self.latent_fsq_levels)
         if any(type(level) is not int or level < 2 for level in self.latent_fsq_levels):
             raise ValueError("latent_fsq_levels doit contenir des entiers >= 2")

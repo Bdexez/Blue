@@ -164,6 +164,8 @@ class Blue(nn.Module):
             self.ngram.reset_ngram_parameters()
         if self.resampler.local_latents is not None:
             nn.init.normal_(self.resampler.local_latents, std=0.02)
+        if self.resampler.registers is not None:
+            nn.init.normal_(self.resampler.registers, std=0.02)
         if self.audio is not None and self.audio.spectral is not None:
             self.audio.spectral.reset_spectral_parameters()
         if self.reasoning_gate is not None:
@@ -789,6 +791,15 @@ class Blue(nn.Module):
         if ponder_kl is not None:
             losses["ponder_kl"] = ponder_kl
             total = total + c.ponder_kl_weight * losses["ponder_kl"]
+        if c.latent_diversity_weight > 0.0 and latents.size(1) > 1:
+            with torch.autocast(device_type=latents.device.type, enabled=False):
+                z_norm = F.normalize(latents.float(), p=2, dim=-1, eps=1e-6)
+                gram = torch.matmul(z_norm, z_norm.transpose(-1, -2))
+                n_lat = latents.size(1)
+                eye = torch.eye(n_lat, device=latents.device, dtype=torch.bool).unsqueeze(0)
+                off_diag_sq = gram.masked_fill(eye, 0.0).square().sum(dim=(-1, -2)) / (n_lat * (n_lat - 1))
+                losses["latent_diversity"] = off_diag_sq.mean()
+            total = total + c.latent_diversity_weight * losses["latent_diversity"]
         if labels is not None:
             targets = labels.masked_fill(~valid, -100)
             shifted = targets[:, 1:].masked_fill(~valid[:, :-1], -100)

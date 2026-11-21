@@ -125,7 +125,9 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{' + Modulation AdaLN-Zero multimodale' if config.multimodal_adaln else ''} "
         f"vers {config.n_latents} latents "
         f"({'hiérarchique 2 niveaux' if config.hierarchical_resampler else '1 niveau'}"
-        f"{f', goulot discret FSQ ({_fmt_int(fsq_size)} codes)' if fsq_size else ''}).",
+        f"{f', + {config.register_latents} registres cognitifs' if config.register_latents else ''}"
+        f"{f', goulot discret FSQ ({_fmt_int(fsq_size)} codes)' if fsq_size else ''}"
+        f"{f', diversité orthogonale (w={config.latent_diversity_weight})' if config.latent_diversity_weight > 0 else ''}).",
         f"- **Branche récurrente / SSM / TTT** : "
         f"Convolution causale (k={config.conv_kernel})"
         f"{f' + Gated DeltaNet (état {config.ssm_state_dim}, {config.ssm_heads or config.n_heads} têtes, blocs WY {config.ssm_chunk_size}, tous les {config.ssm_every} blocs)' if config.ssm_state_dim else ''}"
