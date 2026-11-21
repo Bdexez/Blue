@@ -142,6 +142,9 @@ class Blue(nn.Module):
             nn.init.zeros_(self.temporal.statistics_proj.weight)
         if self.temporal.spectral is not None:
             self.temporal.spectral.reset_spectral_parameters()
+        if self.temporal.wavelet is not None:
+            self.temporal.wavelet.reset_wavelet_parameters()
+        self.forecaster.reset_tail_parameters()
         if self.forecast_adapter is not None:
             nn.init.zeros_(self.forecast_adapter.proj.weight)
             nn.init.zeros_(self.forecast_adapter.proj.bias)

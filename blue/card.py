@@ -13,7 +13,8 @@ def _fmt_int(value: int) -> str:
 def _build_mermaid(config: BlueConfig, modalities: list[str]) -> list[str]:
     mod_nodes = [
         ("IMG", "Images (2D-RoPE)" if config.vision_rope_2d else "Images"),
-        ("SER", "Séries (RevIN + rFFT)" if config.temporal_spectral_mixing else "Séries (RevIN)"),
+        ("SER", "Séries (RevIN + rFFT + Haar)" if (config.temporal_spectral_mixing and config.temporal_wavelet_mixing)
+         else ("Séries (RevIN + rFFT)" if config.temporal_spectral_mixing else "Séries (RevIN)")),
     ]
     if config.audio_enabled:
         mod_nodes.append(("AUD", "Audio 1D"))

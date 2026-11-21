@@ -149,6 +149,8 @@ def build_optimizer(model, *, name: str = "adamw", lr: float, weight_decay: floa
     for module in model.modules():
         if getattr(module, "kan_coeffs", None) is not None:
             excluded_muon_ids.add(id(module.kan_coeffs))
+        if getattr(module, "detail_gain", None) is not None:
+            excluded_muon_ids.add(id(module.detail_gain))
     muon_params, adamw_params = [], []
     for p in trainable:
         if id(p) in temporal_ids:
