@@ -26,8 +26,20 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
         self.stable = stable
+        self.dyt_alpha: nn.Parameter | None = None
+
+    def enable_dyt(self, init_alpha: float = 0.5):
+        if self.dyt_alpha is None:
+            self.dyt_alpha = nn.Parameter(torch.full((), float(init_alpha), device=self.weight.device, dtype=self.weight.dtype))
+        else:
+            with torch.no_grad():
+                self.dyt_alpha.fill_(float(init_alpha))
 
     def forward(self, x):
+        if self.dyt_alpha is not None:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                normalized = torch.tanh(self.dyt_alpha.float() * x.float())
+            return normalized.to(x.dtype) * self.weight
         if not self.stable:
             normalized = x.float() * torch.rsqrt(x.float().square().mean(-1, keepdim=True) + self.eps)
         else:

@@ -140,7 +140,8 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"- **Raisonnement & Mémoire** : "
         f"{config.latent_reasoning_steps} itération(s) latente(s)"
         f"{f' avec arrêt adaptatif PonderNet (prior={config.ponder_prior})' if config.latent_reasoning_adaptive else ''}"
-        f"{f', mémoire épisodique ({config.memory_slots} emplacements)' if config.memory_slots else ''}.",
+        f"{f', mémoire épisodique ({config.memory_slots} emplacements)' if config.memory_slots else ''}"
+        f"{', Dynamic Tanh (DyT)' if config.dynamic_tanh_norm else ''}.",
         f"- **Alignement & Génération continue** : "
         f"géométrie `{config.alignment_geometry}`"
         f"{f' (courbure c={config.alignment_curvature})' if config.alignment_geometry == 'hyperbolic' else ''}"

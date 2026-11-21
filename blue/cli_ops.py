@@ -107,6 +107,7 @@ def inspect_config(config):
             "alignment_geometry": config.alignment_geometry,
             "latent_reasoning_steps": config.latent_reasoning_steps,
             "latent_reasoning_adaptive": config.latent_reasoning_adaptive,
+            "dynamic_tanh_norm": config.dynamic_tanh_norm,
         },
         "weights_gib_fp32": round(total * 4 / 2**30, 3),
         "weights_gib_bf16": round(total * 2 / 2**30, 3),
