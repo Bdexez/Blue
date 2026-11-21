@@ -1,54 +1,54 @@
 # BLUE
 
-> **Architecture neuronale hybride multimodale PyTorch** réunissant **8 modalités natives**, un **décodeur quad-paradigme** (Attention + Convolution causale + Gated DeltaNet SSM + Test-Time Training), un **mélange d'experts KAN-SwiGLU hyperbolique**, un **raisonnement latent récursif PonderNet** et une **tête générative continue par Flow Matching**.
+> **PyTorch multimodal hybrid neural architecture** uniting **8 native modalities**, a **quad-paradigm decoder** (Attention + Causal Convolution + Gated DeltaNet SSM + Test-Time Training), a **hyperbolic KAN-SwiGLU Mixture of Experts**, **PonderNet recursive latent reasoning**, and a **continuous Flow Matching generative head**.
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![PyTorch](https://img.shields.io/badge/PyTorch-CPU%20%2F%20CUDA-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![Modalités](https://img.shields.io/badge/Modalit%C3%A9s-8%20natives%20(255%20combinaisons)-0A7EA4)](#modalités-et-tâches)
-[![Paramètres](https://img.shields.io/badge/Param%C3%A8tres-740K%20%E2%86%92%201%2C695T-6E40C9)](#tailles-et-configurations)
+[![Modalities](https://img.shields.io/badge/Modalities-8%20native%20(255%20combinations)-0A7EA4)](#modalities-and-tasks)
+[![Parameters](https://img.shields.io/badge/Parameters-740K%20%E2%86%92%201.695T-6E40C9)](#sizes-and-configurations)
 [![Tests](https://img.shields.io/badge/Tests-129%20suites-2EA043)](tests/)
 
 > [!NOTE]
-> **Portée et honnêteté expérimentale** — La complexité n'a pas de maximum absolu : on peut toujours empiler davantage de couches et d'experts. **BLUE** fournit une architecture modulaire, mathématiquement vérifiée et réellement entraînable de **739 506 à 1 695 180 105 990 paramètres**, avec un entraînement local démontré sur le preset `workstation` (**549 485 298 paramètres**). Les configurations géantes (`large`, `ultra`, `hyper`, `titan`) sont construites et comptées sur `torch.device("meta")` sans allocation des poids ; elles n'ont pas été préentraînées ici. Les checkpoints locaux sous `runs/` (exclus de Git en raison de leur taille) apprennent sur des signaux synthétiques appariés et démontrent l'apprentissage conjoint — ce ne sont pas des assistants préentraînés généralistes.
+> **Scope and experimental honesty** — Complexity has no absolute ceiling: you can always stack more layers and experts. **BLUE** provides a modular, mathematically verified, genuinely trainable architecture spanning **739,506 to 1,695,180,105,990 parameters**, with local training demonstrated on the `workstation` preset (**549,485,298 parameters**). Giant configurations (`large`, `ultra`, `hyper`, `titan`) are constructed and counted on `torch.device("meta")` without allocating weights; they have not been pretrained here. Local checkpoints under `runs/` (excluded from Git due to their size) train on paired synthetic signals and demonstrate joint learning — they are not general-purpose pretrained assistants.
 
 ---
 
-## Sommaire
+## Contents
 
-- [Modalités et tâches](#modalités-et-tâches)
+- [Modalities and tasks](#modalities-and-tasks)
 - [Architecture](#architecture)
-- [Tailles et configurations](#tailles-et-configurations)
-- [Démarrage rapide](#démarrage-rapide)
-- [Entraînement, optimisation et adaptation](#entraînement-optimisation-et-adaptation)
-- [Inférence, décodage avancé et quantification](#inférence-décodage-avancé-et-quantification)
-- [Recherche cross-modale et hygiène des données](#recherche-cross-modale-et-hygiène-des-données)
-- [API Python](#api-python)
-- [Structure du dépôt et rapports techniques](#structure-du-dépôt-et-rapports-techniques)
-- [Références](#références)
+- [Sizes and configurations](#sizes-and-configurations)
+- [Quick start](#quick-start)
+- [Training, optimization and adaptation](#training-optimization-and-adaptation)
+- [Inference, advanced decoding and quantization](#inference-advanced-decoding-and-quantization)
+- [Cross-modal search and data hygiene](#cross-modal-search-and-data-hygiene)
+- [Python API](#python-api)
+- [Repository structure and technical reports](#repository-structure-and-technical-reports)
+- [References](#references)
 
 ---
 
-## Modalités et tâches
+## Modalities and tasks
 
-BLUE encode **8 modalités natives** pouvant être fournies seules, par paires ou conjointement (**$2^8 - 1 = 255$ combinaisons multimodales** et **$\binom{8}{2} = 28$ paires contrastives**) :
+BLUE encodes **8 native modalities** that can be supplied individually, in pairs, or jointly (**$2^8 - 1 = 255$ multimodal combinations** and **$\binom{8}{2} = 28$ contrastive pairs**):
 
-| # | Modalité | Encodeur dédié | Caractéristiques principales |
+| # | Modality | Dedicated encoder | Key characteristics |
 | :---: | :--- | :--- | :--- |
-| 1 | **Texte UTF-8** | [`ByteTokenizer`](blue/tokenizer.py) + [`ByteNGramEmbedding`](blue/ngram.py) | Couverture Unicode totale sans BPE externe + embeddings causaux 2/3/4-grammes par hachage polynomial |
-| 2 | **Vision (2D)** | [`VisionEncoder`](blue/modules.py) | Stem convolutif multi-échelle (3×3 / 5×5) + patches + **RoPE axial 2D** |
-| 3 | **Séries temporelles** | [`TemporalEncoder`](blue/modules.py) + [`spectral.py`](blue/spectral.py) + [`wavelet.py`](blue/wavelet.py) | RevIN réversible tolérant `NaN`, statistiques relatives, mélange spectral **rFFT** + **ondelettes de Haar 1D** à porte apprise |
-| 4 | **Audio** | [`AudioEncoder`](blue/audio.py) | Découpage temporel multi-canal + mélange spectral + encodeur Transformer |
-| 5 | **Graphes attribués** | [`GraphEncoder`](blue/graph.py) | Encodage structurel par marches aléatoires (**RWSE**) + Graph Transformer double piste nœuds/arêtes |
-| 6 | **Nuages de points 3D** | [`PointCloudEncoder`](blue/pointcloud.py) | Représentation géométrique **SE(3)-invariante** (invariante aux translations et rotations 3D) |
-| 7 | **Données tabulaires** | [`TabularEncoder`](blue/tabular.py) | Encodage numérique périodique **PLR** + embeddings catégoriels + gestion native des valeurs manquantes (`NaN`/`-1`) |
-| 8 | **Vidéo (3D)** | [`VideoEncoder`](blue/video.py) | Tubelets spatio-temporels `Conv3d` + **RoPE axial 3D** (temps, hauteur, largeur) |
+| 1 | **UTF-8 text** | [`ByteTokenizer`](blue/tokenizer.py) + [`ByteNGramEmbedding`](blue/ngram.py) | Full Unicode coverage with no external BPE + causal 2/3/4-gram embeddings via polynomial hashing |
+| 2 | **Vision (2D)** | [`VisionEncoder`](blue/modules.py) | Multi-scale convolutional stem (3×3 / 5×5) + patches + **2D axial RoPE** |
+| 3 | **Time series** | [`TemporalEncoder`](blue/modules.py) + [`spectral.py`](blue/spectral.py) + [`wavelet.py`](blue/wavelet.py) | `NaN`-tolerant reversible RevIN, relative statistics, **rFFT** spectral mixing + learned-gate **1D Haar wavelets** |
+| 4 | **Audio** | [`AudioEncoder`](blue/audio.py) | Multi-channel temporal framing + spectral mixing + Transformer encoder |
+| 5 | **Attributed graphs** | [`GraphEncoder`](blue/graph.py) | Random-walk structural encoding (**RWSE**) + dual-track node/edge Graph Transformer |
+| 6 | **3D point clouds** | [`PointCloudEncoder`](blue/pointcloud.py) | **SE(3)-invariant** geometric representation (invariant to 3D translations and rotations) |
+| 7 | **Tabular data** | [`TabularEncoder`](blue/tabular.py) | Periodic numerical encoding (**PLR**) + categorical embeddings + native missing-value handling (`NaN`/`-1`) |
+| 8 | **Video (3D)** | [`VideoEncoder`](blue/video.py) | Spatio-temporal `Conv3d` tubelets + **3D axial RoPE** (time, height, width) |
 
-Toutes les modalités alimentent un tronc commun qui produit simultanément **5 types de sorties** :
-1. **Modélisation causale de texte & Multi-Token Prediction (MTP)** : prédiction du prochain octet + têtes auxiliaires futures chaînées (`chained_future_heads`) avec auto-distillation KL (`mtp_kl_weight`) et décroissance géométrique par horizon (`mtp_decay`).
-2. **Classification & Incertitude Épistémique** : classification standard ou **évidentielle de Dirichlet** (`evidential_classification`, `Blue.dirichlet_uncertainty`) séparant croyance et incertitude.
-3. **Prévision probabiliste de séries temporelles** : quantiles ordonnés garantis sans croisement, connexion directe depuis la dernière observation, exposants de queues lourdes appris (`forecast_tail_power`) et pénalité de courbure multi-pas (`forecast_smoothness_weight`).
-4. **Génération continue par Conditional Flow Matching** : champ de vecteurs **AdaLN-Zero**, horaire temporel **Logit-Normal (SD3)**, **Classifier-Free Guidance** (`flow_cfg_dropout`) et solveurs ODE **Euler / Midpoint / Heun / RK4** sur grille linéaire ou cosinus.
-5. **Représentations latentes partagées** : alignement contrastif **euclidien ou hyperbolique (boule de Poincaré)** à marge géodésique + prédicteur auto-supervisé **Multimodal-JEPA** avec régularisation **VICReg** (variance + décorrélation de covariance exacte en $O(B^2 D)$).
+All modalities feed a shared trunk that simultaneously produces **5 types of outputs**:
+1. **Causal text modeling & Multi-Token Prediction (MTP)**: next-byte prediction + chained auxiliary future heads (`chained_future_heads`) with KL self-distillation (`mtp_kl_weight`) and geometric horizon decay (`mtp_decay`).
+2. **Classification & Epistemic Uncertainty**: standard or **evidential Dirichlet classification** (`evidential_classification`, `Blue.dirichlet_uncertainty`) separating belief from uncertainty.
+3. **Probabilistic time-series forecasting**: guaranteed non-crossing ordered quantiles, direct skip connection from the last observation, learned heavy-tail exponents (`forecast_tail_power`), and multi-step curvature penalty (`forecast_smoothness_weight`).
+4. **Continuous generation via Conditional Flow Matching**: **AdaLN-Zero** vector field, **Logit-Normal (SD3)** time schedule, **Classifier-Free Guidance** (`flow_cfg_dropout`), and **Euler / Midpoint / Heun / RK4** ODE solvers on a linear or cosine grid.
+5. **Shared latent representations**: **Euclidean or hyperbolic (Poincaré ball)** contrastive alignment with geodesic margin + self-supervised **Multimodal-JEPA** predictor with **VICReg** regularization (variance + exact $O(B^2 D)$ covariance decorrelation).
 
 ---
 
@@ -56,202 +56,202 @@ Toutes les modalités alimentent un tronc commun qui produit simultanément **5 
 
 ```mermaid
 flowchart TD
-    subgraph Entrees["8 Modalités Natives"]
-        M1["Images 2D<br/>(2D-RoPE)"]
-        M2["Séries Temporelles<br/>(RevIN + rFFT + Haar)"]
+    subgraph Inputs["8 Native Modalities"]
+        M1["2D Images<br/>(2D-RoPE)"]
+        M2["Time Series<br/>(RevIN + rFFT + Haar)"]
         M3["Audio<br/>(Spectral)"]
-        M4["Graphes<br/>(RWSE + Double Piste)"]
-        M5["Nuages 3D<br/>(SE(3)-Invariant)"]
-        M6["Tabulaire<br/>(PLR + Catégories)"]
-        M7["Vidéo 3D<br/>(Tubelets + 3D-RoPE)"]
+        M4["Graphs<br/>(RWSE + Dual Track)"]
+        M5["3D Point Clouds<br/>(SE(3)-Invariant)"]
+        M6["Tabular<br/>(PLR + Categories)"]
+        M7["3D Video<br/>(Tubelets + 3D-RoPE)"]
     end
 
-    Entrees --> F["Fusion Cross-Modal Pré-Resampler<br/>(invariante par permutation & padding)"]
-    F --> R["Resampler Latent Hiérarchique 2 Niveaux<br/>Registres Cognitifs + Goulot Discret FSQ"]
+    Inputs --> F["Pre-Resampler Cross-Modal Fusion<br/>(permutation & padding invariant)"]
+    F --> R["2-Level Hierarchical Latent Resampler<br/>Cognitive Registers + FSQ Discrete Bottleneck"]
 
-    TX["Texte UTF-8 + Byte-NGrams<br/>(ou Requêtes de Tâches)"] --> D
+    TX["UTF-8 Text + Byte-NGrams<br/>(or Task Queries)"] --> D
 
-    subgraph Decodeur["Décodeur Hybride Récursif (mHC 4 flux + PonderNet)"]
-        D["Mixeur Séquentiel Quad-Paradigme<br/>MLA / DiffAttn / FoX / GVA / Talking-Heads / NSA<br/>+ CausalConv (Δ1/Δ2) + Gated DeltaNet WY (D-Skip)<br/>+ TTT-Linear (Titans Decay)"]
-        D --> CA["Attention Croisée Multimodale<br/>Différentielle + MLA + Head-Gate + Soft-Cap + AdaLN-Zero"]
-        CA --> MOE["MoE++ KAN-SwiGLU (Tchebychev)<br/>Routeur Hyperbolique Poincaré + Experts Nuls<br/>+ Sous-Espace Partagé + Causal Mixture-of-Depths"]
+    subgraph Decoder["Recursive Hybrid Decoder (4-stream mHC + PonderNet)"]
+        D["Quad-Paradigm Sequence Mixer<br/>MLA / DiffAttn / FoX / GVA / Talking-Heads / NSA<br/>+ CausalConv (Δ1/Δ2) + Gated DeltaNet WY (D-Skip)<br/>+ TTT-Linear (Titans Decay)"]
+        D --> CA["Multimodal Cross-Attention<br/>Differential + MLA + Head-Gate + Soft-Cap + AdaLN-Zero"]
+        CA --> MOE["MoE++ KAN-SwiGLU (Chebyshev)<br/>Hyperbolic Poincaré Router + Null Experts<br/>+ Shared Subspace + Causal Mixture-of-Depths"]
     end
 
     R --> CA
-    MOE --> MEM["Mémoire Épisodique Modulée par la Surprise<br/>(oubli adaptatif O(1))"]
+    MOE --> MEM["Surprise-Modulated Episodic Memory<br/>(O(1) adaptive forgetting)"]
 
-    MEM --> H1["Texte & Têtes MTP Chaînées"]
-    MEM --> H2["Classification / Dirichlet Évidentiel"]
-    MEM --> H3["Quantiles Monotones + Queues Lourdes"]
+    MEM --> H1["Text & Chained MTP Heads"]
+    MEM --> H2["Classification / Evidential Dirichlet"]
+    MEM --> H3["Monotone Quantiles + Heavy Tails"]
     MEM --> H4["Conditional Flow Matching<br/>(SD3 Logit-Normal + CFG + RK4)"]
-    MEM --> H5["Alignement Hyperbolique Poincaré<br/>& Multimodal-JEPA (VICReg)"]
+    MEM --> H5["Hyperbolic Poincaré Alignment<br/>& Multimodal-JEPA (VICReg)"]
 ```
 
-### Briques clés du décodeur et de la fusion
+### Key decoder and fusion building blocks
 
 <details>
-<summary><b>1. Attention avancée & encodages positionnels</b></summary>
+<summary><b>1. Advanced attention & positional encodings</b></summary>
 
-- **GQA & Multi-Head Latent Attention (MLA)** (`kv_lora_rank`) : compression de rang bas du cache KV (jusqu'à **3,5× de compression** sur `titan`) avec découplage RoPE/NoPE.
-- **Differential Attention** (`differential_attention`) : soustraction de deux cartes d'attention pondérées pour annuler le bruit de fond.
-- **Attention Sinks permanents** (`attention_sinks`) : ancres apprises stables sur les séquences longues et fenêtres glissantes.
-- **Value & QK Residual Learning (ResFormer)** (`value_residual`, `qk_residual`) : connexions résiduelles depuis la couche 0.
-- **Forgetting Gate Attention (FoX)** (`forgetting_attention`), **Gated Value Attention (GVA)** (`gated_value_attention`), **Porte de confiance par tête** (`head_confidence_gate`) et **Talking-Heads** (`talking_heads`).
-- **Native Sparse Attention (NSA)** (`nsa_block_size`, `nsa_top_k`) : sélection de blocs compressés Top-K en parallèle de l'attention dense.
-- **Stabilité & extrapolation de contexte** : QK-Norm avec température logarithmique apprise par tête (`qk_norm_temperature`), échelle dynamique par position (`dynamic_attn_scale`), plafonnement lisse Gemma-2 (`attn_logit_softcap`, `logit_softcap`) et RoPE extensible **Linear / NTK / YaRN** (`rope_scaling_type`).
+- **GQA & Multi-Head Latent Attention (MLA)** (`kv_lora_rank`): low-rank KV cache compression (up to **3.5× compression** on `titan`) with decoupled RoPE/NoPE.
+- **Differential Attention** (`differential_attention`): subtraction of two weighted attention maps to cancel background noise.
+- **Permanent Attention Sinks** (`attention_sinks`): stable learned anchors across long sequences and sliding windows.
+- **Value & QK Residual Learning (ResFormer)** (`value_residual`, `qk_residual`): residual connections from layer 0.
+- **Forgetting Gate Attention (FoX)** (`forgetting_attention`), **Gated Value Attention (GVA)** (`gated_value_attention`), **Per-head confidence gate** (`head_confidence_gate`), and **Talking-Heads** (`talking_heads`).
+- **Native Sparse Attention (NSA)** (`nsa_block_size`, `nsa_top_k`): Top-K compressed block selection in parallel with dense attention.
+- **Stability & context extrapolation**: QK-Norm with per-head learned logarithmic temperature (`qk_norm_temperature`), position-dependent dynamic scaling (`dynamic_attn_scale`), Gemma-2 smooth logit soft-capping (`attn_logit_softcap`, `logit_softcap`), and extensible **Linear / NTK / YaRN** RoPE (`rope_scaling_type`).
 
 </details>
 
 <details>
-<summary><b>2. Mixeur séquentiel quad-paradigme (état O(1) en génération)</b></summary>
+<summary><b>2. Quad-paradigm sequence mixer (O(1) state during generation)</b></summary>
 
-Chaque bloc combine jusqu'à **4 mécanismes séquentiels** arbitrés par un **routeur dynamique par token** (`dynamic_mixer_router`) :
-1. **Attention causale locale / globale** (fenêtre glissante + contexte global tous les `global_every` blocs).
-2. **Convolution causale à porte** (`GatedCausalConv`) enrichie d'opérateurs différentiels discrets du 1er et 2nd ordre $\Delta_1 / \Delta_2$ (`conv_diff_branch`).
-3. **Gated DeltaNet SSM** ([`blue/ssm.py`](blue/ssm.py)) : mémoire associative matricielle accélérée par **scan parallèle par blocs WY exact** (`ssm_chunk_size`, **4,4× sur CPU**) avec connexion directe **D-Matrix** (`ssm_d_skip`) et entrelacement configurable (`ssm_every`).
-4. **Test-Time Training `TTTLinear`** ([`blue/ttt.py`](blue/ttt.py)) : mini-réseau interne adapté en ligne par descente de gradient analytique à chaque token, avec **décroissance élastique style Titans** vers le prior méta $(W_0, b_0)$ (`ttt_weight_decay`).
+Each block combines up to **4 sequential mechanisms** arbitrated by a **per-token dynamic router** (`dynamic_mixer_router`):
+1. **Local / global causal attention** (sliding window + global context every `global_every` blocks).
+2. **Gated causal convolution** (`GatedCausalConv`) augmented with 1st- and 2nd-order discrete differential operators $\Delta_1 / \Delta_2$ (`conv_diff_branch`).
+3. **Gated DeltaNet SSM** ([`blue/ssm.py`](blue/ssm.py)): matrix associative memory accelerated by an **exact WY chunked parallel scan** (`ssm_chunk_size`, **4.4× on CPU**) with a direct **D-Matrix** skip (`ssm_d_skip`) and configurable interleaving (`ssm_every`).
+4. **Test-Time Training `TTTLinear`** ([`blue/ttt.py`](blue/ttt.py)): internal mini-network adapted online via analytical gradient descent at every token, with **Titans-style elastic decay** toward the meta-prior $(W_0, b_0)$ (`ttt_weight_decay`).
 
 </details>
 
 <details>
-<summary><b>3. Fusion multimodale, MoE++ hyperbolique et dynamique profonde</b></summary>
+<summary><b>3. Multimodal fusion, hyperbolic MoE++ and deep dynamics</b></summary>
 
-- **Resampler multimodal** : interaction cross-token pré-resampler (`cross_modal_fusion_layers`), compression hiérarchique à 2 niveaux (`hierarchical_resampler`), **registres cognitifs** (`register_latents`), goulot discret sans codebook **Finite Scalar Quantization (FSQ)** (`latent_fsq_levels`), et régularisation de diversité orthogonale (`latent_diversity_weight`).
-- **Attention croisée enrichie** : différentielle (`cross_differential_attention`), latente MLA (`cross_kv_lora_rank`), température QK par tête (`cross_qk_temperature`), porte de confiance + Talking-Heads (`cross_head_gating`), soft-capping (`cross_logit_softcap`) et modulation contextuelle **AdaLN-Zero** (`multimodal_adaln`).
-- **MoE++ KAN-SwiGLU** : experts SwiGLU augmentés de polynômes de **Tchebychev (KAN)** par canal (`kan_degree`), **sous-espace latent partagé** (`moe_shared_latent_dim`), **routeur hyperbolique sur la boule de Poincaré** (`moe_router_geometry="hyperbolic"`), **experts nuls zéro-FLOP** (`moe_null_experts`), **Causal Mixture-of-Depths** (`depth_routing_capacity`), facteur d'échelle routé appris style DeepSeek-V3 (`moe_learnable_scaling`), porte résiduelle pré-attention (`moe_input_residual_gate`), équilibrage sans perte auxiliaire (`router_bias_update_rate`) et régularisations d'entropie / orthogonalité des prototypes.
-- **Dynamique profonde & mémoire** : **Manifold-Constrained Hyper-Connections (mHC)** sur le polytope de Birkhoff via Sinkhorn-Knopp logarithmique (`residual_streams > 1`), **LayerScale** (`layer_scale_init`), **Dynamic Tanh (DyT)** (`dynamic_tanh_norm`) ou **RMSNorm stable**, **raisonnement latent récursif PonderNet** à calcul dynamique au moment du test (`latent_reasoning_steps`, `latent_reasoning_adaptive`), skip embedding-vers-sortie (`embedding_output_skip`), et **banc de mémoire épisodique modulé par la surprise** avec oubli adaptatif (`memory_slots`, `memory_decay`).
+- **Multimodal resampler**: pre-resampler cross-token interaction (`cross_modal_fusion_layers`), 2-level hierarchical compression (`hierarchical_resampler`), **cognitive registers** (`register_latents`), codebook-free discrete bottleneck via **Finite Scalar Quantization (FSQ)** (`latent_fsq_levels`), and orthogonal diversity regularization (`latent_diversity_weight`).
+- **Enriched cross-attention**: differential (`cross_differential_attention`), latent MLA (`cross_kv_lora_rank`), per-head QK temperature (`cross_qk_temperature`), confidence gate + Talking-Heads (`cross_head_gating`), soft-capping (`cross_logit_softcap`), and **AdaLN-Zero** contextual modulation (`multimodal_adaln`).
+- **MoE++ KAN-SwiGLU**: SwiGLU experts augmented with per-channel **Chebyshev (KAN)** polynomials (`kan_degree`), **shared latent subspace** (`moe_shared_latent_dim`), **hyperbolic router on the Poincaré ball** (`moe_router_geometry="hyperbolic"`), **zero-FLOP null experts** (`moe_null_experts`), **Causal Mixture-of-Depths** (`depth_routing_capacity`), DeepSeek-V3-style learned routed scaling factor (`moe_learnable_scaling`), pre-attention residual gate (`moe_input_residual_gate`), auxiliary-loss-free load balancing (`router_bias_update_rate`), and prototype entropy / orthogonality regularizers.
+- **Deep dynamics & memory**: **Manifold-Constrained Hyper-Connections (mHC)** on the Birkhoff polytope via log-domain Sinkhorn-Knopp (`residual_streams > 1`), **LayerScale** (`layer_scale_init`), **Dynamic Tanh (DyT)** (`dynamic_tanh_norm`) or **stable RMSNorm**, **PonderNet recursive latent reasoning** with dynamic test-time compute (`latent_reasoning_steps`, `latent_reasoning_adaptive`), embedding-to-output skip (`embedding_output_skip`), and a **surprise-modulated episodic memory bank** with adaptive forgetting (`memory_slots`, `memory_decay`).
 
 </details>
 
-> **Garanties mathématiques vérifiées par [`blue verify`](blue/verifier.py)** : causalité stricte (modifier les tokens futurs ne change jamais les logits passés), équivalence exacte entre passe complète et génération incrémentale cachée (KV + Conv + SSM + TTT + Mémoire + NGram), invariance exacte au padding, invariance SE(3) des nuages 3D, non-croisement des quantiles et intégrité des gradients.
+> **Mathematical guarantees verified by [`blue verify`](blue/verifier.py)**: strict causality (modifying future tokens never changes past logits), exact equivalence between full forward pass and cached incremental generation (KV + Conv + SSM + TTT + Memory + NGram), exact padding invariance, SE(3) invariance for 3D point clouds, non-crossing quantiles, and gradient integrity.
 
 ---
 
-## Tailles et configurations
+## Sizes and configurations
 
-Les comptes dédupliquent l'embedding texte et la tête de sortie (poids partagés). Chaque configuration peut être inspectée, profilée et documentée **sans allouer les poids** :
+Counts deduplicate the text embedding and output head (tied weights). Every configuration can be inspected, profiled, and documented **without allocating weights**:
 
-| Preset | Paramètres totaux | Couches décodeur (effectives) | Experts routés / top-k | Poids BF16 | Usage typique |
+| Preset | Total parameters | Decoder layers (effective) | Routed experts / top-k | BF16 weights | Typical use |
 | :--- | ---: | :---: | :---: | ---: | :--- |
-| `tiny` | 739 506 | 3 | 4 / 2 | 0,001 Gio | Tests rapides & prototypage CPU |
-| `small` | 55 607 282 | 8 | 8 / 2 | 0,104 Gio | Expérimentation locale légère |
-| `workstation` | 549 485 298 | 12 | 16 / 2 | 1,023 Gio | Modèle entraîné localement |
-| `base` | 1 534 337 266 | 16 | 16 / 2 | 2,858 Gio | Configuration standard multi-GPU |
-| `hyper` | **1 847 633 649** | 16 (32) | 16 / 2 | 3,441 Gio | **Full-Hybrid 8 modalités** (toutes briques actives) |
-| `large` | 39 285 370 354 | 32 | 32 / 2 | 73,175 Gio | Grande échelle |
-| `ultra` | 588 945 015 026 | 64 | 64 / 4 | 1 096,996 Gio | Cluster distribué |
-| `titan` | **1 695 180 105 990** | 80 (160) | 64 / 4 | 3 157,519 Gio | **Full-Hybrid 8 modalités à l'échelle du trillion** |
+| `tiny` | 739,506 | 3 | 4 / 2 | 0.001 GiB | Fast tests & CPU prototyping |
+| `small` | 55,607,282 | 8 | 8 / 2 | 0.104 GiB | Lightweight local experimentation |
+| `workstation` | 549,485,298 | 12 | 16 / 2 | 1.023 GiB | Locally trained model |
+| `base` | 1,534,337,266 | 16 | 16 / 2 | 2.858 GiB | Standard multi-GPU configuration |
+| `hyper` | **1,847,633,649** | 16 (32) | 16 / 2 | 3.441 GiB | **Full-Hybrid 8 modalities** (all blocks enabled) |
+| `large` | 39,285,370,354 | 32 | 32 / 2 | 73.175 GiB | Large scale |
+| `ultra` | 588,945,015,026 | 64 | 64 / 4 | 1,096.996 GiB | Distributed cluster |
+| `titan` | **1,695,180,105,990** | 80 (160) | 64 / 4 | 3,157.519 GiB | **Trillion-scale Full-Hybrid 8 modalities** |
 
-Les fichiers JSON personnalisables se trouvent dans [`configs/`](configs/). Les presets `hyper` et `titan` activent l'ensemble de la pile architecturale (8 modalités, mHC 4 flux, quad-paradigme, KAN-MoE++ hyperbolique, PonderNet, Flow Matching SD3, JEPA VICReg, mémoire épisodique, alignement hyperbolique).
+Customizable JSON files live in [`configs/`](configs/). The `hyper` and `titan` presets enable the entire architectural stack (8 modalities, 4-stream mHC, quad-paradigm mixer, hyperbolic KAN-MoE++, PonderNet, SD3 Flow Matching, JEPA VICReg, episodic memory, hyperbolic alignment).
 
 ---
 
-## Démarrage rapide
+## Quick start
 
-Prérequis : **Python 3.11+** et PyTorch (CPU ou CUDA).
+Prerequisites: **Python 3.11+** and PyTorch (CPU or CUDA).
 
 ```bash
-# 1. Créer l'environnement virtuel et installer le paquet
+# 1. Create the virtual environment and install the package
 python3 -m venv .venv
 .venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 .venv/bin/python -m pip install -e .
 
-# 2. Exécuter une démonstration multimodale complète
+# 2. Run a full multimodal demonstration
 .venv/bin/python -m blue demo
 
-# 3. Inspecter toutes les architectures sans allouer les poids
+# 3. Inspect all architectures without allocating weights
 .venv/bin/python -m blue inspect --all
 
-# 4. Profiler empreinte KV/SSM/TTT/Mémoire & latence
+# 4. Profile KV/SSM/TTT/Memory footprint & latency
 .venv/bin/python -m blue profile --preset hyper --seq-len 2048
 
-# 5. Générer la fiche technique Markdown + diagramme Mermaid dynamique
+# 5. Generate a Markdown model card + dynamic Mermaid diagram
 .venv/bin/python -m blue card --preset titan --output TITAN_CARD.md
 
-# 6. Auditer causalité, cache, invariances SE(3)/padding et gradients
+# 6. Audit causality, caching, SE(3)/padding invariances and gradients
 .venv/bin/python -m blue verify --preset tiny
 
-# 7. Lancer l'ensemble des 129 suites de tests
+# 7. Run all 129 test suites
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-> Sur GPU, installez une distribution PyTorch CUDA et ajoutez `--device cuda --amp bf16`. Le chemin GPU est fourni mais n'a pas été exécuté sur cette machine CPU.
+> On GPU, install a CUDA PyTorch build and add `--device cuda --amp bf16`. The GPU code path is included but has not been executed on this CPU machine.
 
 ---
 
-## Entraînement, optimisation et adaptation
+## Training, optimization and adaptation
 
-Le trainer ([`blue/training.py`](blue/training.py)) supporte :
-- **Optimiseurs** : `AdamW` ou optimiseur hybride **`MuonAdamW`** (`--optimizer muon`, orthogonalisation Newton-Schulz sur les poids matriciels 2D + AdamW sur embeddings/normes/scalaires).
-- **Plannings LR** : `cosine` ou **Warmup-Stable-Decay (`--lr-schedule wsd`)**.
-- **Stabilité & efficacité** : EMA des poids (`--ema-decay`), AMP BF16/FP16, écrêtage de gradient avec repli FP64, recalcul sélectif d'activations (`checkpoint_every`), pondération adaptative par incertitude (`adaptive_loss_weighting`), lissage des étiquettes (`label_smoothing`) et Z-loss PaLM (`lm_z_loss_weight`).
-- **Adaptation légère native** : **DoRA / LoRA** directement en CLI (`--dora-rank`) avec fusion algébrique exacte à l'export.
-- **Modalités hétérogènes & DDP** : `--mixed-modalities`, `--loss-normalization observed`, `--modality-policy balanced`, alignement global distribué multi-rangs et **reprise exacte bit-à-bit** (`--resume`, y compris en DDP).
+The trainer ([`blue/training.py`](blue/training.py)) supports:
+- **Optimizers**: `AdamW` or hybrid **`MuonAdamW`** (`--optimizer muon`, Newton-Schulz orthogonalization on 2D matrix weights + AdamW on embeddings/norms/scalars).
+- **LR schedules**: `cosine` or **Warmup-Stable-Decay (`--lr-schedule wsd`)**.
+- **Stability & efficiency**: weight EMA (`--ema-decay`), BF16/FP16 AMP, gradient clipping with FP64 fallback, selective activation checkpointing (`checkpoint_every`), adaptive uncertainty loss weighting (`adaptive_loss_weighting`), label smoothing (`label_smoothing`), and PaLM Z-loss (`lm_z_loss_weight`).
+- **Native lightweight adaptation**: **DoRA / LoRA** directly from the CLI (`--dora-rank`) with exact algebraic merge on export.
+- **Heterogeneous modalities & DDP**: `--mixed-modalities`, `--loss-normalization observed`, `--modality-policy balanced`, multi-rank distributed global alignment, and **bit-exact resume** (`--resume`, including under DDP).
 
 ```bash
-# Entraînement rapide CPU avec optimiseur Muon, planning WSD et EMA
+# Fast CPU training with Muon optimizer, WSD schedule and EMA
 .venv/bin/python -m blue train --preset tiny --steps 100 \
   --optimizer muon --lr-schedule wsd --ema-decay 0.995 --output runs/tiny-muon
 
-# Générer un jeu JSONL multimodal et entraîner avec validation & arrêt anticipé
+# Generate a multimodal JSONL dataset and train with validation & early stopping
 .venv/bin/python tools/make_dataset.py --preset tiny --output runs/data
 .venv/bin/python -m blue train --preset tiny --steps 100 \
   --data runs/data/train.jsonl --val-data runs/data/validation.jsonl \
   --eval-every 10 --monitor observed_loss --patience 5 --output runs/custom
 
-# Affinage DoRA sur un checkpoint existant
+# DoRA fine-tuning from an existing checkpoint
 .venv/bin/python -m blue train --init-from runs/custom/best.pt \
   --data runs/data/train.jsonl --dora-rank 8 --steps 50 --output runs/dora
 
-# Entraînement distribué DDP sur 2 processus (reprise exacte vérifiée par les tests)
+# Distributed DDP training on 2 processes (exact resume verified by tests)
 .venv/bin/torchrun --standalone --nproc-per-node=2 -m blue --threads 1 train \
   --preset tiny --steps 10 --batch-size 2 --accumulation 2 --output runs/ddp
 ```
 
 ---
 
-## Inférence, décodage avancé et quantification
+## Inference, advanced decoding and quantization
 
-### Stratégies de génération (`blue generate` / `Blue.generate`)
+### Generation strategies (`blue generate` / `Blue.generate`)
 
-| Catégorie | Options disponibles |
+| Category | Available options |
 | :--- | :--- |
-| **Décodage accéléré & recherche** | Glouton (`--temperature 0`), **Beam Search** exact avec réordonnancement $O(1)$ du cache (`--beam-width`, `--length-penalty`), **Auto-Spéculatif exact** greedy & stochastique Leviathan (`--speculative`), **Jacobi parallèle** par point fixe (`--jacobi`, `--jacobi-window`) |
-| **Guidage & calcul dynamique** | **Guidage contrastif multimodal CFG** (`--context-guidance-scale`), profondeur récursive dynamique à l'inférence (`--reasoning-steps`) |
-| **Échantillonneurs adaptatifs** | `top-k`, `top-p`, **Min-P** (`--min-p`), **Locally Typical** (`--typical-p`), **$\eta$-Sampling** (`--eta-cutoff`), **Tail-Free Sampling** (`--tfs-z`), **Top-A** (`--top-a`), **Température dynamique par entropie EDT** (`--edt-theta`, `--edt-n`), **Mirostat v2** (`--mirostat-tau`, `--mirostat-eta`) |
-| **Contrôle des répétitions** | Pénalités CTRL (`--repetition-penalty`), présence (`--presence-penalty`), fréquence (`--frequency-penalty`) et blocage exact de N-grammes (`--no-repeat-ngram-size`) |
+| **Accelerated decoding & search** | Greedy (`--temperature 0`), exact **Beam Search** with $O(1)$ cache reordering (`--beam-width`, `--length-penalty`), exact **Self-Speculative** greedy & Leviathan stochastic decoding (`--speculative`), parallel fixed-point **Jacobi** decoding (`--jacobi`, `--jacobi-window`) |
+| **Guidance & dynamic compute** | **Multimodal contrastive CFG** (`--context-guidance-scale`), dynamic recursive reasoning depth at inference (`--reasoning-steps`) |
+| **Adaptive samplers** | `top-k`, `top-p`, **Min-P** (`--min-p`), **Locally Typical** (`--typical-p`), **$\eta$-Sampling** (`--eta-cutoff`), **Tail-Free Sampling** (`--tfs-z`), **Top-A** (`--top-a`), **Entropy-Based Dynamic Temperature (EDT)** (`--edt-theta`, `--edt-n`), **Mirostat v2** (`--mirostat-tau`, `--mirostat-eta`) |
+| **Repetition control** | CTRL repetition penalty (`--repetition-penalty`), presence (`--presence-penalty`), frequency (`--frequency-penalty`), and exact N-gram blocking (`--no-repeat-ngram-size`) |
 
 ```bash
-# Génération avec décodage auto-spéculatif, Min-P et blocage de trigrammes
+# Generation with self-speculative decoding, Min-P and trigram blocking
 .venv/bin/python -m blue generate --checkpoint runs/custom/best.pt \
-  --prompt "Signal de classe " --max-new-tokens 64 \
+  --prompt "Class signal " --max-new-tokens 64 \
   --temperature 0.8 --min-p 0.05 --no-repeat-ngram-size 3 --speculative
 
-# Export d'inférence : sélection EMA, fusion algébrique DoRA et quantification INT4 packée
+# Inference export: EMA selection, algebraic DoRA merge and packed INT4 quantization
 .venv/bin/python -m blue export --checkpoint runs/dora/latest.pt \
   --use-ema --merge-dora --quantize-int4 --output runs/dora/model-int4.pt
 ```
 
-> Les poids exportés utilisent le mappage mémoire (`mmap`) et l'initialisation sur `meta` pour limiter le pic RAM au chargement. La quantification **INT8 symétrique par canal** (`--quantize-int8`, > 3,5× de compression) et **INT4 packée par groupes** (`--quantize-int4`, 2 poids/octet, > 6× de compression) sont intégrées nativement.
+> Exported weights use memory mapping (`mmap`) and `meta` initialization to reduce peak RAM on load. **Per-channel symmetric INT8** quantization (`--quantize-int8`, > 3.5× compression) and **group-wise packed INT4** quantization (`--quantize-int4`, 2 weights/byte, > 6× compression) are built in.
 
 ---
 
-## Recherche cross-modale et hygiène des données
+## Cross-modal search and data hygiene
 
-Le format d'entrée JSONL accepte une combinaison libre de champs (`text`, `image` / `image_path`, `series`, `class_label`, `future`, plus les modalités étendues via l'API Python). Le lecteur indexé ([`blue/data.py`](blue/data.py)) charge les exemples à la demande et vérifie l'intégrité SHA-256 des fichiers et images externes.
+The JSONL input format accepts any combination of fields (`text`, `image` / `image_path`, `series`, `class_label`, `future`, plus extended modalities through the Python API). The indexed reader ([`blue/data.py`](blue/data.py)) loads examples on demand and verifies SHA-256 integrity for external files and images.
 
 ```bash
-# 1. Créer des découpages chronologiques sans fuite de fenêtres temporelles
+# 1. Create chronological splits without temporal window leakage
 .venv/bin/python -m blue prepare-series \
   --input data/series.jsonl --output-dir data/splits --config configs/tiny.json \
   --history 32 --stride 12 --gap 12 --train-end 1000 --validation-end 1300 --calibration-end 1600
 
-# 2. Auditer l'absence de doublons ou chevauchements entre jeux
+# 2. Audit splits for duplicates or interval overlaps
 .venv/bin/python -m blue audit-splits \
   --split train=data/splits/train.jsonl --split test=data/splits/test.jsonl \
   --interval-fields series_id window_start window_end --fail-on-overlap
 
-# 3. Extraire les embeddings et rechercher des voisins (euclidien ou hyperbolique Poincaré)
+# 3. Extract embeddings and search nearest neighbors (Euclidean or hyperbolic Poincaré)
 .venv/bin/python -m blue embed --checkpoint runs/custom/best.pt \
   --data runs/data/validation.jsonl --output runs/custom/embeddings.jsonl
 
@@ -262,26 +262,26 @@ Le format d'entrée JSONL accepte une combinaison libre de champs (`text`, `imag
   --output runs/custom/neighbors.jsonl
 ```
 
-Pour l'évaluation (`evaluate`, `evaluate-retrieval`), la calibration conforme des intervalles de prévision (`calibrate`, `refine-forecast`) et les classifieurs temporels calibrés (`refine-series-classifier`, `calibrate-series-set`), consultez les rapports dédiés ci-dessous.
+For evaluation (`evaluate`, `evaluate-retrieval`), conformal calibration of forecast intervals (`calibrate`, `refine-forecast`), and calibrated temporal classifiers (`refine-series-classifier`, `calibrate-series-set`), see the dedicated reports below.
 
 ---
 
-## API Python
+## Python API
 
 ```python
 import torch
 from blue import Blue, BlueConfig, ByteTokenizer
 
-# Initialiser une configuration multimodale hybride
+# Initialize a hybrid multimodal configuration
 config = BlueConfig.preset("tiny")
 config.flow_matching_dim = 8
 config.evidential_classification = True
 model = Blue(config)
 
 tokenizer = ByteTokenizer()
-tokens = torch.tensor([tokenizer.encode("Analyse du signal.")])
+tokens = torch.tensor([tokenizer.encode("Signal analysis.")])
 
-# Passe avant conjointe (texte + image + série + cible continue Flow Matching)
+# Joint forward pass (text + image + series + continuous Flow Matching target)
 out = model(
     tokens,
     images=torch.rand(1, 3, 32, 32),
@@ -293,7 +293,7 @@ out = model(
 )
 out.loss.backward()
 
-# Inférence : incertitude épistémique, échantillonnage Flow Matching RK4 et génération
+# Inference: epistemic uncertainty, RK4 Flow Matching sampling and generation
 model.eval()
 with torch.inference_mode():
     unc = Blue.dirichlet_uncertainty(out.classification_logits)
@@ -308,34 +308,34 @@ with torch.inference_mode():
 
 ---
 
-## Structure du dépôt et rapports techniques
+## Repository structure and technical reports
 
-### Modules principaux (`blue/`)
+### Core modules (`blue/`)
 
-| Domaine | Fichiers |
+| Area | Files |
 | :--- | :--- |
-| **Cœur & Configuration** | [`model.py`](blue/model.py), [`modules.py`](blue/modules.py), [`config.py`](blue/config.py), [`tokenizer.py`](blue/tokenizer.py), [`ngram.py`](blue/ngram.py) |
-| **Séquentiel, Mémoire & Géométrie** | [`ssm.py`](blue/ssm.py), [`ttt.py`](blue/ttt.py), [`sparse_attention.py`](blue/sparse_attention.py), [`hyper_connections.py`](blue/hyper_connections.py), [`memory.py`](blue/memory.py), [`hyperbolic.py`](blue/hyperbolic.py), [`fsq.py`](blue/fsq.py) |
-| **Encodeurs Multimodaux** | [`audio.py`](blue/audio.py), [`graph.py`](blue/graph.py), [`pointcloud.py`](blue/pointcloud.py), [`tabular.py`](blue/tabular.py), [`video.py`](blue/video.py), [`spectral.py`](blue/spectral.py), [`wavelet.py`](blue/wavelet.py) |
-| **Génération Continue & Monde Latent** | [`flow_matching.py`](blue/flow_matching.py), [`jepa.py`](blue/jepa.py), [`losses.py`](blue/losses.py), [`distributed_alignment.py`](blue/distributed_alignment.py) |
-| **Entraînement, Adaptation & Compression** | [`training.py`](blue/training.py), [`optimizer.py`](blue/optimizer.py), [`ema.py`](blue/ema.py), [`lora.py`](blue/lora.py), [`quantize.py`](blue/quantize.py), [`observed_objective.py`](blue/observed_objective.py) |
-| **Diagnostics, Données & CLI** | [`cli.py`](blue/cli.py), [`cli_ops.py`](blue/cli_ops.py), [`data.py`](blue/data.py), [`profiler.py`](blue/profiler.py), [`card.py`](blue/card.py), [`verifier.py`](blue/verifier.py), [`evaluation.py`](blue/evaluation.py) |
+| **Core & Configuration** | [`model.py`](blue/model.py), [`modules.py`](blue/modules.py), [`config.py`](blue/config.py), [`tokenizer.py`](blue/tokenizer.py), [`ngram.py`](blue/ngram.py) |
+| **Sequence, Memory & Geometry** | [`ssm.py`](blue/ssm.py), [`ttt.py`](blue/ttt.py), [`sparse_attention.py`](blue/sparse_attention.py), [`hyper_connections.py`](blue/hyper_connections.py), [`memory.py`](blue/memory.py), [`hyperbolic.py`](blue/hyperbolic.py), [`fsq.py`](blue/fsq.py) |
+| **Multimodal Encoders** | [`audio.py`](blue/audio.py), [`graph.py`](blue/graph.py), [`pointcloud.py`](blue/pointcloud.py), [`tabular.py`](blue/tabular.py), [`video.py`](blue/video.py), [`spectral.py`](blue/spectral.py), [`wavelet.py`](blue/wavelet.py) |
+| **Continuous Generation & Latent World** | [`flow_matching.py`](blue/flow_matching.py), [`jepa.py`](blue/jepa.py), [`losses.py`](blue/losses.py), [`distributed_alignment.py`](blue/distributed_alignment.py) |
+| **Training, Adaptation & Compression** | [`training.py`](blue/training.py), [`optimizer.py`](blue/optimizer.py), [`ema.py`](blue/ema.py), [`lora.py`](blue/lora.py), [`quantize.py`](blue/quantize.py), [`observed_objective.py`](blue/observed_objective.py) |
+| **Diagnostics, Data & CLI** | [`cli.py`](blue/cli.py), [`cli_ops.py`](blue/cli_ops.py), [`data.py`](blue/data.py), [`profiler.py`](blue/profiler.py), [`card.py`](blue/card.py), [`verifier.py`](blue/verifier.py), [`evaluation.py`](blue/evaluation.py) |
 
-### Rapports d'analyse et de validation inclus
+### Included analysis and validation reports
 
-- [Validation et audits](VALIDATION.md) · [Améliorations mémoire & vitesse](IMPROVEMENTS.md) · [Suivi de l'apprentissage](LEARNING.md)
-- [Calibration conforme des prévisions](CALIBRATION.md) · [Correction des historiques courts](FORECAST_REFINEMENT.md) · [Robustesse temporelle](ROBUSTNESS.md)
-- [Statistiques temporelles](TEMPORAL_STATISTICS.md) · [Classification temporelle standardisée](SERIES_CLASSIFICATION.md) · [Robustesse affine](AFFINE_ROBUSTNESS.md)
-- [Précision numérique & RMSNorm stable](NUMERICAL_PRECISION.md) · [Routage Top-1 probabiliste](TOP1_ROUTING.md)
-- Intégration continue : [CI GitHub Actions Python 3.11 & 3.14](.github/workflows/tests.yml) · Benchmarks : [`tools/benchmark_architectures.py`](tools/benchmark_architectures.py)
+- [Validation and audits](VALIDATION.md) · [Memory & speed improvements](IMPROVEMENTS.md) · [Learning progress](LEARNING.md)
+- [Conformal forecast calibration](CALIBRATION.md) · [Short-history refinement](FORECAST_REFINEMENT.md) · [Temporal robustness](ROBUSTNESS.md)
+- [Temporal statistics](TEMPORAL_STATISTICS.md) · [Standardized series classification](SERIES_CLASSIFICATION.md) · [Affine robustness](AFFINE_ROBUSTNESS.md)
+- [Numerical precision & stable RMSNorm](NUMERICAL_PRECISION.md) · [Probabilistic Top-1 routing](TOP1_ROUTING.md)
+- Continuous integration: [GitHub Actions CI Python 3.11 & 3.14](.github/workflows/tests.yml) · Benchmarks: [`tools/benchmark_architectures.py`](tools/benchmark_architectures.py)
 
 ---
 
-## Références
+## References
 
-BLUE combine et adapte librement des concepts issus de la littérature récente (sans prétendre être une reproduction officielle de ces modèles) :
+BLUE freely combines and adapts ideas from recent literature (without claiming to be an official reproduction of these models):
 
-- **Attention & Contexte** : [GQA (Ainslie et al.)](https://arxiv.org/abs/2305.13245) · [RoFormer (Su et al.)](https://arxiv.org/abs/2104.09864) · [YaRN (Peng et al.)](https://arxiv.org/abs/2309.00071) · [DeepSeek-V2/V3 MLA & Loss-Free MoE](https://arxiv.org/abs/2412.19437) · [Differential Transformer (Ye et al.)](https://arxiv.org/abs/2410.05258) · [ResFormer](https://arxiv.org/abs/2410.17897) · [Forgetting Transformer (FoX)](https://arxiv.org/abs/2503.02130) · [Native Sparse Attention](https://arxiv.org/abs/2502.11089) · [Talking-Heads Attention](https://arxiv.org/abs/2003.02436)
-- **Récurrence, SSM & Test-Time Training** : [Gated DeltaNet (Yang et al.)](https://arxiv.org/abs/2412.06464) · [Test-Time Training (Sun et al.)](https://arxiv.org/abs/2407.04620) · [Titans (Behrouz et al.)](https://arxiv.org/abs/2501.00663)
-- **MoE, Hyper-Connections & Normalisation** : [Switch Transformers](https://arxiv.org/abs/2101.03961) · [ST-MoE](https://arxiv.org/abs/2202.08906) · [Mixture-of-Depths](https://arxiv.org/abs/2404.02258) · [KAN (Liu et al.)](https://arxiv.org/abs/2404.19756) · [Dynamic Tanh (DyT)](https://arxiv.org/abs/2503.10622) · [Perceiver IO](https://arxiv.org/abs/2107.14795) · [FSQ (Mentzer et al.)](https://arxiv.org/abs/2309.15505)
-- **Génération, Monde Latent & Optimisation** : [Flow Matching / SD3 (Esser et al.)](https://arxiv.org/abs/2403.03206) · [VICReg (Bardes et al.)](https://arxiv.org/abs/2105.04906) · [PonderNet](https://arxiv.org/abs/2107.05407) · [DoRA (Liu et al.)](https://arxiv.org/abs/2402.09353) · [Speculative Decoding (Leviathan et al.)](https://arxiv.org/abs/2211.17192) · [Mirostat](https://arxiv.org/abs/2007.14966) · [Eta-Sampling (Hewitt et al.)](https://arxiv.org/abs/2210.15191)
+- **Attention & Context**: [GQA (Ainslie et al.)](https://arxiv.org/abs/2305.13245) · [RoFormer (Su et al.)](https://arxiv.org/abs/2104.09864) · [YaRN (Peng et al.)](https://arxiv.org/abs/2309.00071) · [DeepSeek-V2/V3 MLA & Loss-Free MoE](https://arxiv.org/abs/2412.19437) · [Differential Transformer (Ye et al.)](https://arxiv.org/abs/2410.05258) · [ResFormer](https://arxiv.org/abs/2410.17897) · [Forgetting Transformer (FoX)](https://arxiv.org/abs/2503.02130) · [Native Sparse Attention](https://arxiv.org/abs/2502.11089) · [Talking-Heads Attention](https://arxiv.org/abs/2003.02436)
+- **Recurrence, SSM & Test-Time Training**: [Gated DeltaNet (Yang et al.)](https://arxiv.org/abs/2412.06464) · [Test-Time Training (Sun et al.)](https://arxiv.org/abs/2407.04620) · [Titans (Behrouz et al.)](https://arxiv.org/abs/2501.00663)
+- **MoE, Hyper-Connections & Normalization**: [Switch Transformers](https://arxiv.org/abs/2101.03961) · [ST-MoE](https://arxiv.org/abs/2202.08906) · [Mixture-of-Depths](https://arxiv.org/abs/2404.02258) · [KAN (Liu et al.)](https://arxiv.org/abs/2404.19756) · [Dynamic Tanh (DyT)](https://arxiv.org/abs/2503.10622) · [Perceiver IO](https://arxiv.org/abs/2107.14795) · [FSQ (Mentzer et al.)](https://arxiv.org/abs/2309.15505)
+- **Generation, Latent World & Optimization**: [Flow Matching / SD3 (Esser et al.)](https://arxiv.org/abs/2403.03206) · [VICReg (Bardes et al.)](https://arxiv.org/abs/2105.04906) · [PonderNet](https://arxiv.org/abs/2107.05407) · [DoRA (Liu et al.)](https://arxiv.org/abs/2402.09353) · [Speculative Decoding (Leviathan et al.)](https://arxiv.org/abs/2211.17192) · [Mirostat](https://arxiv.org/abs/2007.14966) · [Eta-Sampling (Hewitt et al.)](https://arxiv.org/abs/2210.15191)
