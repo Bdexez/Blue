@@ -102,6 +102,7 @@ class BlueConfig:
     video_layers: int = 2
     n_latents: int = 16
     register_latents: int = 0
+    cross_modal_fusion_layers: int = 0
     resampler_layers: int = 2
     hierarchical_resampler: bool = False
     latent_fsq_levels: tuple[int, ...] = ()
@@ -359,6 +360,8 @@ class BlueConfig:
             raise ValueError("hierarchical_resampler doit être booléen")
         if type(self.register_latents) is not int or self.register_latents < 0:
             raise ValueError("register_latents doit être un entier positif ou nul")
+        if type(self.cross_modal_fusion_layers) is not int or self.cross_modal_fusion_layers < 0:
+            raise ValueError("cross_modal_fusion_layers doit être un entier positif ou nul")
         self.latent_fsq_levels = tuple(self.latent_fsq_levels)
         if any(type(level) is not int or level < 2 for level in self.latent_fsq_levels):
             raise ValueError("latent_fsq_levels doit contenir des entiers >= 2")
