@@ -177,6 +177,11 @@ class Blue(nn.Module):
             for module in self.modules():
                 if isinstance(module, SwiGLU):
                     module.enable_kan(config.kan_degree)
+        if config.conv_diff_branch:
+            from .modules import GatedCausalConv
+            for module in self.modules():
+                if isinstance(module, GatedCausalConv):
+                    module.enable_diff_branch()
         nn.init.zeros_(self.temporal.forecast_skip.weight)
         if self.temporal.statistics_proj is not None:
             nn.init.zeros_(self.temporal.statistics_proj.weight)
@@ -913,6 +918,12 @@ class Blue(nn.Module):
             shifted = targets[:, 1:].masked_fill(~valid[:, :-1], -100)
             losses["text"] = masked_cross_entropy(logits[:, :-1], shifted)
             total = total + self._weight_task_loss("text", c.text_weight, losses["text"])
+            if c.lm_z_loss_weight > 0.0:
+                with torch.autocast(device_type=logits.device.type, enabled=False):
+                    z_mask = shifted != -100
+                    log_z = logits[:, :-1].float().logsumexp(dim=-1)
+                    losses["lm_z"] = (log_z.square() * z_mask.float()).sum() / z_mask.sum().clamp_min(1)
+                total = total + c.lm_z_loss_weight * losses["lm_z"]
             mtp_losses, mtp_active = [], []
             mtp_kl_losses = []
             h_mtp_prev = None
@@ -1131,6 +1142,27 @@ class Blue(nn.Module):
         return scores
 
     @staticmethod
+    def _mirostat_v2_step(scores: torch.Tensor, mu: torch.Tensor, *,
+                          temperature: float, tau: float, eta: float) -> tuple[torch.Tensor, torch.Tensor]:
+        scores = scores.float()
+        scores[:, [0, 1, 3]] = -torch.inf
+        peak = scores.amax(-1, keepdim=True)
+        if not torch.isfinite(peak).all():
+            raise FloatingPointError("Les logits générables doivent avoir un maximum fini")
+        probs = ((scores - peak) / temperature).softmax(-1)
+        ordered_probs, order = probs.sort(dim=-1, descending=True)
+        surprise = -torch.log2(ordered_probs.clamp_min(1e-12))
+        remove = surprise > mu[:, None]
+        remove[:, 0] = False
+        filtered = ordered_probs.masked_fill(remove, 0.0)
+        filtered = filtered / filtered.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        sampled_pos = torch.multinomial(filtered, 1)
+        next_token = order.gather(-1, sampled_pos).squeeze(-1)
+        obs_surprise = surprise.gather(-1, sampled_pos).squeeze(-1)
+        next_mu = mu - eta * (obs_surprise - tau)
+        return next_token, next_mu
+
+    @staticmethod
     def _filtered_probs(scores: torch.Tensor, *, temperature: float, top_k: int, top_p: float,
                         min_p: float = 0.0, typical_p: float = 1.0) -> torch.Tensor:
         scores = scores.float()
@@ -1274,6 +1306,7 @@ class Blue(nn.Module):
                  repetition_penalty: float = 1.0,
                  presence_penalty: float = 0.0, frequency_penalty: float = 0.0,
                  no_repeat_ngram_size: int = 0, context_guidance_scale: float = 1.0,
+                 mirostat_tau: float = 0.0, mirostat_eta: float = 0.1,
                  **context):
         if input_ids.ndim != 2 or input_ids.size(1) < 1:
             raise ValueError("Le prompt doit avoir la forme [B, T] avec T > 0")
@@ -1307,6 +1340,10 @@ class Blue(nn.Module):
             raise ValueError("no_repeat_ngram_size doit être un entier positif ou nul")
         if not math.isfinite(context_guidance_scale):
             raise ValueError("context_guidance_scale doit être fini")
+        if not math.isfinite(mirostat_tau) or mirostat_tau < 0:
+            raise ValueError("mirostat_tau doit être fini et >= 0")
+        if not math.isfinite(mirostat_eta) or mirostat_eta <= 0:
+            raise ValueError("mirostat_eta doit être fini et > 0")
         if input_ids.size(1) + max_new_tokens > self.config.max_seq_len:
             raise ValueError("Prompt + génération dépassent max_seq_len")
         if eos_id is not None and (type(eos_id) is not int or not 0 <= eos_id < self.config.vocab_size
@@ -1351,6 +1388,10 @@ class Blue(nn.Module):
                 )
             result = input_ids
             finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=input_ids.device)
+            mirostat_mu = (
+                torch.full((input_ids.size(0),), 2.0 * float(mirostat_tau), device=input_ids.device, dtype=torch.float32)
+                if (mirostat_tau > 0.0 and temperature > 0.0) else None
+            )
             cache = None
             uncond_cache = None
             has_mm_ctx = any(
@@ -1377,6 +1418,11 @@ class Blue(nn.Module):
                 scores[:, [0, 1, 3]] = -torch.inf
                 if temperature == 0:
                     next_token = scores.argmax(-1)
+                elif mirostat_mu is not None:
+                    next_token, mirostat_mu = self._mirostat_v2_step(
+                        scores, mirostat_mu,
+                        temperature=temperature, tau=float(mirostat_tau), eta=float(mirostat_eta),
+                    )
                 else:
                     probs = self._filtered_probs(
                         scores,
