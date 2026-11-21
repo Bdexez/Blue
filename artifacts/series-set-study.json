@@ -1,6 +1,6 @@
 {
   "settings": {
-    "checkpoint": "/home/bdex/delivery/Neural_Network_November/runs/joint-affine-pilot/control/latest.pt",
+    "checkpoint": "/home/bdex/delivery/Blue/runs/joint-affine-pilot/control/latest.pt",
     "output": "/tmp/chimera-set-p6W4gp/series-set-study.json",
     "train_batches": 96,
     "calibration_batches": 32,

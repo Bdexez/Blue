@@ -254,7 +254,7 @@
         }
       },
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
@@ -279,7 +279,7 @@
         "--eval-every",
         "280",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/modality-study/dropout-42"
+        "/home/bdex/delivery/Blue/runs/modality-study/dropout-42"
       ]
     },
     {
@@ -521,7 +521,7 @@
         }
       },
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
@@ -546,7 +546,7 @@
         "--eval-every",
         "280",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/modality-study/balanced-42"
+        "/home/bdex/delivery/Blue/runs/modality-study/balanced-42"
       ]
     },
     {
@@ -788,7 +788,7 @@
         }
       },
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
@@ -813,7 +813,7 @@
         "--eval-every",
         "280",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/modality-study/dropout-43"
+        "/home/bdex/delivery/Blue/runs/modality-study/dropout-43"
       ]
     },
     {
@@ -1055,7 +1055,7 @@
         }
       },
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
@@ -1080,7 +1080,7 @@
         "--eval-every",
         "280",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/modality-study/balanced-43"
+        "/home/bdex/delivery/Blue/runs/modality-study/balanced-43"
       ]
     },
     {
@@ -1322,7 +1322,7 @@
         }
       },
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
@@ -1347,7 +1347,7 @@
         "--eval-every",
         "280",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/modality-study/dropout-44"
+        "/home/bdex/delivery/Blue/runs/modality-study/dropout-44"
       ]
     },
     {
@@ -1589,7 +1589,7 @@
         }
       },
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
@@ -1614,7 +1614,7 @@
         "--eval-every",
         "280",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/modality-study/balanced-44"
+        "/home/bdex/delivery/Blue/runs/modality-study/balanced-44"
       ]
     }
   ],

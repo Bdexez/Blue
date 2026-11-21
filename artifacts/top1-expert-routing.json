@@ -18,14 +18,14 @@
       "mode": "normalized",
       "training_seconds": 3.4602247740003804,
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
         "2",
         "train",
         "--config",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/normalized-42/input-config.json",
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/normalized-42/input-config.json",
         "--seed",
         "42",
         "--steps",
@@ -43,7 +43,7 @@
         "--eval-every",
         "80",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/normalized-42"
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/normalized-42"
       ],
       "metrics": {
         "text": {
@@ -700,14 +700,14 @@
       "mode": "probability",
       "training_seconds": 3.652248714000052,
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
         "2",
         "train",
         "--config",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/probability-42/input-config.json",
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/probability-42/input-config.json",
         "--seed",
         "42",
         "--steps",
@@ -725,7 +725,7 @@
         "--eval-every",
         "80",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/probability-42"
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/probability-42"
       ],
       "metrics": {
         "text": {
@@ -1382,14 +1382,14 @@
       "mode": "normalized",
       "training_seconds": 3.738711508999586,
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
         "2",
         "train",
         "--config",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/normalized-43/input-config.json",
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/normalized-43/input-config.json",
         "--seed",
         "43",
         "--steps",
@@ -1407,7 +1407,7 @@
         "--eval-every",
         "80",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/normalized-43"
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/normalized-43"
       ],
       "metrics": {
         "text": {
@@ -2064,14 +2064,14 @@
       "mode": "probability",
       "training_seconds": 3.7633589679999204,
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
         "2",
         "train",
         "--config",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/probability-43/input-config.json",
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/probability-43/input-config.json",
         "--seed",
         "43",
         "--steps",
@@ -2089,7 +2089,7 @@
         "--eval-every",
         "80",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/probability-43"
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/probability-43"
       ],
       "metrics": {
         "text": {
@@ -2746,14 +2746,14 @@
       "mode": "normalized",
       "training_seconds": 3.6273184309993667,
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
         "2",
         "train",
         "--config",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/normalized-44/input-config.json",
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/normalized-44/input-config.json",
         "--seed",
         "44",
         "--steps",
@@ -2771,7 +2771,7 @@
         "--eval-every",
         "80",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/normalized-44"
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/normalized-44"
       ],
       "metrics": {
         "text": {
@@ -3428,14 +3428,14 @@
       "mode": "probability",
       "training_seconds": 3.5318525090006005,
       "command": [
-        "/home/bdex/delivery/Neural_Network_November/.venv/bin/python",
+        "/home/bdex/delivery/Blue/.venv/bin/python",
         "-m",
         "chimera",
         "--threads",
         "2",
         "train",
         "--config",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/probability-44/input-config.json",
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/probability-44/input-config.json",
         "--seed",
         "44",
         "--steps",
@@ -3453,7 +3453,7 @@
         "--eval-every",
         "80",
         "--output",
-        "/home/bdex/delivery/Neural_Network_November/runs/top1-routing-experts/probability-44"
+        "/home/bdex/delivery/Blue/runs/top1-routing-experts/probability-44"
       ],
       "metrics": {
         "text": {

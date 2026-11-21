@@ -7,7 +7,7 @@
     "kind": "checkpoint"
   },
   "initialization": {
-    "checkpoint": "/home/bdex/delivery/Neural_Network_November/runs/workstation/model.pt",
+    "checkpoint": "/home/bdex/delivery/Blue/runs/workstation/model.pt",
     "step": 240,
     "seed": null
   },
