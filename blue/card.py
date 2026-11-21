@@ -118,6 +118,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{f' + {config.attention_sinks} Attention Sinks' if config.attention_sinks else ''}"
         f"{' + Value Residual (ResFormer)' if config.value_residual else ''}"
         f"{f' + Soft-Cap (attn={config.attn_logit_softcap}, lm={config.logit_softcap})' if (config.attn_logit_softcap > 0 or config.logit_softcap > 0) else ''}"
+        f"{' + Dynamic Pos-Scale' if config.dynamic_attn_scale else ''}"
         f"{f' + NSA (bloc {config.nsa_block_size}, top-{config.nsa_top_k})' if config.nsa_block_size > 0 else ''}"
         f", RoPE `{config.rope_scaling_type}` (×{config.rope_scaling_factor}, contexte max {_fmt_int(config.max_seq_len)}).",
         f"- **Attention croisée multimodale** : "
@@ -140,6 +141,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"MoE top-{config.top_k}/{config.n_experts}"
         f"{' (routeur hyperbolique Poincaré)' if config.moe_router_geometry == 'hyperbolic' else ''}"
         f"{f' (+ {config.moe_null_experts} experts nuls zéro-FLOP)' if config.moe_null_experts else ''}"
+        f"{f' + sous-espace partagé (dim={config.moe_shared_latent_dim})' if config.moe_shared_latent_dim else ''}"
         f"{' + porte partagée' if config.shared_expert_gate else ''}"
         f"{f' + équilibrage sans perte auxiliaire (rate={config.router_bias_update_rate})' if config.router_bias_update_rate > 0 else ''}"
         f"{f' + Causal Mixture-of-Depths (capacité={config.depth_routing_capacity})' if config.depth_routing_capacity < 1.0 else ''}.",

@@ -231,6 +231,8 @@ class GroupedQueryAttention(nn.Module):
         self.attention_sinks = config.attention_sinks if causal else 0
         self.value_residual = config.value_residual and causal
         self.attn_logit_softcap = float(config.attn_logit_softcap)
+        self.dynamic_attn_scale = config.dynamic_attn_scale and causal
+        self.pos_temp_base = float(max(config.sliding_window, 16))
         self.layer_index = layer_index
         self.q = nn.Linear(config.d_model, config.d_model, bias=False)
         self.out = nn.Linear(config.d_model, config.d_model, bias=False)
@@ -302,6 +304,10 @@ class GroupedQueryAttention(nn.Module):
             )
         else:
             self.nsa = None
+        if self.dynamic_attn_scale:
+            self.pos_temp_alpha = nn.Parameter(torch.zeros(1, self.n_heads, 1, 1))
+        else:
+            self.pos_temp_alpha = None
         self.reset_sink_parameters()
 
     def reset_sink_parameters(self):
@@ -312,6 +318,9 @@ class GroupedQueryAttention(nn.Module):
         if self.v_res_gate is not None:
             with torch.no_grad():
                 self.v_res_gate.fill_(-2.0)
+        if self.pos_temp_alpha is not None:
+            with torch.no_grad():
+                self.pos_temp_alpha.zero_()
         if self.nsa is not None:
             self.nsa.reset_nsa_parameters()
 
@@ -377,6 +386,18 @@ class GroupedQueryAttention(nn.Module):
                     v = (1.0 - lam_v) * v + lam_v * v0.to(v.dtype)
             q = self.rope(self.q_norm(q), offset)
             cache_k, cache_v = self.rope(self.k_norm(k), offset), v
+
+        if self.pos_temp_alpha is not None:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                pos = torch.arange(offset, offset + t, device=x.device, dtype=torch.float32)
+                pos_log = torch.log1p(pos / self.pos_temp_base).view(1, 1, t, 1)
+                alpha = F.softplus(self.pos_temp_alpha.float()) - math.log(2.0)
+                q_scale = (1.0 + alpha * pos_log).clamp(0.25, 4.0)
+            if self.differential:
+                q1 = q1 * q_scale.to(q1.dtype)
+                q2 = q2 * q_scale.to(q2.dtype)
+            else:
+                q = q * q_scale.to(q.dtype)
 
         if cache is not None:
             cache_k = torch.cat((cache.key, cache_k), -2)
@@ -595,11 +616,24 @@ class SparseMoE(nn.Module):
         ])
         self.shared = SwiGLU(config.d_model, config.hidden_dim * config.shared_experts)
         self.shared_gate = nn.Linear(config.d_model, 1, bias=False) if config.shared_expert_gate else None
+        self.shared_latent_dim = config.moe_shared_latent_dim
+        if self.shared_latent_dim > 0:
+            self.latent_down = nn.Linear(config.d_model, self.shared_latent_dim, bias=False)
+            self.latent_expert_mod = nn.Parameter(torch.ones(config.n_experts, self.shared_latent_dim))
+            self.latent_up = nn.Linear(self.shared_latent_dim, config.d_model, bias=False)
+        else:
+            self.latent_down = self.latent_expert_mod = self.latent_up = None
         if config.router_bias_update_rate > 0:
             self.register_buffer("expert_bias", torch.zeros(config.n_experts, dtype=torch.float32))
         else:
             self.expert_bias = None
         self.last_null_fraction: float = 0.0
+
+    def reset_moe_parameters(self, n_layers: int):
+        if self.latent_expert_mod is not None:
+            with torch.no_grad():
+                nn.init.normal_(self.latent_expert_mod, mean=1.0, std=0.02)
+                nn.init.normal_(self.latent_up.weight, std=0.02 / math.sqrt(2 * n_layers))
 
     @torch.no_grad()
     def update_expert_bias(self, usage: torch.Tensor):
@@ -641,6 +675,16 @@ class SparseMoE(nn.Module):
         mixed = self.shared(tokens)
         if self.shared_gate is not None:
             mixed = mixed * torch.sigmoid(self.shared_gate(tokens)).to(mixed.dtype)
+        if self.latent_down is not None:
+            h_lat = F.silu(self.latent_down(tokens))
+            expert_mods = (
+                F.pad(self.latent_expert_mod, (0, 0, 0, self.n_null))
+                if self.n_null > 0 else self.latent_expert_mod
+            )
+            token_mod = (
+                expert_mods[selected].to(h_lat.dtype) * weights.to(h_lat.dtype).unsqueeze(-1)
+            ).sum(dim=1)
+            mixed = mixed + self.latent_up(h_lat * token_mod)
         for expert_id, expert in enumerate(self.experts):
             rows, slots = torch.where(selected == expert_id)
             # Un expert vide reste un graphe valide, sans traitement de tokens inutiles.
