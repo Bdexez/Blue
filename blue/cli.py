@@ -425,7 +425,7 @@ def main(argv=None):
             parser.error("model-overrides nécessite init-from ; utiliser config pour un nouveau modèle")
         train(args, get_config(args))
     elif args.command == "demo":
-        run_demo(args)
+        run_demo(args, load_checkpoint_fn=load_checkpoint)
     elif args.command == "generate":
         model, _ = load_checkpoint(args.checkpoint, args.device)
         tokens = torch.tensor([ByteTokenizer().encode(args.prompt, eos=False)], device=args.device)
@@ -632,7 +632,8 @@ def main(argv=None):
         if args.output:
             print(f"Évaluation écrite dans {args.output}")
     elif args.command == "export":
-        run_export(args, parser)
+        run_export(args, parser, load_checkpoint_fn=load_checkpoint,
+                   save_checkpoint_fn=save_checkpoint, file_sha256_fn=file_sha256)
     elif args.command == "refine-series-classifier":
         if args.batch_size < 1 or args.augmentation_seed < 0:
             parser.error("batch-size doit être > 0 et augmentation-seed >= 0")
