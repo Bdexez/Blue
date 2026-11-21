@@ -130,6 +130,7 @@ def inspect_config(config):
             "flow_matching_dim": config.flow_matching_dim,
             "flow_time_schedule": config.flow_time_schedule,
             "jepa_weight": config.jepa_weight,
+            "jepa_cov_weight": config.jepa_cov_weight,
             "adaptive_loss_weighting": config.adaptive_loss_weighting,
             "memory_slots": config.memory_slots,
             "alignment_geometry": config.alignment_geometry,
