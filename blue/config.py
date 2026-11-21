@@ -63,6 +63,7 @@ class BlueConfig:
     ttt_base_lr: float = 0.5
     ttt_every: int = 1
     residual_streams: int = 1
+    layer_scale_init: float = 0.0
     latent_reasoning_steps: int = 1
     latent_reasoning_adaptive: bool = False
     ponder_prior: float = 0.5
@@ -146,6 +147,7 @@ class BlueConfig:
     alignment_temperature: float = 0.1
     alignment_geometry: str = "euclidean"
     alignment_curvature: float = 1.0
+    alignment_margin: float = 0.0
     text_weight: float = 1.0
     classification_weight: float = 1.0
     forecast_weight: float = 1.0
@@ -260,6 +262,8 @@ class BlueConfig:
             raise ValueError("ttt_every doit être un entier strictement positif")
         if type(self.residual_streams) is not int or self.residual_streams < 1:
             raise ValueError("residual_streams doit être un entier strictement positif")
+        if not math.isfinite(self.layer_scale_init) or self.layer_scale_init < 0:
+            raise ValueError("layer_scale_init doit être fini et positif ou nul")
         if type(self.latent_reasoning_steps) is not int or self.latent_reasoning_steps < 1:
             raise ValueError("latent_reasoning_steps doit être un entier strictement positif")
         if type(self.latent_reasoning_adaptive) is not bool:
@@ -353,6 +357,8 @@ class BlueConfig:
             raise ValueError("alignment_geometry doit être euclidean ou hyperbolic")
         if not math.isfinite(self.alignment_curvature) or self.alignment_curvature <= 0:
             raise ValueError("alignment_curvature doit être fini et > 0")
+        if not math.isfinite(self.alignment_margin) or self.alignment_margin < 0:
+            raise ValueError("alignment_margin doit être fini et positif ou nul")
         self.quantiles = tuple(self.quantiles)
         if not self.quantiles or any(not 0 < q < 1 for q in self.quantiles):
             raise ValueError("Les quantiles doivent appartenir à ]0, 1[")

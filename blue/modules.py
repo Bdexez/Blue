@@ -1052,6 +1052,13 @@ class DecoderBlock(nn.Module):
         self.depth_router = nn.Linear(config.d_model, 1, bias=True) if config.depth_routing_capacity < 1.0 else None
         self.adaln_mod = nn.Linear(config.d_model, 3 * config.d_model, bias=True) if config.multimodal_adaln else None
         self.mixer_router = nn.Linear(config.d_model, 4, bias=True) if config.dynamic_mixer_router else None
+        self.ls_init = float(config.layer_scale_init)
+        if self.ls_init > 0.0:
+            self.ls_attn = nn.Parameter(torch.full((config.d_model,), self.ls_init))
+            self.ls_cross = nn.Parameter(torch.full((config.d_model,), self.ls_init))
+            self.ls_moe = nn.Parameter(torch.full((config.d_model,), self.ls_init))
+        else:
+            self.ls_attn = self.ls_cross = self.ls_moe = None
         self.reset_depth_router()
         self.dropout = nn.Dropout(config.dropout)
         self.residual_streams = config.residual_streams
@@ -1077,6 +1084,11 @@ class DecoderBlock(nn.Module):
         if self.mixer_router is not None:
             with torch.no_grad():
                 self.mixer_router.bias.zero_()
+        if self.ls_attn is not None:
+            with torch.no_grad():
+                self.ls_attn.fill_(self.ls_init)
+                self.ls_cross.fill_(self.ls_init)
+                self.ls_moe.fill_(self.ls_init)
 
     def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None, q0=None):
         if self.hc_attn is not None:
@@ -1101,6 +1113,8 @@ class DecoderBlock(nn.Module):
         if self.ttt is not None:
             fast_weight_out, ttt_state = self.ttt(h, valid, None if cache is None else cache.ttt_state)
             mixed = mixed + m_ttt * (torch.sigmoid(self.ttt_gate) * fast_weight_out)
+        if self.ls_attn is not None:
+            mixed = mixed * self.ls_attn.to(mixed.dtype)
         if self.hc_attn is not None:
             x = self.hc_attn.update_streams(x, self.dropout(mixed), h_post, h_res)
         else:
@@ -1112,10 +1126,16 @@ class DecoderBlock(nn.Module):
         if self.hc_cross is not None:
             c_pre, c_post, c_res = self.hc_cross.routing_weights(x)
             cross_in = self.norm2(self.hc_cross.combine_input(x, c_pre))
-            cross_out = self.dropout(torch.sigmoid(self.cross_gate) * self.cross(cross_in, projected=context_kv))
+            cross_raw = torch.sigmoid(self.cross_gate) * self.cross(cross_in, projected=context_kv)
+            if self.ls_cross is not None:
+                cross_raw = cross_raw * self.ls_cross.to(cross_raw.dtype)
+            cross_out = self.dropout(cross_raw)
             x = self.hc_cross.update_streams(x, cross_out, c_post, c_res)
         else:
-            x = x + self.dropout(torch.sigmoid(self.cross_gate) * self.cross(self.norm2(x), projected=context_kv))
+            cross_raw = torch.sigmoid(self.cross_gate) * self.cross(self.norm2(x), projected=context_kv)
+            if self.ls_cross is not None:
+                cross_raw = cross_raw * self.ls_cross.to(cross_raw.dtype)
+            x = x + self.dropout(cross_raw)
         if self.hc_moe is not None:
             m_pre, m_post, m_res = self.hc_moe.routing_weights(x)
             moe_in = self.norm3(self.hc_moe.combine_input(x, m_pre))
@@ -1140,6 +1160,8 @@ class DecoderBlock(nn.Module):
             update, balance, z_loss, usage = self.moe(moe_in, valid)
         if adaln_gate is not None:
             update = update * (1.0 + adaln_gate.to(update.dtype))
+        if self.ls_moe is not None:
+            update = update * self.ls_moe.to(update.dtype)
         if self.hc_moe is not None:
             x = self.hc_moe.update_streams(x, self.dropout(update), m_post, m_res) * valid[:, :, None, None]
         else:
