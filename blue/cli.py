@@ -222,6 +222,10 @@ def main(argv=None):
                           help="Seuil de courbure Tail-Free Sampling dans ]0, 1] (défaut : 1.0)")
     generate.add_argument("--top-a", type=float, default=0.0,
                           help="Seuil quadratique au maximum de probabilité Top-A dans [0, 1[ (défaut : 0.0)")
+    generate.add_argument("--edt-theta", type=float, default=0.0,
+                          help="Intensité de température dynamique modulée par l'entropie EDT (>= 0, défaut : 0.0)")
+    generate.add_argument("--edt-n", type=float, default=0.8,
+                          help="Exposant de sensibilité d'entropie EDT (> 0, défaut : 0.8)")
     generate.add_argument("--device", default="cpu")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
@@ -499,7 +503,9 @@ def main(argv=None):
                                    mirostat_eta=args.mirostat_eta,
                                    eta_cutoff=args.eta_cutoff,
                                    tfs_z=args.tfs_z,
-                                   top_a=args.top_a)
+                                   top_a=args.top_a,
+                                   edt_theta=args.edt_theta,
+                                   edt_n=args.edt_n)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
         if args.max_new_tokens < 0:

@@ -1170,7 +1170,8 @@ class Blue(nn.Module):
     def _filtered_probs(scores: torch.Tensor, *, temperature: float, top_k: int, top_p: float,
                         min_p: float = 0.0, typical_p: float = 1.0,
                         eta_cutoff: float = 0.0, tfs_z: float = 1.0,
-                        top_a: float = 0.0) -> torch.Tensor:
+                        top_a: float = 0.0, edt_theta: float = 0.0,
+                        edt_n: float = 0.8) -> torch.Tensor:
         scores = scores.float()
         scores[:, [0, 1, 3]] = -torch.inf
         if not torch.finfo(torch.float32).tiny <= temperature <= torch.finfo(torch.float32).max:
@@ -1178,7 +1179,17 @@ class Blue(nn.Module):
         peak = scores.amax(-1, keepdim=True)
         if not torch.isfinite(peak).all():
             raise FloatingPointError("Les logits générables doivent avoir un maximum fini")
-        scores = (scores - peak) / temperature
+        scores = scores - peak
+        if edt_theta > 0.0:
+            p_raw = scores.softmax(-1)
+            log_p_raw = scores.log_softmax(-1)
+            ent_raw = -(p_raw * torch.where(p_raw > 0, log_p_raw, torch.zeros_like(log_p_raw))).sum(-1, keepdim=True)
+            valid_v = (scores > -torch.inf).sum(-1, keepdim=True).clamp_min(2).float()
+            norm_ent = (ent_raw / valid_v.log()).clamp(0.0, 1.0)
+            eff_temp = temperature * torch.exp(float(edt_theta) * (norm_ent.pow(float(edt_n)) - 1.0))
+            scores = scores / eff_temp.clamp_min(1e-6)
+        else:
+            scores = scores / temperature
         if min_p > 0.0:
             raw_probs = scores.softmax(-1)
             max_prob = raw_probs.amax(-1, keepdim=True)
@@ -1262,7 +1273,7 @@ class Blue(nn.Module):
     def _draft_future_stochastic(self, last_hidden: torch.Tensor, count: int, *,
                                  temperature: float, top_k: int, top_p: float, min_p: float = 0.0,
                                  typical_p: float = 1.0, eta_cutoff: float = 0.0, tfs_z: float = 1.0,
-                                 top_a: float = 0.0,
+                                 top_a: float = 0.0, edt_theta: float = 0.0, edt_n: float = 0.8,
                                  history_ids: torch.Tensor | None = None,
                                  repetition_penalty: float = 1.0, presence_penalty: float = 0.0,
                                  frequency_penalty: float = 0.0,
@@ -1285,7 +1296,7 @@ class Blue(nn.Module):
                 penalized,
                 temperature=temperature, top_k=top_k, top_p=top_p,
                 min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
-                top_a=top_a,
+                top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
             )
             tok = torch.multinomial(probs, 1).squeeze(-1)
             drafts.append(tok)
@@ -1337,6 +1348,7 @@ class Blue(nn.Module):
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,
                  top_p=0.95, min_p: float = 0.0, typical_p: float = 1.0,
                  eta_cutoff: float = 0.0, tfs_z: float = 1.0, top_a: float = 0.0,
+                 edt_theta: float = 0.0, edt_n: float = 0.8,
                  eos_id=2, reasoning_steps: int | None = None,
                  speculative: bool = False, jacobi: bool = False,
                  jacobi_window: int = 4, beam_width: int = 1, length_penalty: float = 1.0,
@@ -1361,6 +1373,10 @@ class Blue(nn.Module):
             raise ValueError("tfs_z doit appartenir à ]0, 1]")
         if not math.isfinite(top_a) or not 0.0 <= top_a < 1.0:
             raise ValueError("top_a doit appartenir à [0, 1[")
+        if not math.isfinite(edt_theta) or edt_theta < 0.0:
+            raise ValueError("edt_theta doit être fini et >= 0")
+        if not math.isfinite(edt_n) or edt_n <= 0.0:
+            raise ValueError("edt_n doit être fini et > 0")
         if type(top_k) is not int or top_k < 0:
             raise ValueError("top_k doit être un entier positif ou nul")
         if type(speculative) is not bool:
@@ -1427,7 +1443,8 @@ class Blue(nn.Module):
                 return self._generate_speculative_stochastic(
                     input_ids, max_new_tokens=max_new_tokens, temperature=temperature,
                     top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
-                    eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a, eos_id=eos_id,
+                    eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a,
+                    edt_theta=edt_theta, edt_n=edt_n, eos_id=eos_id,
                     reasoning_steps=reasoning_steps, **penalties, **context,
                 )
             result = input_ids
@@ -1472,7 +1489,7 @@ class Blue(nn.Module):
                         scores,
                         temperature=temperature, top_k=top_k, top_p=top_p,
                         min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
-                        top_a=top_a,
+                        top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
                     )
                     next_token = torch.multinomial(probs, 1).squeeze(-1)
                 if eos_id is not None:
@@ -1565,7 +1582,8 @@ class Blue(nn.Module):
 
     def _generate_speculative_stochastic(self, input_ids, *, max_new_tokens, temperature,
                                          top_k, top_p, min_p=0.0, typical_p=1.0, eta_cutoff=0.0,
-                                         tfs_z=1.0, top_a=0.0, eos_id, reasoning_steps,
+                                         tfs_z=1.0, top_a=0.0, edt_theta=0.0, edt_n=0.8,
+                                         eos_id, reasoning_steps,
                                          repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0,
                                          no_repeat_ngram_size=0,
                                          **context):
@@ -1582,7 +1600,8 @@ class Blue(nn.Module):
         p0 = self._filtered_probs(
             self._apply_penalties(output.logits[:, -1], result, **penalties),
             temperature=temperature, top_k=top_k, top_p=top_p,
-            min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a,
+            min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
+            top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
         )
         next_token = torch.multinomial(p0, 1).squeeze(-1)
         result = torch.cat((result, next_token[:, None]), -1)
@@ -1598,14 +1617,16 @@ class Blue(nn.Module):
                 p_last = self._filtered_probs(
                     self._apply_penalties(step_out.logits[:, -1], result, **penalties),
                     temperature=temperature, top_k=top_k, top_p=top_p,
-                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a,
+                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
+                    top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
                 )
                 next_token = torch.multinomial(p_last, 1).squeeze(-1)
                 result = torch.cat((result, next_token[:, None]), -1)
                 break
             drafts, q_probs = self._draft_future_stochastic(
                 last_hidden, n_draft, temperature=temperature, top_k=top_k, top_p=top_p,
-                min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a,
+                min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
+                top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
                 history_ids=result, **penalties,
             )
             candidate = torch.stack([next_token, *drafts], dim=1)  # [1, 1 + n_draft]
@@ -1618,7 +1639,8 @@ class Blue(nn.Module):
                 p_j = self._filtered_probs(
                     self._apply_penalties(verify_out.logits[:, j], hist_j, **penalties),
                     temperature=temperature, top_k=top_k, top_p=top_p,
-                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a,
+                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
+                    top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
                 )
                 tok = drafts[j].item()
                 p_tok = p_j[0, tok].item()
@@ -1642,7 +1664,8 @@ class Blue(nn.Module):
                 p_bonus = self._filtered_probs(
                     self._apply_penalties(verify_out.logits[:, n_draft], hist_bonus, **penalties),
                     temperature=temperature, top_k=top_k, top_p=top_p,
-                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a,
+                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
+                    top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
                 )
                 emitted_list.append(torch.multinomial(p_bonus, 1).squeeze(-1))
             emitted = torch.cat(emitted_list, dim=0)
