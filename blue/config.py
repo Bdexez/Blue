@@ -137,6 +137,7 @@ class BlueConfig:
     jepa_weight: float = 0.0
     adaptive_loss_weighting: bool = False
     gradient_checkpointing: bool = False
+    checkpoint_every: int = 1
     top1_gate: str = "normalized"
 
     def __post_init__(self):
@@ -328,6 +329,8 @@ class BlueConfig:
             raise ValueError("flow_cfg_dropout doit être fini et appartenir à [0, 1[")
         if type(self.gradient_checkpointing) is not bool:
             raise ValueError("gradient_checkpointing doit être booléen")
+        if type(self.checkpoint_every) is not int or self.checkpoint_every < 1:
+            raise ValueError("checkpoint_every doit être un entier strictement positif")
         if type(self.adaptive_loss_weighting) is not bool:
             raise ValueError("adaptive_loss_weighting doit être booléen")
         if type(self.temporal_statistics) is not bool:
