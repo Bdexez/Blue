@@ -66,6 +66,39 @@ class Wave27FlowTest(unittest.TestCase):
         self.assertIsNotNone(model.jepa.out_proj.weight.grad)
         self.assertGreater(model.jepa.out_proj.weight.grad.abs().sum().item(), 0.0)
 
+    def test_episodic_memory_adaptive_decay_cache_and_padding_invariance(self):
+        cfg = BlueConfig.preset("tiny")
+        cfg.memory_slots = 6
+        cfg.memory_decay = True
+        torch.manual_seed(2703)
+        model = Blue(cfg).eval()
+        self.assertIsNotNone(model.episodic_memory.decay_gate)
+        self.assertTrue(torch.allclose(
+            model.episodic_memory.decay_gate.bias,
+            torch.full_like(model.episodic_memory.decay_gate.bias, 4.0),
+        ))
+        with torch.no_grad():
+            model.episodic_memory.decay_gate.weight.normal_(std=0.1)
+
+        ids = torch.tensor([[1, 14, 28, 42, 56, 70]])
+        with torch.no_grad():
+            full_logits = model(ids).logits
+            prefill = model(ids[:, :3], use_cache=True)
+            cache = prefill.cache
+            pieces = [prefill.logits]
+            for t in range(3, ids.size(1)):
+                step_out = model(ids[:, t:t + 1], cache=cache, use_cache=True)
+                cache = step_out.cache
+                pieces.append(step_out.logits)
+            cached_logits = torch.cat(pieces, dim=1)
+        self.assertTrue(torch.allclose(full_logits, cached_logits, atol=1e-5))
+
+        model.train()
+        out = model(ids, labels=ids)
+        out.loss.backward()
+        self.assertIsNotNone(model.episodic_memory.decay_gate.weight.grad)
+        self.assertGreater(model.episodic_memory.decay_gate.weight.grad.abs().sum().item(), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
