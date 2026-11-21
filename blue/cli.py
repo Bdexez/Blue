@@ -208,6 +208,8 @@ def main(argv=None):
                           help="Pénalité additive de fréquence (défaut : 0.0)")
     generate.add_argument("--no-repeat-ngram-size", type=int, default=0,
                           help="Bloquer la répétition exacte de N-grammes (>= 0, défaut : 0)")
+    generate.add_argument("--context-guidance-scale", type=float, default=1.0,
+                          help="Échelle de guidage contrastif multimodal CFG (défaut : 1.0)")
     generate.add_argument("--device", default="cpu")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
@@ -479,7 +481,8 @@ def main(argv=None):
                                    repetition_penalty=args.repetition_penalty,
                                    presence_penalty=args.presence_penalty,
                                    frequency_penalty=args.frequency_penalty,
-                                   no_repeat_ngram_size=args.no_repeat_ngram_size)
+                                   no_repeat_ngram_size=args.no_repeat_ngram_size,
+                                   context_guidance_scale=args.context_guidance_scale)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
         if args.max_new_tokens < 0:

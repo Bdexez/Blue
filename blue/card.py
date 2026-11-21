@@ -124,6 +124,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{' + Dynamic Pos-Scale' if config.dynamic_attn_scale else ''}"
         f"{' + Forgetting Gate (FoX)' if config.forgetting_attention else ''}"
         f"{' + Gated Value (GVA)' if config.gated_value_attention else ''}"
+        f"{' + Talking-Heads' if config.talking_heads else ''}"
         f"{f' + NSA (bloc {config.nsa_block_size}, top-{config.nsa_top_k})' if config.nsa_block_size > 0 else ''}"
         f", RoPE `{config.rope_scaling_type}` (×{config.rope_scaling_factor}, contexte max {_fmt_int(config.max_seq_len)}).",
         f"- **Attention croisée multimodale** : "
