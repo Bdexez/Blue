@@ -36,6 +36,7 @@ class BlueConfig:
     rope_original_max_seq_len: int | None = None
     differential_attention: bool = False
     cross_differential_attention: bool = False
+    cross_qk_temperature: bool = False
     multimodal_adaln: bool = False
     kv_lora_rank: int = 0
     cross_kv_lora_rank: int = 0
@@ -130,6 +131,7 @@ class BlueConfig:
     quantiles: tuple[float, ...] = (0.1, 0.5, 0.9)
     prediction_steps: int = 2
     chained_future_heads: bool = False
+    embedding_output_skip: bool = False
     balance_weight: float = 0.01
     router_z_weight: float = 0.001
     mtp_weight: float = 0.1
@@ -188,6 +190,8 @@ class BlueConfig:
             raise ValueError("differential_attention nécessite d_model / n_heads divisible par 4")
         if type(self.cross_differential_attention) is not bool:
             raise ValueError("cross_differential_attention doit être booléen")
+        if type(self.cross_qk_temperature) is not bool:
+            raise ValueError("cross_qk_temperature doit être booléen")
         if self.cross_differential_attention and (self.d_model // self.n_heads) % 4:
             raise ValueError("cross_differential_attention nécessite d_model / n_heads divisible par 4")
         if type(self.multimodal_adaln) is not bool:
@@ -363,6 +367,8 @@ class BlueConfig:
             raise ValueError("head_cross_pool doit être booléen")
         if type(self.chained_future_heads) is not bool:
             raise ValueError("chained_future_heads doit être booléen")
+        if type(self.embedding_output_skip) is not bool:
+            raise ValueError("embedding_output_skip doit être booléen")
         if not math.isfinite(self.mtp_decay) or not 0.0 < self.mtp_decay <= 1.0:
             raise ValueError("mtp_decay doit être fini et appartenir à ]0, 1]")
         if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
