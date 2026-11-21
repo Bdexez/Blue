@@ -25,6 +25,7 @@ class BlueConfig:
     moe_router_orthogonality_weight: float = 0.0
     moe_routed_scaling_factor: float = 1.0
     moe_learnable_scaling: bool = False
+    moe_input_residual_gate: bool = False
     shared_expert_gate: bool = False
     router_bias_update_rate: float = 0.0
     depth_routing_capacity: float = 1.0
@@ -52,6 +53,7 @@ class BlueConfig:
     dynamic_mixer_router: bool = False
     logit_softcap: float = 0.0
     attn_logit_softcap: float = 0.0
+    cross_logit_softcap: float = 0.0
     dynamic_attn_scale: bool = False
     forgetting_attention: bool = False
     gated_value_attention: bool = False
@@ -233,6 +235,8 @@ class BlueConfig:
             raise ValueError("logit_softcap doit être fini et positif ou nul")
         if not math.isfinite(self.attn_logit_softcap) or self.attn_logit_softcap < 0:
             raise ValueError("attn_logit_softcap doit être fini et positif ou nul")
+        if not math.isfinite(self.cross_logit_softcap) or self.cross_logit_softcap < 0:
+            raise ValueError("cross_logit_softcap doit être fini et positif ou nul")
         if type(self.dynamic_attn_scale) is not bool:
             raise ValueError("dynamic_attn_scale doit être booléen")
         if type(self.forgetting_attention) is not bool:
@@ -309,6 +313,8 @@ class BlueConfig:
             raise ValueError("moe_routed_scaling_factor doit être fini et strictement positif")
         if type(self.moe_learnable_scaling) is not bool:
             raise ValueError("moe_learnable_scaling doit être booléen")
+        if type(self.moe_input_residual_gate) is not bool:
+            raise ValueError("moe_input_residual_gate doit être booléen")
         if self.top1_gate not in ("normalized", "probability"):
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):

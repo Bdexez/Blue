@@ -611,6 +611,7 @@ class CrossAttention(nn.Module):
             nn.Parameter(torch.zeros(1, self.heads, 1, 1))
             if config.cross_qk_temperature else None
         )
+        self.logit_softcap = float(config.cross_logit_softcap)
         if config.cross_head_gating:
             self.head_gate_proj = nn.Linear(config.d_model, self.heads, bias=True)
             self.head_mix = nn.Linear(self.heads, self.heads, bias=False)
@@ -681,8 +682,8 @@ class CrossAttention(nn.Module):
                 q1 = q1 * qk_mult.to(q1.dtype)
                 q2 = q2 * qk_mult.to(q2.dtype)
             k1, k2 = k.chunk(2, dim=-1)
-            a1 = F.scaled_dot_product_attention(q1, k1, v, attn_mask=mask, dropout_p=dropout_p)
-            a2 = F.scaled_dot_product_attention(q2, k2, v, attn_mask=mask, dropout_p=dropout_p)
+            a1 = _sdpa(q1, k1, v, attn_mask=mask, dropout_p=dropout_p, softcap=self.logit_softcap)
+            a2 = _sdpa(q2, k2, v, attn_mask=mask, dropout_p=dropout_p, softcap=self.logit_softcap)
             with torch.autocast(device_type=queries.device.type, enabled=False):
                 dot1 = (self.lambda_q1.float() * self.lambda_k1.float()).sum().clamp(-10.0, 10.0)
                 dot2 = (self.lambda_q2.float() * self.lambda_k2.float()).sum().clamp(-10.0, 10.0)
@@ -694,8 +695,8 @@ class CrossAttention(nn.Module):
                 with torch.autocast(device_type=queries.device.type, enabled=False):
                     qk_mult = torch.exp(self.qk_log_scale.float().clamp(-2.0, 2.5))
                 q = q * qk_mult.to(q.dtype)
-            y = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=mask, dropout_p=dropout_p,
+            y = _sdpa(
+                q, k, v, attn_mask=mask, dropout_p=dropout_p, softcap=self.logit_softcap,
             )
         if self.head_gate_proj is not None:
             h_conf = (2.0 * torch.sigmoid(self.head_gate_proj(queries))).transpose(1, 2).unsqueeze(-1)
@@ -1117,6 +1118,10 @@ class DecoderBlock(nn.Module):
         self.depth_router = nn.Linear(config.d_model, 1, bias=True) if config.depth_routing_capacity < 1.0 else None
         self.adaln_mod = nn.Linear(config.d_model, 3 * config.d_model, bias=True) if config.multimodal_adaln else None
         self.mixer_router = nn.Linear(config.d_model, 4, bias=True) if config.dynamic_mixer_router else None
+        self.moe_pre_gate = (
+            nn.Parameter(torch.full((config.d_model,), -3.0))
+            if config.moe_input_residual_gate else None
+        )
         self.ls_init = float(config.layer_scale_init)
         if self.ls_init > 0.0:
             self.ls_attn = nn.Parameter(torch.full((config.d_model,), self.ls_init))
@@ -1149,6 +1154,9 @@ class DecoderBlock(nn.Module):
         if self.mixer_router is not None:
             with torch.no_grad():
                 self.mixer_router.bias.zero_()
+        if self.moe_pre_gate is not None:
+            with torch.no_grad():
+                self.moe_pre_gate.fill_(-3.0)
         if self.ls_attn is not None:
             with torch.no_grad():
                 self.ls_attn.fill_(self.ls_init)
@@ -1206,6 +1214,8 @@ class DecoderBlock(nn.Module):
             moe_in = self.norm3(self.hc_moe.combine_input(x, m_pre))
         else:
             moe_in = self.norm3(x)
+        if self.moe_pre_gate is not None:
+            moe_in = moe_in + torch.sigmoid(self.moe_pre_gate).to(moe_in.dtype) * h
         adaln_gate = None
         if self.adaln_mod is not None:
             shift, scale, adaln_gate = self.adaln_mod(F.silu(context.mean(dim=1))).unsqueeze(1).chunk(3, dim=-1)
