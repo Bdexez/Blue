@@ -65,10 +65,12 @@ class BlueConfig:
     ssm_heads: int | None = None
     ssm_chunk_size: int = 32
     ssm_every: int = 1
+    ssm_d_skip: bool = False
     ttt_state_dim: int = 0
     ttt_heads: int | None = None
     ttt_base_lr: float = 0.5
     ttt_every: int = 1
+    ttt_weight_decay: bool = False
     residual_streams: int = 1
     layer_scale_init: float = 0.0
     latent_reasoning_steps: int = 1
@@ -266,6 +268,8 @@ class BlueConfig:
             raise ValueError("ssm_chunk_size doit être un entier strictement positif")
         if type(self.ssm_every) is not int or self.ssm_every < 1:
             raise ValueError("ssm_every doit être un entier strictement positif")
+        if type(self.ssm_d_skip) is not bool:
+            raise ValueError("ssm_d_skip doit être booléen")
         if type(self.ttt_state_dim) is not int or self.ttt_state_dim < 0:
             raise ValueError("ttt_state_dim doit être un entier positif ou nul")
         if self.ttt_heads is not None:
@@ -277,6 +281,8 @@ class BlueConfig:
             raise ValueError("ttt_base_lr doit être fini et strictement positif")
         if type(self.ttt_every) is not int or self.ttt_every < 1:
             raise ValueError("ttt_every doit être un entier strictement positif")
+        if type(self.ttt_weight_decay) is not bool:
+            raise ValueError("ttt_weight_decay doit être booléen")
         if type(self.residual_streams) is not int or self.residual_streams < 1:
             raise ValueError("residual_streams doit être un entier strictement positif")
         if not math.isfinite(self.layer_scale_init) or self.layer_scale_init < 0:
