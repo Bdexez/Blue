@@ -318,6 +318,12 @@ class GroupedQueryAttention(nn.Module):
             self.forget_slopes = nn.Parameter(torch.zeros(1, self.n_heads, 1, 1))
         else:
             self.forget_proj = self.forget_slopes = None
+        if config.gated_value_attention and causal:
+            gate_rank = max(8, config.d_model // 4)
+            self.v_out_down = nn.Linear(config.d_model, gate_rank, bias=False)
+            self.v_out_up = nn.Linear(gate_rank, config.d_model, bias=True)
+        else:
+            self.v_out_down = self.v_out_up = None
         self.reset_sink_parameters()
 
     def reset_sink_parameters(self):
@@ -337,6 +343,9 @@ class GroupedQueryAttention(nn.Module):
                 idx = torch.arange(1, self.n_heads + 1, dtype=torch.float32, device=self.forget_slopes.device)
                 slopes = 2.0 ** (-4.0 * idx / self.n_heads)
                 self.forget_slopes.copy_(torch.log(torch.expm1(slopes)).view(1, self.n_heads, 1, 1))
+        if self.v_out_up is not None:
+            with torch.no_grad():
+                self.v_out_up.bias.fill_(2.0)
         if self.nsa is not None:
             self.nsa.reset_nsa_parameters()
 
@@ -515,6 +524,9 @@ class GroupedQueryAttention(nn.Module):
         if self.nsa is not None:
             y = y + self.nsa(q_nsa_src, k_nsa_src, v_nsa_src, key_valid, offset=offset, start_pos=start_pos)
         y = y.transpose(1, 2).contiguous().view(b, t, -1)
+        if self.v_out_down is not None:
+            gate = torch.sigmoid(self.v_out_up(F.silu(self.v_out_down(x))))
+            y = y * gate.to(y.dtype)
         if use_cache and self.window and seq_k > self.window - 1:
             begin = seq_k - (self.window - 1)
             # clone libère réellement le stockage du préremplissage, même avec B=H=1.

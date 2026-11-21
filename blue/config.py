@@ -45,6 +45,7 @@ class BlueConfig:
     attn_logit_softcap: float = 0.0
     dynamic_attn_scale: bool = False
     forgetting_attention: bool = False
+    gated_value_attention: bool = False
     nsa_block_size: int = 0
     nsa_top_k: int = 4
     ssm_state_dim: int = 0
@@ -128,6 +129,7 @@ class BlueConfig:
     router_z_weight: float = 0.001
     mtp_weight: float = 0.1
     mtp_kl_weight: float = 0.0
+    mtp_decay: float = 1.0
     alignment_weight: float = 0.05
     alignment_mode: str = "paired"
     alignment_scope: str = "local"
@@ -207,6 +209,8 @@ class BlueConfig:
             raise ValueError("dynamic_attn_scale doit être booléen")
         if type(self.forgetting_attention) is not bool:
             raise ValueError("forgetting_attention doit être booléen")
+        if type(self.gated_value_attention) is not bool:
+            raise ValueError("gated_value_attention doit être booléen")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
             raise ValueError("nsa_block_size doit être 0 ou un entier >= 2")
         if type(self.nsa_top_k) is not int or self.nsa_top_k < 1:
@@ -345,6 +349,8 @@ class BlueConfig:
             raise ValueError("evidential_classification doit être booléen")
         if type(self.head_cross_pool) is not bool:
             raise ValueError("head_cross_pool doit être booléen")
+        if not math.isfinite(self.mtp_decay) or not 0.0 < self.mtp_decay <= 1.0:
+            raise ValueError("mtp_decay doit être fini et appartenir à ]0, 1]")
         if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
             raise ValueError("flow_matching_dim doit être un entier positif ou nul")
         if not math.isfinite(self.flow_cfg_dropout) or not 0.0 <= self.flow_cfg_dropout < 1.0:
