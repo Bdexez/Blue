@@ -110,6 +110,7 @@
   "latent_diversity_weight": 0.02,
   "num_classes": 6,
   "evidential_classification": true,
+  "head_cross_pool": true,
   "forecast_horizon": 12,
   "forecast_context": 32,
   "forecast_adapter_context": 0,
