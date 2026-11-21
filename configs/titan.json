@@ -51,6 +51,7 @@
   "dropout": 0.0,
   "norm_eps": 1e-06,
   "stable_rms_norm": true,
+  "dynamic_tanh_norm": false,
   "image_size": 448,
   "image_channels": 3,
   "patch_size": 16,
@@ -91,6 +92,7 @@
   "max_video_frames": 64,
   "video_layers": 10,
   "n_latents": 192,
+  "register_latents": 32,
   "resampler_layers": 8,
   "hierarchical_resampler": true,
   "latent_fsq_levels": [
@@ -100,6 +102,7 @@
     5,
     5
   ],
+  "latent_diversity_weight": 0.02,
   "num_classes": 6,
   "forecast_horizon": 12,
   "forecast_context": 32,
