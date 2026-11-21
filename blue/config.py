@@ -23,6 +23,8 @@ class BlueConfig:
     moe_router_temperature: bool = False
     moe_entropy_weight: float = 0.0
     moe_router_orthogonality_weight: float = 0.0
+    moe_routed_scaling_factor: float = 1.0
+    moe_learnable_scaling: bool = False
     shared_expert_gate: bool = False
     router_bias_update_rate: float = 0.0
     depth_routing_capacity: float = 1.0
@@ -39,6 +41,7 @@ class BlueConfig:
     differential_attention: bool = False
     cross_differential_attention: bool = False
     cross_qk_temperature: bool = False
+    cross_head_gating: bool = False
     multimodal_adaln: bool = False
     kv_lora_rank: int = 0
     cross_kv_lora_rank: int = 0
@@ -200,6 +203,8 @@ class BlueConfig:
             raise ValueError("cross_differential_attention doit être booléen")
         if type(self.cross_qk_temperature) is not bool:
             raise ValueError("cross_qk_temperature doit être booléen")
+        if type(self.cross_head_gating) is not bool:
+            raise ValueError("cross_head_gating doit être booléen")
         if self.cross_differential_attention and (self.d_model // self.n_heads) % 4:
             raise ValueError("cross_differential_attention nécessite d_model / n_heads divisible par 4")
         if type(self.multimodal_adaln) is not bool:
@@ -300,6 +305,10 @@ class BlueConfig:
             raise ValueError("moe_entropy_weight doit être fini et positif ou nul")
         if not math.isfinite(self.moe_router_orthogonality_weight) or self.moe_router_orthogonality_weight < 0:
             raise ValueError("moe_router_orthogonality_weight doit être fini et positif ou nul")
+        if not math.isfinite(self.moe_routed_scaling_factor) or self.moe_routed_scaling_factor <= 0:
+            raise ValueError("moe_routed_scaling_factor doit être fini et strictement positif")
+        if type(self.moe_learnable_scaling) is not bool:
+            raise ValueError("moe_learnable_scaling doit être booléen")
         if self.top1_gate not in ("normalized", "probability"):
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):

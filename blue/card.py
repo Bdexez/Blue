@@ -131,6 +131,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"- **Attention croisée multimodale** : "
         f"{'Differential Cross-Attention' if config.cross_differential_attention else 'Cross-Attention standard'}"
         f"{' + QK-Norm Temp' if config.cross_qk_temperature else ''}"
+        f"{' + Head-Gate & Talking-Heads' if config.cross_head_gating else ''}"
         f"{f' + Latent KV (rang {config.cross_kv_lora_rank})' if config.cross_kv_lora_rank else ''}"
         f"{' + Modulation AdaLN-Zero multimodale' if config.multimodal_adaln else ''} "
         f"vers {config.n_latents} latents "
@@ -150,6 +151,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{' (routeur hyperbolique Poincaré)' if config.moe_router_geometry == 'hyperbolic' else ''}"
         f"{f' (+ {config.moe_null_experts} experts nuls zéro-FLOP)' if config.moe_null_experts else ''}"
         f"{f' + sous-espace partagé (dim={config.moe_shared_latent_dim})' if config.moe_shared_latent_dim else ''}"
+        f"{f' + échelle routée ({config.moe_routed_scaling_factor}x' + (', apprise' if config.moe_learnable_scaling else '') + ')' if (config.moe_routed_scaling_factor != 1.0 or config.moe_learnable_scaling) else ''}"
         f"{' + porte partagée' if config.shared_expert_gate else ''}"
         f"{f' + équilibrage sans perte auxiliaire (rate={config.router_bias_update_rate})' if config.router_bias_update_rate > 0 else ''}"
         f"{f' + Causal Mixture-of-Depths (capacité={config.depth_routing_capacity})' if config.depth_routing_capacity < 1.0 else ''}.",

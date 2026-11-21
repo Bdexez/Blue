@@ -218,6 +218,8 @@ def main(argv=None):
                           help="Taux d'adaptation Mirostat v2 (défaut : 0.1)")
     generate.add_argument("--eta-cutoff", type=float, default=0.0,
                           help="Seuil adaptatif d'entropie Eta-Sampling dans [0, 1[ (défaut : 0.0)")
+    generate.add_argument("--tfs-z", type=float, default=1.0,
+                          help="Seuil de courbure Tail-Free Sampling dans ]0, 1] (défaut : 1.0)")
     generate.add_argument("--device", default="cpu")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
@@ -493,7 +495,8 @@ def main(argv=None):
                                    context_guidance_scale=args.context_guidance_scale,
                                    mirostat_tau=args.mirostat_tau,
                                    mirostat_eta=args.mirostat_eta,
-                                   eta_cutoff=args.eta_cutoff)
+                                   eta_cutoff=args.eta_cutoff,
+                                   tfs_z=args.tfs_z)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
         if args.max_new_tokens < 0:
