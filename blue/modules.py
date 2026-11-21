@@ -190,8 +190,9 @@ class LayerCache:
     ttt_state: torch.Tensor | None = None
 
 
-def _sdpa(q, k, v, *, attn_mask=None, is_causal=False, dropout_p=0.0, enable_gqa=False, softcap=0.0):
-    if softcap <= 0.0:
+def _sdpa(q, k, v, *, attn_mask=None, is_causal=False, dropout_p=0.0,
+          enable_gqa=False, softcap=0.0, forget_bias=None):
+    if softcap <= 0.0 and forget_bias is None:
         return F.scaled_dot_product_attention(
             q, k, v, attn_mask=attn_mask, is_causal=is_causal,
             dropout_p=dropout_p, enable_gqa=enable_gqa,
@@ -203,7 +204,10 @@ def _sdpa(q, k, v, *, attn_mask=None, is_causal=False, dropout_p=0.0, enable_gqa
     with torch.autocast(device_type=q.device.type, enabled=False):
         scale = 1.0 / math.sqrt(q.size(-1))
         scores = torch.matmul(q.float(), k.float().transpose(-2, -1)) * scale
-        scores = softcap * torch.tanh(scores / softcap)
+        if softcap > 0.0:
+            scores = softcap * torch.tanh(scores / softcap)
+        if forget_bias is not None:
+            scores = scores + forget_bias
         if is_causal:
             t_q, t_k = scores.size(-2), scores.size(-1)
             causal_mask = torch.tril(torch.ones((t_q, t_k), device=q.device, dtype=torch.bool),
@@ -308,6 +312,12 @@ class GroupedQueryAttention(nn.Module):
             self.pos_temp_alpha = nn.Parameter(torch.zeros(1, self.n_heads, 1, 1))
         else:
             self.pos_temp_alpha = None
+        self.forgetting = config.forgetting_attention and causal
+        if self.forgetting:
+            self.forget_proj = nn.Linear(config.d_model, self.n_heads, bias=True)
+            self.forget_slopes = nn.Parameter(torch.zeros(1, self.n_heads, 1, 1))
+        else:
+            self.forget_proj = self.forget_slopes = None
         self.reset_sink_parameters()
 
     def reset_sink_parameters(self):
@@ -321,6 +331,12 @@ class GroupedQueryAttention(nn.Module):
         if self.pos_temp_alpha is not None:
             with torch.no_grad():
                 self.pos_temp_alpha.zero_()
+        if self.forget_proj is not None:
+            with torch.no_grad():
+                self.forget_proj.bias.fill_(-1.0)
+                idx = torch.arange(1, self.n_heads + 1, dtype=torch.float32, device=self.forget_slopes.device)
+                slopes = 2.0 ** (-4.0 * idx / self.n_heads)
+                self.forget_slopes.copy_(torch.log(torch.expm1(slopes)).view(1, self.n_heads, 1, 1))
         if self.nsa is not None:
             self.nsa.reset_nsa_parameters()
 
@@ -410,8 +426,8 @@ class GroupedQueryAttention(nn.Module):
         start_pos = 0 if cache is None else cache.start_pos
         # Les positions RoPE restent absolues après l'éviction des anciennes clés.
         inside_window = not self.window or offset + t - 1 - start_pos < self.window
-        mask, is_causal = None, False
-        if (self.attention_sinks == 0 and bool(key_valid.all()) and inside_window
+        mask, is_causal, forget_bias = None, False, None
+        if (self.attention_sinks == 0 and not self.forgetting and bool(key_valid.all()) and inside_window
                 and (not self.causal or t == 1 or offset == 0)):
             is_causal = self.causal and t > 1
         else:
@@ -426,6 +442,14 @@ class GroupedQueryAttention(nn.Module):
             if self.attention_sinks > 0:
                 sink_mask = torch.ones((b, 1, t, self.attention_sinks), dtype=torch.bool, device=x.device)
                 mask = torch.cat((sink_mask, mask), dim=-1)
+            if self.forgetting:
+                with torch.autocast(device_type=x.device.type, enabled=False):
+                    dist_log = torch.log1p((query_pos[:, None] - key_pos[None, :]).clamp_min(0).float())
+                    gate = torch.sigmoid(self.forget_proj(x).float()).transpose(1, 2).unsqueeze(-1)
+                    slope = F.softplus(self.forget_slopes.float())
+                    forget_bias = -(gate * slope * dist_log[None, None, :, :])
+                    if self.attention_sinks > 0:
+                        forget_bias = F.pad(forget_bias, (self.attention_sinks, 0), value=0.0)
 
         dropout_p = self.dropout if self.training else 0.0
         sc = self.attn_logit_softcap
@@ -446,8 +470,8 @@ class GroupedQueryAttention(nn.Module):
                     sk1, sk2 = self.sink_k.to(k1_all.dtype).expand(b, -1, -1, -1).chunk(2, dim=-1)
                     k1_all = torch.cat((sk1, k1_all), dim=-2)
                     k2_all = torch.cat((sk2, k2_all), dim=-2)
-                a1 = _sdpa(q1, k1_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, softcap=sc)
-                a2 = _sdpa(q2, k2_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, softcap=sc)
+                a1 = _sdpa(q1, k1_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, softcap=sc, forget_bias=forget_bias)
+                a2 = _sdpa(q2, k2_all, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, softcap=sc, forget_bias=forget_bias)
                 lam = self._compute_differential_lambda(x.device, a1.dtype)
                 y = self.sub_norm(a1 - lam * a2) * (1.0 - self.lambda_init)
             else:
@@ -456,7 +480,7 @@ class GroupedQueryAttention(nn.Module):
                 k_nsa_src, v_nsa_src, q_nsa_src = k_attn, v_attn[:, :, self.attention_sinks:] if self.sink_v is not None else v_attn, q
                 if self.sink_k is not None:
                     k_attn = torch.cat((self.sink_k.to(k_attn.dtype).expand(b, -1, -1, -1), k_attn), dim=-2)
-                y = _sdpa(q, k_attn, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, softcap=sc)
+                y = _sdpa(q, k_attn, v_attn, attn_mask=mask, is_causal=is_causal, dropout_p=dropout_p, softcap=sc, forget_bias=forget_bias)
         else:
             gqa = self.n_heads != self.n_kv_heads
             v_attn = cache_v
@@ -471,11 +495,11 @@ class GroupedQueryAttention(nn.Module):
                     k2_all = torch.cat((self.k_norm(sk2), k2_all), dim=-2)
                 a1 = _sdpa(
                     q1, k1_all, v_attn, attn_mask=mask, is_causal=is_causal,
-                    dropout_p=dropout_p, enable_gqa=gqa, softcap=sc,
+                    dropout_p=dropout_p, enable_gqa=gqa, softcap=sc, forget_bias=forget_bias,
                 )
                 a2 = _sdpa(
                     q2, k2_all, v_attn, attn_mask=mask, is_causal=is_causal,
-                    dropout_p=dropout_p, enable_gqa=gqa, softcap=sc,
+                    dropout_p=dropout_p, enable_gqa=gqa, softcap=sc, forget_bias=forget_bias,
                 )
                 lam = self._compute_differential_lambda(x.device, a1.dtype)
                 y = self.sub_norm(a1 - lam * a2) * (1.0 - self.lambda_init)
@@ -486,7 +510,7 @@ class GroupedQueryAttention(nn.Module):
                     k_attn = torch.cat((self.k_norm(self.sink_k.to(k_attn.dtype).expand(b, -1, -1, -1)), k_attn), dim=-2)
                 y = _sdpa(
                     q, k_attn, v_attn, attn_mask=mask, is_causal=is_causal,
-                    dropout_p=dropout_p, enable_gqa=gqa, softcap=sc,
+                    dropout_p=dropout_p, enable_gqa=gqa, softcap=sc, forget_bias=forget_bias,
                 )
         if self.nsa is not None:
             y = y + self.nsa(q_nsa_src, k_nsa_src, v_nsa_src, key_valid, offset=offset, start_pos=start_pos)
@@ -627,13 +651,18 @@ class SparseMoE(nn.Module):
             self.register_buffer("expert_bias", torch.zeros(config.n_experts, dtype=torch.float32))
         else:
             self.expert_bias = None
+        self.router_log_temp = nn.Parameter(torch.zeros(())) if config.moe_router_temperature else None
         self.last_null_fraction: float = 0.0
+        self.last_router_entropy: torch.Tensor | None = None
 
     def reset_moe_parameters(self, n_layers: int):
         if self.latent_expert_mod is not None:
             with torch.no_grad():
                 nn.init.normal_(self.latent_expert_mod, mean=1.0, std=0.02)
                 nn.init.normal_(self.latent_up.weight, std=0.02 / math.sqrt(2 * n_layers))
+        if self.router_log_temp is not None:
+            with torch.no_grad():
+                self.router_log_temp.zero_()
 
     @torch.no_grad()
     def update_expert_bias(self, usage: torch.Tensor):
@@ -652,6 +681,7 @@ class SparseMoE(nn.Module):
         if tokens.size(0) == 0:
             zero = x.sum() * 0
             self.last_null_fraction = 0.0
+            self.last_router_entropy = zero
             return torch.zeros_like(x), zero, zero, x.new_zeros(self.n_experts)
         # Router en fp32 pour éviter la saturation en bf16/fp16.
         with torch.autocast(device_type=tokens.device.type, enabled=False):
@@ -662,7 +692,12 @@ class SparseMoE(nn.Module):
                 scores = -poincare_pairwise_distance(tok_h, exp_h, self.router_curvature)
             else:
                 scores = F.linear(tokens.float(), self.router.weight.float())
+            if self.router_log_temp is not None:
+                inv_temp = torch.exp(-self.router_log_temp.float().clamp(-2.0, 2.0))
+                scores = scores * inv_temp
             probs = scores.softmax(-1)
+            log_probs = scores.log_softmax(-1)
+            self.last_router_entropy = -(probs * log_probs).sum(-1).mean() / math.log(max(self.total_slots, 2))
             if self.expert_bias is not None:
                 bias = (F.pad(self.expert_bias.float(), (0, self.n_null))
                         if self.n_null > 0 else self.expert_bias.float())
@@ -746,6 +781,10 @@ class TemporalEncoder(nn.Module):
                          if config.temporal_spectral_mixing else None)
         self.wavelet = (HaarWaveletMixer(config.d_model, norm_cls=RMSNorm, norm_eps=config.norm_eps)
                         if config.temporal_wavelet_mixing else None)
+        self.freq_wavelet_gate = (
+            nn.Parameter(torch.zeros(config.d_model))
+            if (self.spectral is not None and self.wavelet is not None) else None
+        )
         self.blocks = nn.ModuleList([EncoderBlock(config, i) for i in range(config.temporal_layers)])
         self.norm = RMSNorm(config.d_model, config.norm_eps)
         self.forecast_context = config.forecast_context
@@ -801,10 +840,14 @@ class TemporalEncoder(nn.Module):
             x = x + self.statistics_proj(statistics.to(self.statistics_proj.weight.dtype))[:, None]
         x = x * valid.unsqueeze(-1)
         x = x + self.conv(x, valid)[0]
-        if self.spectral is not None:
-            x = x + self.spectral(x, valid)
-        if self.wavelet is not None:
-            x = x + self.wavelet(x, valid)
+        if self.spectral is not None and self.wavelet is not None:
+            g = torch.sigmoid(self.freq_wavelet_gate).to(x.dtype)
+            x = x + 2.0 * (g * self.spectral(x, valid) + (1.0 - g) * self.wavelet(x, valid))
+        else:
+            if self.spectral is not None:
+                x = x + self.spectral(x, valid)
+            if self.wavelet is not None:
+                x = x + self.wavelet(x, valid)
         for block in self.blocks:
             x = block(x, valid)
         # Connexion temporelle directe : partir de la persistance puis apprendre
