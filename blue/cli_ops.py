@@ -128,6 +128,7 @@ def inspect_config(config):
             "latent_fsq_levels": list(config.latent_fsq_levels),
             "latent_diversity_weight": config.latent_diversity_weight,
             "flow_matching_dim": config.flow_matching_dim,
+            "flow_time_schedule": config.flow_time_schedule,
             "jepa_weight": config.jepa_weight,
             "adaptive_loss_weighting": config.adaptive_loss_weighting,
             "memory_slots": config.memory_slots,

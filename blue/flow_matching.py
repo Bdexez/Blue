@@ -55,6 +55,7 @@ class ConditionalFlowHead(nn.Module):
         d = config.d_model
         self.out_dim = config.flow_matching_dim
         self.cfg_dropout = float(config.flow_cfg_dropout)
+        self.time_schedule = config.flow_time_schedule
         self.time_embed = SinusoidalTimeEmbedding(d)
         self.cond_proj = nn.Linear(d, d, bias=False)
         self.null_cond = nn.Parameter(torch.zeros(1, d)) if self.cfg_dropout > 0.0 else None
@@ -111,7 +112,10 @@ class ConditionalFlowHead(nn.Module):
         if noise is None:
             noise = torch.randn_like(safe_targets, dtype=torch.float32)
         if t is None:
-            t = torch.rand(b, device=targets.device, dtype=torch.float32)
+            if self.time_schedule == "logit_normal":
+                t = torch.sigmoid(torch.randn(b, device=targets.device, dtype=torch.float32))
+            else:
+                t = torch.rand(b, device=targets.device, dtype=torch.float32)
         with torch.autocast(device_type=targets.device.type, enabled=False):
             z0 = noise.float()
             z1 = safe_targets.float()
@@ -124,12 +128,15 @@ class ConditionalFlowHead(nn.Module):
 
     @torch.inference_mode()
     def sample(self, condition: torch.Tensor, *, steps: int = 20, solver: str = "heun",
-               guidance_scale: float = 1.0, generator: torch.Generator | None = None,
+               guidance_scale: float = 1.0, time_grid: str = "linear",
+               generator: torch.Generator | None = None,
                initial_noise: torch.Tensor | None = None) -> torch.Tensor:
         if type(steps) is not int or steps < 1:
             raise ValueError("steps doit être un entier strictement positif")
-        if solver not in ("euler", "heun", "rk4"):
-            raise ValueError("solver doit être euler, heun ou rk4")
+        if solver not in ("euler", "midpoint", "heun", "rk4"):
+            raise ValueError("solver doit être euler, midpoint, heun ou rk4")
+        if time_grid not in ("linear", "cosine"):
+            raise ValueError("time_grid doit être linear ou cosine")
         if not math.isfinite(guidance_scale) or guidance_scale < 0.0:
             raise ValueError("guidance_scale doit être fini et >= 0")
         b = condition.size(0)
@@ -139,20 +146,29 @@ class ConditionalFlowHead(nn.Module):
             z = initial_noise.float().clone()
         else:
             z = torch.randn((b, self.out_dim), device=condition.device, dtype=torch.float32, generator=generator)
-        dt = 1.0 / steps
+        if time_grid == "cosine":
+            grid = [0.5 * (1.0 - math.cos(math.pi * s / steps)) for s in range(steps + 1)]
+        else:
+            grid = [s / steps for s in range(steps + 1)]
         for step in range(steps):
-            t0 = torch.full((b,), step * dt, device=condition.device, dtype=torch.float32)
+            t_start, t_end = grid[step], grid[step + 1]
+            dt = t_end - t_start
+            t0 = torch.full((b,), t_start, device=condition.device, dtype=torch.float32)
             v0 = self.guided_velocity(z.to(condition.dtype), t0, condition, guidance_scale)
             if solver == "euler":
                 z = z + dt * v0
+            elif solver == "midpoint":
+                t_mid = torch.full((b,), 0.5 * (t_start + t_end), device=condition.device, dtype=torch.float32)
+                v_mid = self.guided_velocity((z + 0.5 * dt * v0).to(condition.dtype), t_mid, condition, guidance_scale)
+                z = z + dt * v_mid
             elif solver == "heun":
                 z_pred = z + dt * v0
-                t1 = torch.full((b,), (step + 1) * dt, device=condition.device, dtype=torch.float32)
+                t1 = torch.full((b,), t_end, device=condition.device, dtype=torch.float32)
                 v1 = self.guided_velocity(z_pred.to(condition.dtype), t1, condition, guidance_scale)
                 z = z + 0.5 * dt * (v0 + v1)
             else:
-                t_mid = torch.full((b,), (step + 0.5) * dt, device=condition.device, dtype=torch.float32)
-                t1 = torch.full((b,), (step + 1) * dt, device=condition.device, dtype=torch.float32)
+                t_mid = torch.full((b,), 0.5 * (t_start + t_end), device=condition.device, dtype=torch.float32)
+                t1 = torch.full((b,), t_end, device=condition.device, dtype=torch.float32)
                 k1 = v0
                 k2 = self.guided_velocity((z + 0.5 * dt * k1).to(condition.dtype), t_mid, condition, guidance_scale)
                 k3 = self.guided_velocity((z + 0.5 * dt * k2).to(condition.dtype), t_mid, condition, guidance_scale)
