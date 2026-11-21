@@ -194,6 +194,12 @@ def main(argv=None):
                           help="Activer le décodage parallèle par point fixe de Jacobi (temperature=0)")
     generate.add_argument("--jacobi-window", type=int, default=4,
                           help="Taille de la fenêtre lookahead de Jacobi (défaut : 4)")
+    generate.add_argument("--repetition-penalty", type=float, default=1.0,
+                          help="Pénalité multiplicative de répétition CTRL (> 0, défaut : 1.0)")
+    generate.add_argument("--presence-penalty", type=float, default=0.0,
+                          help="Pénalité additive de présence (défaut : 0.0)")
+    generate.add_argument("--frequency-penalty", type=float, default=0.0,
+                          help="Pénalité additive de fréquence (défaut : 0.0)")
     generate.add_argument("--device", default="cpu")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
@@ -459,7 +465,10 @@ def main(argv=None):
         generated = model.generate(tokens, max_new_tokens=args.max_new_tokens,
                                    temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
                                    reasoning_steps=args.reasoning_steps, speculative=args.speculative,
-                                   jacobi=args.jacobi, jacobi_window=args.jacobi_window)
+                                   jacobi=args.jacobi, jacobi_window=args.jacobi_window,
+                                   repetition_penalty=args.repetition_penalty,
+                                   presence_penalty=args.presence_penalty,
+                                   frequency_penalty=args.frequency_penalty)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
         if args.max_new_tokens < 0:
