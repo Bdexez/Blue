@@ -117,6 +117,8 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{' + Differential Attention' if config.differential_attention else ''}"
         f"{f' + {config.attention_sinks} Attention Sinks' if config.attention_sinks else ''}"
         f"{' + Value Residual (ResFormer)' if config.value_residual else ''}"
+        f"{' + QK Residual' if config.qk_residual else ''}"
+        f"{' + Dynamic Mixer Router' if config.dynamic_mixer_router else ''}"
         f"{f' + Soft-Cap (attn={config.attn_logit_softcap}, lm={config.logit_softcap})' if (config.attn_logit_softcap > 0 or config.logit_softcap > 0) else ''}"
         f"{' + Dynamic Pos-Scale' if config.dynamic_attn_scale else ''}"
         f"{' + Forgetting Gate (FoX)' if config.forgetting_attention else ''}"

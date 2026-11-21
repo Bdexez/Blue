@@ -41,6 +41,8 @@ class BlueConfig:
     cross_kv_lora_rank: int = 0
     attention_sinks: int = 0
     value_residual: bool = False
+    qk_residual: bool = False
+    dynamic_mixer_router: bool = False
     logit_softcap: float = 0.0
     attn_logit_softcap: float = 0.0
     dynamic_attn_scale: bool = False
@@ -123,6 +125,7 @@ class BlueConfig:
     forecast_adapter_missing_gate: bool = False
     forecast_adapter_separate_missing: bool = False
     forecast_tail_power: bool = False
+    forecast_smoothness_weight: float = 0.0
     quantiles: tuple[float, ...] = (0.1, 0.5, 0.9)
     prediction_steps: int = 2
     balance_weight: float = 0.01
@@ -201,6 +204,10 @@ class BlueConfig:
             raise ValueError("attention_sinks doit être un entier positif ou nul")
         if type(self.value_residual) is not bool:
             raise ValueError("value_residual doit être booléen")
+        if type(self.qk_residual) is not bool:
+            raise ValueError("qk_residual doit être booléen")
+        if type(self.dynamic_mixer_router) is not bool:
+            raise ValueError("dynamic_mixer_router doit être booléen")
         if not math.isfinite(self.logit_softcap) or self.logit_softcap < 0:
             raise ValueError("logit_softcap doit être fini et positif ou nul")
         if not math.isfinite(self.attn_logit_softcap) or self.attn_logit_softcap < 0:
@@ -341,7 +348,8 @@ class BlueConfig:
             raise ValueError("Le quantile médian 0.5 est requis")
         for name in ("balance_weight", "router_z_weight", "mtp_weight", "mtp_kl_weight", "alignment_weight",
                      "text_weight", "classification_weight", "forecast_weight",
-                     "flow_matching_weight", "jepa_weight", "latent_diversity_weight"):
+                     "flow_matching_weight", "jepa_weight", "latent_diversity_weight",
+                     "forecast_smoothness_weight"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} doit être fini et positif ou nul")

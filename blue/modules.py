@@ -234,6 +234,8 @@ class GroupedQueryAttention(nn.Module):
         self.kv_lora_rank = config.kv_lora_rank
         self.attention_sinks = config.attention_sinks if causal else 0
         self.value_residual = config.value_residual and causal
+        self.qk_residual = config.qk_residual and causal
+        self.last_q_first: torch.Tensor | None = None
         self.attn_logit_softcap = float(config.attn_logit_softcap)
         self.dynamic_attn_scale = config.dynamic_attn_scale and causal
         self.pos_temp_base = float(max(config.sliding_window, 16))
@@ -300,6 +302,10 @@ class GroupedQueryAttention(nn.Module):
                 self.v_res_gate = nn.Parameter(torch.full((1, self.n_kv_heads, 1, 1), -2.0))
         else:
             self.v_res_gate = None
+        if self.qk_residual and layer_index > 0:
+            self.q_res_gate = nn.Parameter(torch.full((1, 1, config.d_model), -2.0))
+        else:
+            self.q_res_gate = None
         if causal and window == 0 and config.nsa_block_size > 0:
             nsa_key_dim = self.head_dim // 2 if self.differential else self.head_dim
             self.nsa = CompressedBlockSparseAttention(
@@ -334,6 +340,9 @@ class GroupedQueryAttention(nn.Module):
         if self.v_res_gate is not None:
             with torch.no_grad():
                 self.v_res_gate.fill_(-2.0)
+        if self.q_res_gate is not None:
+            with torch.no_grad():
+                self.q_res_gate.fill_(-2.0)
         if self.pos_temp_alpha is not None:
             with torch.no_grad():
                 self.pos_temp_alpha.zero_()
@@ -355,9 +364,18 @@ class GroupedQueryAttention(nn.Module):
             dot2 = (self.lambda_q2.float() * self.lambda_k2.float()).sum().clamp(-10.0, 10.0)
             return (dot1.exp() - dot2.exp() + self.lambda_init).to(dtype)
 
-    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None):
+    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None, q0=None):
         b, t, _ = x.shape
         v_first = None
+        q_proj = self.q(x)
+        if self.qk_residual:
+            if self.layer_index == 0:
+                self.last_q_first = q_proj
+            elif q0 is not None and self.q_res_gate is not None:
+                lam_q = torch.sigmoid(self.q_res_gate).to(q_proj.dtype)
+                q_proj = (1.0 - lam_q) * q_proj + lam_q * q0.to(q_proj.dtype)
+        else:
+            self.last_q_first = None
         if self.kv_lora_rank > 0:
             c_kv = self.kv_norm(self.kv_down(x)).unsqueeze(1)
             if self.value_residual:
@@ -368,7 +386,7 @@ class GroupedQueryAttention(nn.Module):
                     c_kv = (1.0 - lam_v) * c_kv + lam_v * v0.to(c_kv.dtype)
             if self.differential:
                 sub = self.head_dim // 2
-                q1, q2 = self.q(x).view(b, t, self.n_heads, 2, sub).unbind(3)
+                q1, q2 = q_proj.view(b, t, self.n_heads, 2, sub).unbind(3)
                 q1 = self.q_norm(q1.transpose(1, 2))
                 q2 = self.q_norm(q2.transpose(1, 2))
                 q1 = torch.cat((q1[..., :self.nope_dim], self.rope(q1[..., self.nope_dim:], offset)), dim=-1)
@@ -378,13 +396,13 @@ class GroupedQueryAttention(nn.Module):
                 kr2 = self.rope(self.k_rope_norm(kr2.unsqueeze(1)), offset)
                 k_rope = torch.cat((kr1, kr2), dim=-1)
             else:
-                q = self.q_norm(self.q(x).view(b, t, self.n_heads, self.head_dim).transpose(1, 2))
+                q = self.q_norm(q_proj.view(b, t, self.n_heads, self.head_dim).transpose(1, 2))
                 q = torch.cat((q[..., :self.nope_dim], self.rope(q[..., self.nope_dim:], offset)), dim=-1)
                 k_rope = self.rope(self.k_rope_norm(self.k_rope(x).unsqueeze(1)), offset)
             cache_k, cache_v = c_kv, k_rope
         elif self.differential:
             sub = self.head_dim // 2
-            q1, q2 = self.q(x).view(b, t, self.n_heads, 2, sub).unbind(3)
+            q1, q2 = q_proj.view(b, t, self.n_heads, 2, sub).unbind(3)
             q1 = self.rope(self.q_norm(q1.transpose(1, 2)), offset)
             q2 = self.rope(self.q_norm(q2.transpose(1, 2)), offset)
             k, v = self.kv(x).view(b, t, 2, self.n_kv_heads, self.head_dim).unbind(2)
@@ -400,7 +418,7 @@ class GroupedQueryAttention(nn.Module):
                     v_cur = (1.0 - lam_v) * v_cur + lam_v * v0.to(v_cur.dtype)
             cache_k, cache_v = torch.cat((k1, k2), dim=-1), v_cur
         else:
-            q = self.q(x).view(b, t, self.n_heads, self.head_dim).transpose(1, 2)
+            q = q_proj.view(b, t, self.n_heads, self.head_dim).transpose(1, 2)
             k, v = self.kv(x).view(b, t, 2, self.n_kv_heads, self.head_dim).unbind(2)
             k, v = k.transpose(1, 2), v.transpose(1, 2)
             if self.value_residual:
@@ -995,6 +1013,7 @@ class DecoderBlock(nn.Module):
         self.depth_capacity = config.depth_routing_capacity
         self.depth_router = nn.Linear(config.d_model, 1, bias=True) if config.depth_routing_capacity < 1.0 else None
         self.adaln_mod = nn.Linear(config.d_model, 3 * config.d_model, bias=True) if config.multimodal_adaln else None
+        self.mixer_router = nn.Linear(config.d_model, 4, bias=True) if config.dynamic_mixer_router else None
         self.reset_depth_router()
         self.dropout = nn.Dropout(config.dropout)
         self.residual_streams = config.residual_streams
@@ -1017,26 +1036,33 @@ class DecoderBlock(nn.Module):
             with torch.no_grad():
                 self.adaln_mod.weight.zero_()
                 self.adaln_mod.bias.zero_()
+        if self.mixer_router is not None:
+            with torch.no_grad():
+                self.mixer_router.bias.zero_()
 
-    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None):
+    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None, q0=None):
         if self.hc_attn is not None:
             h_pre, h_post, h_res = self.hc_attn.routing_weights(x)
             h = self.norm1(self.hc_attn.combine_input(x, h_pre))
         else:
             h = self.norm1(x)
         attention, (k, v, key_valid, v_first) = self.attn(
-            h, valid, offset=offset, cache=cache, use_cache=use_cache, v0=v0,
+            h, valid, offset=offset, cache=cache, use_cache=use_cache, v0=v0, q0=q0,
         )
         local, conv_state = self.conv(h, valid, None if cache is None else cache.conv_state)
-        mixed = attention + torch.sigmoid(self.mix_gate) * local
+        if self.mixer_router is not None:
+            m_attn, m_conv, m_ssm, m_ttt = (2.0 * torch.sigmoid(self.mixer_router(h))).to(attention.dtype).chunk(4, dim=-1)
+        else:
+            m_attn = m_conv = m_ssm = m_ttt = 1.0
+        mixed = m_attn * attention + m_conv * (torch.sigmoid(self.mix_gate) * local)
         ssm_state = None
         if self.ssm is not None:
             recurrent, ssm_state = self.ssm(h, valid, None if cache is None else cache.ssm_state)
-            mixed = mixed + torch.sigmoid(self.ssm_gate) * recurrent
+            mixed = mixed + m_ssm * (torch.sigmoid(self.ssm_gate) * recurrent)
         ttt_state = None
         if self.ttt is not None:
             fast_weight_out, ttt_state = self.ttt(h, valid, None if cache is None else cache.ttt_state)
-            mixed = mixed + torch.sigmoid(self.ttt_gate) * fast_weight_out
+            mixed = mixed + m_ttt * (torch.sigmoid(self.ttt_gate) * fast_weight_out)
         if self.hc_attn is not None:
             x = self.hc_attn.update_streams(x, self.dropout(mixed), h_post, h_res)
         else:

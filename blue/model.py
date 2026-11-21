@@ -567,6 +567,7 @@ class Blue(nn.Module):
         for rec_step in range(steps):
             x = self._prepare_reasoning_step(x, initial, valid, rec_step)
             v0 = None
+            q0 = None
             for index, block in enumerate(self.blocks):
                 cache_slot = rec_step * self.config.n_layers + index
                 use_ckpt = (
@@ -575,20 +576,30 @@ class Blue(nn.Module):
                     and (index % self.config.checkpoint_every == 0)
                 )
                 if use_ckpt:
-                    if self.config.value_residual and index == 0:
+                    if index == 0 and (self.config.value_residual or self.config.qk_residual):
                         def run0(hidden, memory, current=block):
                             result = current(hidden, valid, memory)
                             d_loss = result[5] if result[5] is not None else hidden.sum() * 0
                             e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
-                            return result[0], result[1], result[2], result[3], d_loss, result[6], e_loss
-                        x, balance, z_loss, expert_usage, depth_loss, v0, ent_loss = checkpoint(run0, x, latents, use_reentrant=False)
-                    elif self.config.value_residual and v0 is not None:
-                        def run_v(hidden, memory, v_first, current=block):
-                            result = current(hidden, valid, memory, v0=v_first)
+                            v_out = result[6] if self.config.value_residual else hidden.sum() * 0
+                            q_out = current.attn.last_q_first if self.config.qk_residual else hidden.sum() * 0
+                            return result[0], result[1], result[2], result[3], d_loss, v_out, q_out, e_loss
+                        x, balance, z_loss, expert_usage, depth_loss, v_out, q_out, ent_loss = checkpoint(run0, x, latents, use_reentrant=False)
+                        v0 = v_out if self.config.value_residual else None
+                        q0 = q_out if self.config.qk_residual else None
+                    elif (self.config.value_residual and v0 is not None) or (self.config.qk_residual and q0 is not None):
+                        v_arg = v0 if v0 is not None else x.new_zeros(())
+                        q_arg = q0 if q0 is not None else x.new_zeros(())
+                        def run_vq(hidden, memory, v_first, q_first, current=block):
+                            result = current(
+                                hidden, valid, memory,
+                                v0=v_first if self.config.value_residual else None,
+                                q0=q_first if self.config.qk_residual else None,
+                            )
                             d_loss = result[5] if result[5] is not None else hidden.sum() * 0
                             e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
                             return result[0], result[1], result[2], result[3], d_loss, e_loss
-                        x, balance, z_loss, expert_usage, depth_loss, ent_loss = checkpoint(run_v, x, latents, v0, use_reentrant=False)
+                        x, balance, z_loss, expert_usage, depth_loss, ent_loss = checkpoint(run_vq, x, latents, v_arg, q_arg, use_reentrant=False)
                     else:
                         def run(hidden, memory, current=block):
                             result = current(hidden, valid, memory)
@@ -602,12 +613,14 @@ class Blue(nn.Module):
                     result = block(
                         x, valid, latents, offset=offset,
                         cache=None if cache is None else cache.layers[cache_slot],
-                        use_cache=use_cache, v0=v0,
+                        use_cache=use_cache, v0=v0, q0=q0,
                     )
                     if self.config.value_residual and index == 0:
                         x, balance, z_loss, expert_usage, layer_cache, depth_loss, v0 = result
                     else:
                         x, balance, z_loss, expert_usage, layer_cache, depth_loss = result
+                    if self.config.qk_residual and index == 0:
+                        q0 = block.attn.last_q_first
                     ent_loss = block.moe.last_router_entropy
                     if use_cache:
                         next_layers.append(layer_cache)
@@ -916,6 +929,14 @@ class Blue(nn.Module):
         if forecast_targets is not None:
             losses["forecast"] = quantile_pinball_loss(forecast, forecast_targets, c.quantiles)
             total = total + self._weight_task_loss("forecast", c.forecast_weight, losses["forecast"])
+            if c.forecast_smoothness_weight > 0.0 and forecast.size(1) >= 3:
+                with torch.autocast(device_type=forecast.device.type, enabled=False):
+                    f32 = forecast.float()
+                    if scale is not None:
+                        f32 = f32 / scale.float().clamp_min(1e-5)[:, None, :, None]
+                    d2 = f32[:, 2:] - 2.0 * f32[:, 1:-1] + f32[:, :-2]
+                    losses["forecast_smoothness"] = d2.square().mean()
+                total = total + c.forecast_smoothness_weight * losses["forecast_smoothness"]
         if flow_targets is not None:
             losses["flow"] = self.flow_head.loss(flow_targets, forecast_pooled)
             total = total + self._weight_task_loss("flow", c.flow_matching_weight, losses["flow"])
