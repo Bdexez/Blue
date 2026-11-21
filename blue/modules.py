@@ -55,14 +55,46 @@ class RMSNorm(nn.Module):
 
 
 class SwiGLU(nn.Module):
-    def __init__(self, dim, hidden):
+    def __init__(self, dim, hidden, *, kan_degree: int = 0):
         super().__init__()
         self.up_gate = nn.Linear(dim, 2 * hidden, bias=False)
         self.down = nn.Linear(hidden, dim, bias=False)
+        self.kan_degree = kan_degree
+        self.kan_coeffs: nn.Parameter | None = (
+            nn.Parameter(torch.zeros(kan_degree - 1, hidden)) if kan_degree >= 2 else None
+        )
+
+    def enable_kan(self, degree: int):
+        if degree < 2:
+            self.kan_degree = 0
+            self.kan_coeffs = None
+            return
+        self.kan_degree = degree
+        hidden = self.down.in_features
+        if self.kan_coeffs is None or self.kan_coeffs.shape != (degree - 1, hidden):
+            self.kan_coeffs = nn.Parameter(
+                torch.zeros((degree - 1, hidden), device=self.down.weight.device, dtype=self.down.weight.dtype)
+            )
+        else:
+            with torch.no_grad():
+                self.kan_coeffs.zero_()
 
     def forward(self, x):
         gate, up = self.up_gate(x).chunk(2, dim=-1)
-        return self.down(F.silu(gate) * up)
+        act = F.silu(gate)
+        if self.kan_coeffs is not None:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                z = torch.tanh(gate.float())
+                t_prev2 = torch.ones_like(z)
+                t_prev1 = z
+                cheb_sum = torch.zeros_like(z)
+                coeffs = self.kan_coeffs.float()
+                for order in range(2, self.kan_degree + 1):
+                    t_cur = 2.0 * z * t_prev1 - t_prev2
+                    cheb_sum = cheb_sum + t_cur * coeffs[order - 2]
+                    t_prev2, t_prev1 = t_prev1, t_cur
+            act = act + cheb_sum.to(act.dtype)
+        return self.down(act * up)
 
 
 class RotaryEmbedding(nn.Module):

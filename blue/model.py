@@ -132,6 +132,11 @@ class Blue(nn.Module):
             for module in self.modules():
                 if isinstance(module, RMSNorm):
                     module.enable_dyt(0.5)
+        if config.kan_degree >= 2:
+            from .modules import SwiGLU
+            for module in self.modules():
+                if isinstance(module, SwiGLU):
+                    module.enable_kan(config.kan_degree)
         nn.init.zeros_(self.temporal.forecast_skip.weight)
         if self.temporal.statistics_proj is not None:
             nn.init.zeros_(self.temporal.statistics_proj.weight)
