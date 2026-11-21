@@ -318,6 +318,10 @@ class GroupedQueryAttention(nn.Module):
             self.pos_temp_alpha = nn.Parameter(torch.zeros(1, self.n_heads, 1, 1))
         else:
             self.pos_temp_alpha = None
+        if config.qk_norm_temperature and causal:
+            self.qk_log_scale = nn.Parameter(torch.zeros(1, self.n_heads, 1, 1))
+        else:
+            self.qk_log_scale = None
         self.forgetting = config.forgetting_attention and causal
         if self.forgetting:
             self.forget_proj = nn.Linear(config.d_model, self.n_heads, bias=True)
@@ -346,6 +350,9 @@ class GroupedQueryAttention(nn.Module):
         if self.pos_temp_alpha is not None:
             with torch.no_grad():
                 self.pos_temp_alpha.zero_()
+        if self.qk_log_scale is not None:
+            with torch.no_grad():
+                self.qk_log_scale.zero_()
         if self.forget_proj is not None:
             with torch.no_grad():
                 self.forget_proj.bias.fill_(-1.0)
@@ -429,6 +436,15 @@ class GroupedQueryAttention(nn.Module):
                     v = (1.0 - lam_v) * v + lam_v * v0.to(v.dtype)
             q = self.rope(self.q_norm(q), offset)
             cache_k, cache_v = self.rope(self.k_norm(k), offset), v
+
+        if self.qk_log_scale is not None:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                qk_mult = torch.exp(self.qk_log_scale.float().clamp(-2.0, 2.5))
+            if self.differential:
+                q1 = q1 * qk_mult.to(q1.dtype)
+                q2 = q2 * qk_mult.to(q2.dtype)
+            else:
+                q = q * qk_mult.to(q.dtype)
 
         if self.pos_temp_alpha is not None:
             with torch.autocast(device_type=x.device.type, enabled=False):

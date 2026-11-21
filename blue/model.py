@@ -135,6 +135,10 @@ class Blue(nn.Module):
             nn.Sequential(RMSNorm(d), nn.Linear(d, d, bias=False), nn.SiLU())
             for _ in range(config.prediction_steps - 1)
         ])
+        self.mtp_chain_gates = (
+            nn.Parameter(torch.zeros(config.prediction_steps - 2, d))
+            if (config.chained_future_heads and config.prediction_steps > 2) else None
+        )
         self.fusion = nn.Sequential(nn.Linear(2 * d, d), nn.SiLU(), RMSNorm(d))
         if config.head_cross_pool:
             self.head_pool_norm = RMSNorm(d, config.norm_eps)
@@ -222,6 +226,8 @@ class Blue(nn.Module):
             nn.init.zeros_(self.task_log_vars)
         if self.head_pool_gate is not None:
             nn.init.constant_(self.head_pool_gate, 0.1)
+        if self.mtp_chain_gates is not None:
+            nn.init.zeros_(self.mtp_chain_gates)
         if self.episodic_memory is not None:
             self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
@@ -886,9 +892,17 @@ class Blue(nn.Module):
             total = total + self._weight_task_loss("text", c.text_weight, losses["text"])
             mtp_losses, mtp_active = [], []
             mtp_kl_losses = []
+            h_mtp_prev = None
             for distance, head in enumerate(self.future_heads, start=2):
+                head_idx = distance - 2
+                if self.mtp_chain_gates is not None and head_idx > 0 and h_mtp_prev is not None:
+                    chain_gate = torch.tanh(self.mtp_chain_gates[head_idx - 1]).to(hidden.dtype)
+                    h_mtp_in = hidden + chain_gate * h_mtp_prev
+                else:
+                    h_mtp_in = hidden
+                h_mtp_prev = head(h_mtp_in)
                 if hidden.size(1) > distance:
-                    future_logits = self._lm_logits(head(hidden[:, :-distance]))
+                    future_logits = self._lm_logits(h_mtp_prev[:, :-distance])
                     future_targets = targets[:, distance:].masked_fill(~valid[:, :-distance], -100)
                     head_loss = masked_cross_entropy(future_logits, future_targets)
                     head_count = (future_targets != -100).sum()
@@ -1108,9 +1122,15 @@ class Blue(nn.Module):
                              frequency_penalty: float = 0.0) -> list[torch.Tensor]:
         drafts = []
         cur_hist = history_ids
-        for head in self.future_heads[:count]:
+        h_prev = None
+        for head_idx, head in enumerate(self.future_heads[:count]):
+            if self.mtp_chain_gates is not None and head_idx > 0 and h_prev is not None:
+                h_in = last_hidden + torch.tanh(self.mtp_chain_gates[head_idx - 1]).to(last_hidden.dtype) * h_prev
+            else:
+                h_in = last_hidden
+            h_prev = head(h_in)
             scores = self._apply_penalties(
-                self._lm_logits(head(last_hidden))[:, -1], cur_hist,
+                self._lm_logits(h_prev)[:, -1], cur_hist,
                 repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
             )
@@ -1128,9 +1148,15 @@ class Blue(nn.Module):
                                  frequency_penalty: float = 0.0):
         drafts, q_probs = [], []
         cur_hist = history_ids
-        for head in self.future_heads[:count]:
+        h_prev = None
+        for head_idx, head in enumerate(self.future_heads[:count]):
+            if self.mtp_chain_gates is not None and head_idx > 0 and h_prev is not None:
+                h_in = last_hidden + torch.tanh(self.mtp_chain_gates[head_idx - 1]).to(last_hidden.dtype) * h_prev
+            else:
+                h_in = last_hidden
+            h_prev = head(h_in)
             penalized = self._apply_penalties(
-                self._lm_logits(head(last_hidden))[:, -1], cur_hist,
+                self._lm_logits(h_prev)[:, -1], cur_hist,
                 repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
             )
@@ -1145,11 +1171,51 @@ class Blue(nn.Module):
                 cur_hist = torch.cat((cur_hist, tok[:, None]), dim=-1)
         return drafts, q_probs
 
+    @staticmethod
+    def _reorder_cache(cache: ModelCache, beam_idx: torch.Tensor) -> ModelCache:
+        def _sel(t):
+            return None if t is None else t.index_select(0, beam_idx)
+
+        layers = [
+            LayerCache(
+                key=_sel(layer.key),
+                value=_sel(layer.value),
+                valid=_sel(layer.valid),
+                conv_state=_sel(layer.conv_state),
+                start_pos=layer.start_pos,
+                context_key=_sel(layer.context_key),
+                context_value=_sel(layer.context_value),
+                ssm_state=_sel(layer.ssm_state),
+                ttt_state=_sel(layer.ttt_state),
+            )
+            for layer in cache.layers
+        ]
+        adapter_ctx = cache.forecast_adapter_context
+        if adapter_ctx is not None:
+            adapter_ctx = ForecastAdapterContext(
+                features=_sel(adapter_ctx.features),
+                missing_gate=_sel(adapter_ctx.missing_gate),
+                scale=_sel(adapter_ctx.scale),
+            )
+        return ModelCache(
+            layers=layers,
+            latents=_sel(cache.latents),
+            offset=cache.offset,
+            series_mean=_sel(cache.series_mean),
+            series_scale=_sel(cache.series_scale),
+            forecast_baseline=_sel(cache.forecast_baseline),
+            forecast_adapter_context=adapter_ctx,
+            episodic_memory=_sel(cache.episodic_memory),
+            ngram_tail=_sel(cache.ngram_tail),
+            ngram_tail_valid=_sel(cache.ngram_tail_valid),
+        )
+
     @torch.inference_mode()
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,
                  top_p=0.95, min_p: float = 0.0, eos_id=2, reasoning_steps: int | None = None,
                  speculative: bool = False, jacobi: bool = False,
-                 jacobi_window: int = 4, repetition_penalty: float = 1.0,
+                 jacobi_window: int = 4, beam_width: int = 1, length_penalty: float = 1.0,
+                 repetition_penalty: float = 1.0,
                  presence_penalty: float = 0.0, frequency_penalty: float = 0.0,
                  **context):
         if input_ids.ndim != 2 or input_ids.size(1) < 1:
@@ -1168,6 +1234,10 @@ class Blue(nn.Module):
             raise ValueError("jacobi doit être booléen")
         if type(jacobi_window) is not int or jacobi_window < 1:
             raise ValueError("jacobi_window doit être un entier >= 1")
+        if type(beam_width) is not int or beam_width < 1:
+            raise ValueError("beam_width doit être un entier >= 1")
+        if not math.isfinite(length_penalty) or length_penalty < 0:
+            raise ValueError("length_penalty doit être fini et >= 0")
         if jacobi and temperature != 0:
             raise ValueError("Le décodage par point fixe de Jacobi nécessite temperature=0")
         if not math.isfinite(repetition_penalty) or repetition_penalty <= 0:
@@ -1191,6 +1261,12 @@ class Blue(nn.Module):
             frequency_penalty=float(frequency_penalty),
         )
         try:
+            if beam_width > 1 and input_ids.size(0) == 1 and max_new_tokens > 0:
+                return self._generate_beam_search(
+                    input_ids, max_new_tokens=max_new_tokens, beam_width=beam_width,
+                    length_penalty=length_penalty, eos_id=eos_id,
+                    reasoning_steps=reasoning_steps, **penalties, **context,
+                )
             if jacobi and input_ids.size(0) == 1 and max_new_tokens > 0:
                 return self._generate_jacobi_greedy(
                     input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id,
@@ -1497,3 +1573,56 @@ class Blue(nn.Module):
                 cache = sync_out.cache
                 last_hidden = sync_out.last_hidden
         return result
+
+    def _generate_beam_search(self, input_ids, *, max_new_tokens, beam_width, length_penalty,
+                              eos_id, reasoning_steps, repetition_penalty=1.0,
+                              presence_penalty=0.0, frequency_penalty=0.0, **context):
+        """Recherche de faisceau exacte exploitant le cache KV/SSM/TTT/Mémoire/NGram réordonné à chaque pas."""
+        penalties = dict(
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+        )
+        device = input_ids.device
+        vocab_size = self.config.vocab_size
+        output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
+        scores = self._apply_penalties(output.logits[:, -1], input_ids, **penalties)
+        scores[:, [0, 1, 3]] = -torch.inf
+        log_probs = scores.log_softmax(-1)
+        top_lp, top_tok = log_probs[0].topk(beam_width, dim=-1)
+        seqs = torch.cat((input_ids.expand(beam_width, -1), top_tok[:, None]), dim=-1)
+        beam_scores = top_lp
+        beam_lengths = torch.ones(beam_width, dtype=torch.long, device=device)
+        finished = (
+            (top_tok == eos_id) if eos_id is not None
+            else torch.zeros(beam_width, dtype=torch.bool, device=device)
+        )
+        cache = self._reorder_cache(
+            output.cache, torch.zeros(beam_width, dtype=torch.long, device=device),
+        )
+        for _ in range(1, max_new_tokens):
+            if eos_id is not None and bool(finished.all()):
+                break
+            out = self(seqs[:, -1:], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+            next_cache = out.cache
+            step_scores = self._apply_penalties(out.logits[:, -1], seqs, **penalties)
+            step_scores[:, [0, 1, 3]] = -torch.inf
+            step_lp = step_scores.log_softmax(-1)
+            if eos_id is not None and bool(finished.any()):
+                eos_row = torch.full_like(step_lp[0], -torch.inf)
+                eos_row[eos_id] = 0.0
+                step_lp = torch.where(finished[:, None], eos_row[None, :], step_lp)
+            cand_scores = beam_scores[:, None] + step_lp
+            top_scores, flat_idx = cand_scores.view(-1).topk(beam_width, dim=-1)
+            parent_beams = flat_idx // vocab_size
+            next_tokens = flat_idx % vocab_size
+            prev_fin = finished.index_select(0, parent_beams)
+            seqs = torch.cat((seqs.index_select(0, parent_beams), next_tokens[:, None]), dim=-1)
+            beam_scores = top_scores
+            beam_lengths = beam_lengths.index_select(0, parent_beams) + (~prev_fin).long()
+            if eos_id is not None:
+                finished = prev_fin | (next_tokens == eos_id)
+            cache = self._reorder_cache(next_cache, parent_beams)
+        norm_factor = ((5.0 + beam_lengths.float()) / 6.0) ** length_penalty
+        best_beam = int((beam_scores / norm_factor).argmax(dim=0).item())
+        return seqs[best_beam:best_beam + 1]
