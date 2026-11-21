@@ -202,24 +202,27 @@ def main(argv=None):
     embed.add_argument("--batch-size", type=int, default=4)
     embed.add_argument("--device", default="cpu")
     embed.add_argument("--amp", choices=("none", "bf16", "fp16"), default="none")
-    search = commands.add_parser("search-embeddings", help="Rechercher les voisins cosinus exacts de vecteurs")
+    _all_mods = ("text", "image", "series", "audio", "graph", "pointcloud", "tabular", "video")
+    search = commands.add_parser("search-embeddings", help="Rechercher les voisins exacts de vecteurs (cosinus ou hyperbolique)")
     search.add_argument("--queries", required=True)
     search.add_argument("--candidates", required=True)
-    search.add_argument("--query-modality", choices=("text", "image", "series"), required=True)
-    search.add_argument("--candidate-modality", choices=("text", "image", "series"), required=True)
+    search.add_argument("--query-modality", choices=_all_mods, required=True)
+    search.add_argument("--candidate-modality", choices=_all_mods, required=True)
     search.add_argument("--top-k", type=int, default=5)
     search.add_argument("--query-batch-size", type=int, default=16)
     search.add_argument("--candidate-batch-size", type=int, default=1024)
     search.add_argument("--exclude-self", action="store_true")
     search.add_argument("--skip-missing", action="store_true", help="Ignorer les lignes sans la modalité choisie")
+    search.add_argument("--geometry", choices=("euclidean", "hyperbolic"), default="euclidean")
+    search.add_argument("--curvature", type=float, default=1.0)
     search.add_argument("--output", help="Fichier JSONL des voisins ; sinon stdout")
     relevance = commands.add_parser("prepare-class-relevance", help="Construire les pertinences par égalité de classe")
     relevance.add_argument("--query-data", required=True)
     relevance.add_argument("--candidate-data", required=True)
     relevance.add_argument("--queries", required=True, help="Vecteurs des requêtes")
     relevance.add_argument("--candidates", required=True, help="Vecteurs des candidats")
-    relevance.add_argument("--query-modality", choices=("text", "image", "series"), required=True)
-    relevance.add_argument("--candidate-modality", choices=("text", "image", "series"), required=True)
+    relevance.add_argument("--query-modality", choices=_all_mods, required=True)
+    relevance.add_argument("--candidate-modality", choices=_all_mods, required=True)
     relevance.add_argument("--exclude-self", action="store_true")
     relevance.add_argument("--batch-size", type=int, default=1024, help="Taille de lecture des vecteurs")
     relevance.add_argument("--output", help="Fichier JSONL de pertinence ; sinon stdout")
@@ -227,13 +230,15 @@ def main(argv=None):
     retrieval.add_argument("--queries", required=True)
     retrieval.add_argument("--candidates", required=True)
     retrieval.add_argument("--relevance", required=True)
-    retrieval.add_argument("--query-modality", choices=("text", "image", "series"), required=True)
-    retrieval.add_argument("--candidate-modality", choices=("text", "image", "series"), required=True)
+    retrieval.add_argument("--query-modality", choices=_all_mods, required=True)
+    retrieval.add_argument("--candidate-modality", choices=_all_mods, required=True)
     retrieval.add_argument("--top-k", type=int, default=5)
     retrieval.add_argument("--query-batch-size", type=int, default=16)
     retrieval.add_argument("--candidate-batch-size", type=int, default=1024)
     retrieval.add_argument("--exclude-self", action="store_true")
     retrieval.add_argument("--skip-missing", action="store_true", help="Ignorer les lignes sans la modalité choisie")
+    retrieval.add_argument("--geometry", choices=("euclidean", "hyperbolic"), default="euclidean")
+    retrieval.add_argument("--curvature", type=float, default=1.0)
     retrieval.add_argument("--output", help="Rapport JSON ; sinon stdout")
     export = commands.add_parser("export", help="Exporter les poids sans l'optimiseur pour l'inférence")
     export.add_argument("--checkpoint", required=True)
@@ -595,7 +600,8 @@ def main(argv=None):
             for row in search_embeddings(args.queries, args.candidates, args.query_modality, args.candidate_modality,
                                          top_k=args.top_k, query_batch_size=args.query_batch_size,
                                          candidate_batch_size=args.candidate_batch_size, exclude_self=args.exclude_self,
-                                         skip_missing=args.skip_missing):
+                                         skip_missing=args.skip_missing, geometry=args.geometry,
+                                         curvature=args.curvature):
                 stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
                 count += 1
         if args.output:
@@ -626,7 +632,8 @@ def main(argv=None):
                                     args.query_modality, args.candidate_modality, top_k=args.top_k,
                                     query_batch_size=args.query_batch_size,
                                     candidate_batch_size=args.candidate_batch_size, exclude_self=args.exclude_self,
-                                    skip_missing=args.skip_missing)
+                                    skip_missing=args.skip_missing, geometry=args.geometry,
+                                    curvature=args.curvature)
         with prediction_stream(args.output) as stream:
             stream.write(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
         if args.output:

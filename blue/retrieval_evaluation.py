@@ -12,7 +12,7 @@ from .embedding_search import EmbeddingFile, search_embeddings
 
 def evaluate_retrieval(query_path, candidate_path, relevance_path, query_modality, candidate_modality, *,
                        top_k=5, query_batch_size=16, candidate_batch_size=1024, exclude_self=False,
-                       skip_missing=False):
+                       skip_missing=False, geometry="euclidean", curvature=1.0):
     """Évaluer en macro-moyenne les requêtes comportant au moins un candidat pertinent."""
     if min(top_k, query_batch_size, candidate_batch_size) < 1:
         raise ValueError('top_k et les tailles de lot doivent être positifs')
@@ -42,7 +42,7 @@ def evaluate_retrieval(query_path, candidate_path, relevance_path, query_modalit
     ranking = iter(search_embeddings(query_path, candidate_path, query_modality, candidate_modality,
                                      top_k=top_k, query_batch_size=query_batch_size,
                                      candidate_batch_size=candidate_batch_size, exclude_self=exclude_self,
-                                     skip_missing=skip_missing))
+                                     skip_missing=skip_missing, geometry=geometry, curvature=curvature))
     with path.open('rb') as stream:
         if file_identity(os.fstat(stream.fileno())) != identity:
             raise ValueError(f'Fichier de pertinence modifié : {path}')
