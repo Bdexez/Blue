@@ -146,6 +146,8 @@ def build_optimizer(model, *, name: str = "adamw", lr: float, weight_decay: floa
         excluded_muon_ids.add(id(model.jepa.target_embed.weight))
     if getattr(model, "flow_head", None) is not None and model.flow_head.null_cond is not None:
         excluded_muon_ids.add(id(model.flow_head.null_cond))
+    if getattr(model, "head_pool_gate", None) is not None:
+        excluded_muon_ids.add(id(model.head_pool_gate))
     for module in model.modules():
         if getattr(module, "kan_coeffs", None) is not None:
             excluded_muon_ids.add(id(module.kan_coeffs))
