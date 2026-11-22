@@ -1065,6 +1065,7 @@ class Blue(nn.Module):
 
     @torch.inference_mode()
     def sample_flow(self, *, steps: int = 20, solver: str = "heun", guidance_scale: float = 1.0,
+                    time_grid: str = "linear",
                     generator: torch.Generator | None = None,
                     initial_noise: torch.Tensor | None = None, reasoning_steps: int | None = None,
                     **modalities) -> torch.Tensor:
@@ -1083,7 +1084,7 @@ class Blue(nn.Module):
             finally:
                 hook.remove()
             return self.flow_head.sample(captured["condition"], steps=steps, solver=solver,
-                                         guidance_scale=guidance_scale,
+                                         guidance_scale=guidance_scale, time_grid=time_grid,
                                          generator=generator, initial_noise=initial_noise)
         finally:
             self.train(was_training)
