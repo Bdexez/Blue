@@ -22,6 +22,7 @@ class BlueConfig:
     moe_router_geometry: str = "euclidean"
     moe_router_temperature: bool = False
     moe_entropy_weight: float = 0.0
+    moe_router_orthogonality_weight: float = 0.0
     shared_expert_gate: bool = False
     router_bias_update_rate: float = 0.0
     depth_routing_capacity: float = 1.0
@@ -50,6 +51,7 @@ class BlueConfig:
     dynamic_attn_scale: bool = False
     forgetting_attention: bool = False
     gated_value_attention: bool = False
+    talking_heads: bool = False
     nsa_block_size: int = 0
     nsa_top_k: int = 4
     ssm_state_dim: int = 0
@@ -226,6 +228,8 @@ class BlueConfig:
             raise ValueError("forgetting_attention doit être booléen")
         if type(self.gated_value_attention) is not bool:
             raise ValueError("gated_value_attention doit être booléen")
+        if type(self.talking_heads) is not bool:
+            raise ValueError("talking_heads doit être booléen")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
             raise ValueError("nsa_block_size doit être 0 ou un entier >= 2")
         if type(self.nsa_top_k) is not int or self.nsa_top_k < 1:
@@ -282,6 +286,8 @@ class BlueConfig:
             raise ValueError("moe_router_temperature doit être booléen")
         if not math.isfinite(self.moe_entropy_weight) or self.moe_entropy_weight < 0:
             raise ValueError("moe_entropy_weight doit être fini et positif ou nul")
+        if not math.isfinite(self.moe_router_orthogonality_weight) or self.moe_router_orthogonality_weight < 0:
+            raise ValueError("moe_router_orthogonality_weight doit être fini et positif ou nul")
         if self.top1_gate not in ("normalized", "probability"):
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):

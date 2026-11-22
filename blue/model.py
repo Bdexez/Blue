@@ -881,6 +881,18 @@ class Blue(nn.Module):
         if c.moe_entropy_weight > 0.0 and entropy_losses:
             losses["router_entropy"] = torch.stack(entropy_losses).mean()
             total = total + c.moe_entropy_weight * losses["router_entropy"]
+        if c.moe_router_orthogonality_weight > 0.0 and c.n_experts > 1:
+            with torch.autocast(device_type=hidden.device.type, enabled=False):
+                eye_e = torch.eye(c.n_experts, device=hidden.device, dtype=torch.bool)
+                ortho_terms = []
+                for block in self.blocks:
+                    w_exp = F.normalize(block.moe.router.weight[:c.n_experts].float(), p=2, dim=-1, eps=1e-6)
+                    gram_e = torch.matmul(w_exp, w_exp.t())
+                    ortho_terms.append(
+                        gram_e.masked_fill(eye_e, 0.0).square().sum() / (c.n_experts * (c.n_experts - 1))
+                    )
+                losses["router_orthogonality"] = torch.stack(ortho_terms).mean()
+            total = total + c.moe_router_orthogonality_weight * losses["router_orthogonality"]
         if depth_losses:
             losses["depth_budget"] = torch.stack(depth_losses).mean()
             total = total + c.depth_budget_weight * losses["depth_budget"]
@@ -1244,7 +1256,7 @@ class Blue(nn.Module):
                  jacobi_window: int = 4, beam_width: int = 1, length_penalty: float = 1.0,
                  repetition_penalty: float = 1.0,
                  presence_penalty: float = 0.0, frequency_penalty: float = 0.0,
-                 no_repeat_ngram_size: int = 0,
+                 no_repeat_ngram_size: int = 0, context_guidance_scale: float = 1.0,
                  **context):
         if input_ids.ndim != 2 or input_ids.size(1) < 1:
             raise ValueError("Le prompt doit avoir la forme [B, T] avec T > 0")
@@ -1274,6 +1286,8 @@ class Blue(nn.Module):
             raise ValueError("presence_penalty et frequency_penalty doivent être finis")
         if type(no_repeat_ngram_size) is not int or no_repeat_ngram_size < 0:
             raise ValueError("no_repeat_ngram_size doit être un entier positif ou nul")
+        if not math.isfinite(context_guidance_scale):
+            raise ValueError("context_guidance_scale doit être fini")
         if input_ids.size(1) + max_new_tokens > self.config.max_seq_len:
             raise ValueError("Prompt + génération dépassent max_seq_len")
         if eos_id is not None and (type(eos_id) is not int or not 0 <= eos_id < self.config.vocab_size
@@ -1319,12 +1333,27 @@ class Blue(nn.Module):
             result = input_ids
             finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=input_ids.device)
             cache = None
+            uncond_cache = None
+            has_mm_ctx = any(
+                context.get(k) is not None
+                for k in ("images", "series", "audio", "graph_nodes", "points", "tabular_num", "video")
+            )
+            use_cfg = context_guidance_scale != 1.0 and has_mm_ctx
+            uncond_ctx = {"attention_mask": context["attention_mask"]} if "attention_mask" in context else {}
             for step in range(max_new_tokens):
-                output = self(input_ids if step == 0 else result[:, -1:],
-                              cache=cache, use_cache=True, reasoning_steps=reasoning_steps,
+                cur_in = input_ids if step == 0 else result[:, -1:]
+                output = self(cur_in, cache=cache, use_cache=True, reasoning_steps=reasoning_steps,
                               **(context if step == 0 else {}))
                 cache = output.cache
-                scores = self._apply_penalties(output.logits[:, -1], result, **penalties)
+                raw_logits = output.logits[:, -1]
+                if use_cfg:
+                    uncond_out = self(cur_in, cache=uncond_cache, use_cache=True,
+                                      reasoning_steps=reasoning_steps,
+                                      **(uncond_ctx if step == 0 else {}))
+                    uncond_cache = uncond_out.cache
+                    u_logits = uncond_out.logits[:, -1].float()
+                    raw_logits = u_logits + float(context_guidance_scale) * (raw_logits.float() - u_logits)
+                scores = self._apply_penalties(raw_logits, result, **penalties)
                 # Les tokens de contrôle réservés ne sont pas des caractères générables.
                 scores[:, [0, 1, 3]] = -torch.inf
                 if temperature == 0:
