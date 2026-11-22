@@ -33,7 +33,7 @@ class _GatherWithGrad(torch.autograd.Function):
 
 def _rectangular_alignment(gathered, metadata, first, second, temperature, mode, *,
                            cross_ids, cross_classes, has_ids, num_modalities=3,
-                           geometry="euclidean", curvature=1.0):
+                           geometry="euclidean", curvature=1.0, margin=0.0):
     """Aligner les vues ayant un partenaire selon les règles activées."""
     left_rows = (metadata[:, first] != 0).nonzero(as_tuple=True)[0]
     right_rows = (metadata[:, second] != 0).nonzero(as_tuple=True)[0]
@@ -67,6 +67,8 @@ def _rectangular_alignment(gathered, metadata, first, second, temperature, mode,
             scores = (-poincare_pairwise_distance(left, right, curvature) / temperature).float()
         else:
             scores = (left @ right.T / temperature).float()
+        if margin != 0.0:
+            scores = scores - (margin / temperature) * positive.to(scores.dtype)
         forward_weights = positive.float() / positive.sum(-1, keepdim=True)
         backward_weights = positive.T.float() / positive.T.sum(-1, keepdim=True)
         forward = -(forward_weights * F.log_softmax(scores, dim=-1)).sum(-1).mean()
@@ -76,7 +78,7 @@ def _rectangular_alignment(gathered, metadata, first, second, temperature, mode,
 
 def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, group, text_view="joint", sample_ids=None,
                                cross_rank_views=False, cross_class_views=False, num_modalities=3,
-                               geometry="euclidean", curvature=1.0):
+                               geometry="euclidean", curvature=1.0, margin=0.0):
     """Calculer les paires globales tout en conservant les gradients locaux.
 
     Les vecteurs, déjà normalisés, sont indexés par modalité (0..num_modalities-1).
@@ -177,7 +179,7 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
                                               cross_ids=has_ids and cross_rank_views,
                                               cross_classes=cross_class_views, has_ids=has_ids,
                                               num_modalities=num_modalities,
-                                              geometry=geometry, curvature=curvature)
+                                              geometry=geometry, curvature=curvature, margin=margin)
                 if loss is not None:
                     losses.append(loss)
                 continue
@@ -192,7 +194,9 @@ def distributed_alignment_loss(vectors, class_labels, temperature, mode, *, grou
                     similarity = left @ right.T / temperature
             labels = all_metadata[valid, label_col] if mode == "class" else None
             identities = all_metadata[valid, id_col] if has_ids else None
-            losses.append(symmetric_contrastive_loss(similarity, labels, sample_ids=identities))
+            losses.append(symmetric_contrastive_loss(
+                similarity, labels, sample_ids=identities, margin_scaled=margin / temperature,
+            ))
     # Lien explicite au gather même sans paire : tous les rangs participent
     # alors au backward de la collective avec un gradient nul.
     return torch.stack(losses).mean() + gathered.sum() * 0 if losses else gathered.sum() * 0

@@ -189,6 +189,8 @@ def main(argv=None):
     generate.add_argument("--top-p", type=float, default=0.95)
     generate.add_argument("--min-p", type=float, default=0.0,
                           help="Seuil relatif Min-P dans [0, 1[ (défaut : 0.0)")
+    generate.add_argument("--typical-p", type=float, default=1.0,
+                          help="Masse d'échantillonnage typique localement dans ]0, 1] (défaut : 1.0)")
     generate.add_argument("--reasoning-steps", type=int, help="Nombre d'itérations latentes à l'inférence")
     generate.add_argument("--speculative", action="store_true",
                           help="Activer le décodage auto-spéculatif via future_heads")
@@ -474,7 +476,7 @@ def main(argv=None):
         tokens = torch.tensor([ByteTokenizer().encode(args.prompt, eos=False)], device=args.device)
         generated = model.generate(tokens, max_new_tokens=args.max_new_tokens,
                                    temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
-                                   min_p=args.min_p,
+                                   min_p=args.min_p, typical_p=args.typical_p,
                                    reasoning_steps=args.reasoning_steps, speculative=args.speculative,
                                    jacobi=args.jacobi, jacobi_window=args.jacobi_window,
                                    beam_width=args.beam_width, length_penalty=args.length_penalty,
