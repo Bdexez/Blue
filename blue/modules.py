@@ -611,6 +611,11 @@ class CrossAttention(nn.Module):
             nn.Parameter(torch.zeros(1, self.heads, 1, 1))
             if config.cross_qk_temperature else None
         )
+        if config.cross_head_gating:
+            self.head_gate_proj = nn.Linear(config.d_model, self.heads, bias=True)
+            self.head_mix = nn.Linear(self.heads, self.heads, bias=False)
+        else:
+            self.head_gate_proj = self.head_mix = None
         self.dropout = config.dropout
         if self.differential:
             self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_index)
@@ -623,6 +628,19 @@ class CrossAttention(nn.Module):
             nn.init.normal_(self.lambda_k1, std=0.1)
             nn.init.normal_(self.lambda_q2, std=0.1)
             nn.init.normal_(self.lambda_k2, std=0.1)
+        self.reset_cross_parameters()
+
+    def reset_cross_parameters(self):
+        if self.qk_log_scale is not None:
+            with torch.no_grad():
+                self.qk_log_scale.zero_()
+        if self.head_gate_proj is not None:
+            with torch.no_grad():
+                self.head_gate_proj.weight.zero_()
+                self.head_gate_proj.bias.zero_()
+        if self.head_mix is not None:
+            with torch.no_grad():
+                self.head_mix.weight.zero_()
 
     def _format_k(self, k: torch.Tensor) -> torch.Tensor:
         if self.differential:
@@ -679,6 +697,11 @@ class CrossAttention(nn.Module):
             y = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=mask, dropout_p=dropout_p,
             )
+        if self.head_gate_proj is not None:
+            h_conf = (2.0 * torch.sigmoid(self.head_gate_proj(queries))).transpose(1, 2).unsqueeze(-1)
+            y = y * h_conf.to(y.dtype)
+        if self.head_mix is not None:
+            y = y + self.head_mix(y.transpose(1, 3)).transpose(1, 3)
         return self.out(y.transpose(1, 2).contiguous().view(b, t, d))
 
 
@@ -751,6 +774,8 @@ class SparseMoE(nn.Module):
         else:
             self.expert_bias = None
         self.router_log_temp = nn.Parameter(torch.zeros(())) if config.moe_router_temperature else None
+        self.routed_scaling_factor = float(config.moe_routed_scaling_factor)
+        self.routed_log_scale = nn.Parameter(torch.zeros(())) if config.moe_learnable_scaling else None
         self.last_null_fraction: float = 0.0
         self.last_router_entropy: torch.Tensor | None = None
 
@@ -762,6 +787,9 @@ class SparseMoE(nn.Module):
         if self.router_log_temp is not None:
             with torch.no_grad():
                 self.router_log_temp.zero_()
+        if self.routed_log_scale is not None:
+            with torch.no_grad():
+                self.routed_log_scale.zero_()
 
     @torch.no_grad()
     def update_expert_bias(self, usage: torch.Tensor):
@@ -806,6 +834,12 @@ class SparseMoE(nn.Module):
                 weights, selected = probs.topk(self.top_k, dim=-1)
         if self.top_k != 1 or self.top1_gate == "normalized":
             weights = weights / weights.sum(-1, keepdim=True).clamp_min(1e-12)
+        if self.routed_log_scale is not None:
+            with torch.autocast(device_type=tokens.device.type, enabled=False):
+                r_mult = self.routed_scaling_factor * torch.exp(self.routed_log_scale.float().clamp(-2.0, 2.0))
+            weights = weights * r_mult.to(weights.dtype)
+        elif self.routed_scaling_factor != 1.0:
+            weights = weights * self.routed_scaling_factor
         mixed = self.shared(tokens)
         if self.shared_gate is not None:
             mixed = mixed * torch.sigmoid(self.shared_gate(tokens)).to(mixed.dtype)
