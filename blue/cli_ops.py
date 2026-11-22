@@ -133,6 +133,7 @@ def inspect_config(config):
             "jepa_cov_weight": config.jepa_cov_weight,
             "adaptive_loss_weighting": config.adaptive_loss_weighting,
             "memory_slots": config.memory_slots,
+            "memory_decay": config.memory_decay,
             "alignment_geometry": config.alignment_geometry,
             "alignment_margin": config.alignment_margin,
             "latent_reasoning_steps": config.latent_reasoning_steps,

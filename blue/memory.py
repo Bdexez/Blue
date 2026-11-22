@@ -23,7 +23,8 @@ class EpisodicMemoryBank(nn.Module):
     du cache en génération incrémentale.
     """
 
-    def __init__(self, d_model: int, memory_slots: int, n_heads: int, *, norm_eps: float = 1e-6):
+    def __init__(self, d_model: int, memory_slots: int, n_heads: int, *, norm_eps: float = 1e-6,
+                 memory_decay: bool = False):
         super().__init__()
         if memory_slots < 1:
             raise ValueError("memory_slots doit être un entier strictement positif")
@@ -42,6 +43,7 @@ class EpisodicMemoryBank(nn.Module):
         self.write_val = nn.Linear(d_model, d_model, bias=False)
         self.write_addr = nn.Linear(d_model, memory_slots, bias=False)
         self.write_gate = nn.Linear(d_model, memory_slots, bias=True)
+        self.decay_gate = nn.Linear(d_model, memory_slots, bias=True) if memory_decay else None
         self.surprise_scale = nn.Parameter(torch.tensor(0.5))
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.read_gate = nn.Parameter(torch.full((d_model,), -1.0))
@@ -51,6 +53,9 @@ class EpisodicMemoryBank(nn.Module):
         with torch.no_grad():
             nn.init.normal_(self.init_slots, std=0.02)
             self.write_gate.bias.fill_(-1.0)
+            if self.decay_gate is not None:
+                self.decay_gate.weight.zero_()
+                self.decay_gate.bias.fill_(4.0)
             self.surprise_scale.fill_(0.5)
             self.read_gate.fill_(-1.0)
 
@@ -61,6 +66,7 @@ class EpisodicMemoryBank(nn.Module):
         val_all = self.write_val(h)
         addr_all = self.write_addr(h)
         gate_all = self.write_gate(h)
+        decay_all = self.decay_gate(h) if self.decay_gate is not None else None
         scale_inv = 1.0 / math.sqrt(self.head_dim)
         dim_inv = 1.0 / math.sqrt(d)
 
@@ -69,14 +75,16 @@ class EpisodicMemoryBank(nn.Module):
             val_f = val_all.float()
             addr_f = addr_all.float()
             gate_f = gate_all.float()
+            decay_f = torch.sigmoid(decay_all.float()) if decay_all is not None else None
             rk_w = self.read_k.weight.float()
             rv_w = self.read_v.weight.float()
             mn_w = self.mem_norm.weight.float()
             mn_eps = self.mem_norm.eps
             s_scale = self.surprise_scale.float()
+            init_f = self.init_slots.float()
 
             if memory is None:
-                mem = self.init_slots.float().expand(b, -1, -1).contiguous()
+                mem = init_f.expand(b, -1, -1).contiguous()
             else:
                 mem = memory.float()
 
@@ -93,13 +101,18 @@ class EpisodicMemoryBank(nn.Module):
                 attn = torch.softmax(logits, dim=-1)
                 r_t = torch.einsum("bhm,bmhd->bhd", attn, v_m).reshape(b, d)
 
-                # Surprise et écriture convexe modulée.
+                # Surprise et écriture convexe modulée (avec relaxation vers init_slots si activée).
                 v_t = val_f[:, step]
                 surprise = torch.log1p((v_t - r_t).square().sum(dim=-1).clamp_min(1e-12).sqrt() * dim_inv)
                 slot_addr = torch.softmax(addr_f[:, step], dim=-1)  # [B, M]
                 eta = torch.sigmoid(gate_f[:, step] + s_scale * surprise.unsqueeze(-1))  # [B, M]
                 blend = (slot_addr * eta).unsqueeze(-1)  # [B, M, 1]
-                mem_next = (1.0 - blend) * mem + blend * v_t.unsqueeze(1)
+                if decay_f is not None:
+                    gamma_t = decay_f[:, step].unsqueeze(-1)  # [B, M, 1]
+                    mem_base = gamma_t * mem + (1.0 - gamma_t) * init_f
+                else:
+                    mem_base = mem
+                mem_next = (1.0 - blend) * mem_base + blend * v_t.unsqueeze(1)
                 mask = valid[:, step]
                 mem = torch.where(mask.view(b, 1, 1), mem_next, mem)
                 reads.append(torch.where(mask.unsqueeze(-1), r_t, torch.zeros_like(r_t)))

@@ -133,7 +133,9 @@ class Blue(nn.Module):
             self.embed_skip_gate = nn.Parameter(torch.full((d,), -3.0))
         else:
             self.embed_skip_norm = self.embed_skip_gate = None
-        self.episodic_memory = (EpisodicMemoryBank(d, config.memory_slots, config.n_heads, norm_eps=config.norm_eps)
+        self.episodic_memory = (EpisodicMemoryBank(d, config.memory_slots, config.n_heads,
+                                                   norm_eps=config.norm_eps,
+                                                   memory_decay=config.memory_decay)
                                 if config.memory_slots > 0 else None)
         self.lm_head = nn.Linear(d, config.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight

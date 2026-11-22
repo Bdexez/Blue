@@ -78,6 +78,7 @@ class BlueConfig:
     ponder_prior: float = 0.5
     ponder_kl_weight: float = 0.01
     memory_slots: int = 0
+    memory_decay: bool = False
     dropout: float = 0.0
     norm_eps: float = 1e-6
     stable_rms_norm: bool = False
@@ -301,6 +302,8 @@ class BlueConfig:
             raise ValueError("ponder_kl_weight doit être fini et positif ou nul")
         if type(self.memory_slots) is not int or self.memory_slots < 0:
             raise ValueError("memory_slots doit être un entier positif ou nul")
+        if type(self.memory_decay) is not bool:
+            raise ValueError("memory_decay doit être booléen")
         if self.d_model % 4 or self.n_heads % self.n_kv_heads:
             raise ValueError("d_model doit être divisible par 4 et n_heads par n_kv_heads")
         if self.top_k > self.n_experts:

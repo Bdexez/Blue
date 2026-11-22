@@ -160,7 +160,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"- **Raisonnement & Mémoire** : "
         f"{config.latent_reasoning_steps} itération(s) latente(s)"
         f"{f' avec arrêt adaptatif PonderNet (prior={config.ponder_prior})' if config.latent_reasoning_adaptive else ''}"
-        f"{f', mémoire épisodique ({config.memory_slots} emplacements)' if config.memory_slots else ''}"
+        f"{f', mémoire épisodique ({config.memory_slots} emplacements' + (', oubli adaptatif' if config.memory_decay else '') + ')' if config.memory_slots else ''}"
         f"{f', LayerScale (init={config.layer_scale_init})' if config.layer_scale_init > 0 else ''}"
         f"{', Dynamic Tanh (DyT)' if config.dynamic_tanh_norm else ''}.",
         f"- **Alignement & Génération continue** : "
