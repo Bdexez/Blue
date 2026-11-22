@@ -1,7 +1,7 @@
 {
   "settings": {
-    "checkpoint": "/home/bdex/delivery/Neural_Network_November/runs/joint-affine-pilot/control/latest.pt",
-    "output_dir": "/home/bdex/delivery/Neural_Network_November/runs/unpaired-class-weight005",
+    "checkpoint": "/home/bdex/delivery/Blue/runs/joint-affine-pilot/control/latest.pt",
+    "output_dir": "/home/bdex/delivery/Blue/runs/unpaired-class-weight005",
     "seeds": [
       211000000,
       213000000,

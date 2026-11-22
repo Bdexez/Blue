@@ -1,6 +1,6 @@
 {
   "settings": {
-    "checkpoint": "/home/bdex/delivery/Neural_Network_November/runs/joint-affine-pilot/control/latest.pt",
+    "checkpoint": "/home/bdex/delivery/Blue/runs/joint-affine-pilot/control/latest.pt",
     "output": "artifacts/stable-rms-study.json",
     "batch_size": 16,
     "seed": 1901,

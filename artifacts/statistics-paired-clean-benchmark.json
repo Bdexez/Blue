@@ -78,7 +78,7 @@
     }
   },
   "initialization": {
-    "checkpoint": "/home/bdex/delivery/Neural_Network_November/runs/workstation-robust/model.pt",
+    "checkpoint": "/home/bdex/delivery/Blue/runs/workstation-robust/model.pt",
     "step": 180,
     "seed": 314,
     "overrides": {
