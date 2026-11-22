@@ -216,6 +216,8 @@ def main(argv=None):
                           help="Cible de surprise Mirostat v2 en bits (> 0 active, défaut : 0.0)")
     generate.add_argument("--mirostat-eta", type=float, default=0.1,
                           help="Taux d'adaptation Mirostat v2 (défaut : 0.1)")
+    generate.add_argument("--eta-cutoff", type=float, default=0.0,
+                          help="Seuil adaptatif d'entropie Eta-Sampling dans [0, 1[ (défaut : 0.0)")
     generate.add_argument("--device", default="cpu")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
@@ -490,7 +492,8 @@ def main(argv=None):
                                    no_repeat_ngram_size=args.no_repeat_ngram_size,
                                    context_guidance_scale=args.context_guidance_scale,
                                    mirostat_tau=args.mirostat_tau,
-                                   mirostat_eta=args.mirostat_eta)
+                                   mirostat_eta=args.mirostat_eta,
+                                   eta_cutoff=args.eta_cutoff)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
         if args.max_new_tokens < 0:

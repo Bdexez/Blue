@@ -55,10 +55,11 @@ class BlueOutput:
     last_hidden: torch.Tensor | None = None
 
 
-def masked_cross_entropy(logits, labels):
+def masked_cross_entropy(logits, labels, label_smoothing: float = 0.0):
     # Un lot sans cible valide ne produit ni NaN ni apprentissage artificiel.
     values = F.cross_entropy(logits.float().reshape(-1, logits.size(-1)),
-                             labels.reshape(-1), ignore_index=-100, reduction="none")
+                             labels.reshape(-1), ignore_index=-100, reduction="none",
+                             label_smoothing=float(label_smoothing))
     return values.sum() / (labels != -100).sum().clamp_min(1)
 
 
@@ -916,7 +917,7 @@ class Blue(nn.Module):
         if labels is not None:
             targets = labels.masked_fill(~valid, -100)
             shifted = targets[:, 1:].masked_fill(~valid[:, :-1], -100)
-            losses["text"] = masked_cross_entropy(logits[:, :-1], shifted)
+            losses["text"] = masked_cross_entropy(logits[:, :-1], shifted, label_smoothing=c.label_smoothing)
             total = total + self._weight_task_loss("text", c.text_weight, losses["text"])
             if c.lm_z_loss_weight > 0.0:
                 with torch.autocast(device_type=logits.device.type, enabled=False):
@@ -938,7 +939,7 @@ class Blue(nn.Module):
                 if hidden.size(1) > distance:
                     future_logits = self._lm_logits(h_mtp_prev[:, :-distance])
                     future_targets = targets[:, distance:].masked_fill(~valid[:, :-distance], -100)
-                    head_loss = masked_cross_entropy(future_logits, future_targets)
+                    head_loss = masked_cross_entropy(future_logits, future_targets, label_smoothing=c.label_smoothing)
                     head_count = (future_targets != -100).sum()
                     auxiliary_text_losses[distance] = (head_loss, head_count)
                     mtp_losses.append(head_loss)
@@ -972,7 +973,7 @@ class Blue(nn.Module):
             if c.evidential_classification:
                 losses["classification"] = evidential_dirichlet_loss(class_logits, class_labels)
             else:
-                losses["classification"] = masked_cross_entropy(class_logits, class_labels)
+                losses["classification"] = masked_cross_entropy(class_logits, class_labels, label_smoothing=c.label_smoothing)
             total = total + self._weight_task_loss("classification", c.classification_weight, losses["classification"])
         if forecast_targets is not None:
             losses["forecast"] = quantile_pinball_loss(forecast, forecast_targets, c.quantiles)
@@ -1164,7 +1165,8 @@ class Blue(nn.Module):
 
     @staticmethod
     def _filtered_probs(scores: torch.Tensor, *, temperature: float, top_k: int, top_p: float,
-                        min_p: float = 0.0, typical_p: float = 1.0) -> torch.Tensor:
+                        min_p: float = 0.0, typical_p: float = 1.0,
+                        eta_cutoff: float = 0.0) -> torch.Tensor:
         scores = scores.float()
         scores[:, [0, 1, 3]] = -torch.inf
         if not torch.finfo(torch.float32).tiny <= temperature <= torch.finfo(torch.float32).max:
@@ -1177,6 +1179,16 @@ class Blue(nn.Module):
             raw_probs = scores.softmax(-1)
             max_prob = raw_probs.amax(-1, keepdim=True)
             scores = scores.masked_fill(raw_probs < min_p * max_prob, -torch.inf)
+        if eta_cutoff > 0.0:
+            p_eta = scores.softmax(-1)
+            log_p_eta = scores.log_softmax(-1)
+            ent_eta = -(p_eta * torch.where(p_eta > 0, log_p_eta, torch.zeros_like(log_p_eta))).sum(-1, keepdim=True)
+            thresh_eta = torch.minimum(
+                torch.full_like(ent_eta, float(eta_cutoff)),
+                math.sqrt(float(eta_cutoff)) * torch.exp(-ent_eta),
+            )
+            max_p_eta = p_eta.amax(-1, keepdim=True)
+            scores = scores.masked_fill((p_eta < thresh_eta) & (p_eta < max_p_eta), -torch.inf)
         if top_k:
             threshold = scores.topk(min(top_k, scores.size(-1)), dim=-1).values[:, -1:]
             scores = scores.masked_fill(scores < threshold, -torch.inf)
@@ -1228,7 +1240,7 @@ class Blue(nn.Module):
 
     def _draft_future_stochastic(self, last_hidden: torch.Tensor, count: int, *,
                                  temperature: float, top_k: int, top_p: float, min_p: float = 0.0,
-                                 typical_p: float = 1.0,
+                                 typical_p: float = 1.0, eta_cutoff: float = 0.0,
                                  history_ids: torch.Tensor | None = None,
                                  repetition_penalty: float = 1.0, presence_penalty: float = 0.0,
                                  frequency_penalty: float = 0.0,
@@ -1249,7 +1261,8 @@ class Blue(nn.Module):
             )
             probs = self._filtered_probs(
                 penalized,
-                temperature=temperature, top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
+                temperature=temperature, top_k=top_k, top_p=top_p,
+                min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff,
             )
             tok = torch.multinomial(probs, 1).squeeze(-1)
             drafts.append(tok)
@@ -1300,6 +1313,7 @@ class Blue(nn.Module):
     @torch.inference_mode()
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,
                  top_p=0.95, min_p: float = 0.0, typical_p: float = 1.0,
+                 eta_cutoff: float = 0.0,
                  eos_id=2, reasoning_steps: int | None = None,
                  speculative: bool = False, jacobi: bool = False,
                  jacobi_window: int = 4, beam_width: int = 1, length_penalty: float = 1.0,
@@ -1318,6 +1332,8 @@ class Blue(nn.Module):
             raise ValueError("min_p doit appartenir à [0, 1[")
         if not math.isfinite(typical_p) or not 0.0 < typical_p <= 1.0:
             raise ValueError("typical_p doit appartenir à ]0, 1]")
+        if not math.isfinite(eta_cutoff) or not 0.0 <= eta_cutoff < 1.0:
+            raise ValueError("eta_cutoff doit appartenir à [0, 1[")
         if type(top_k) is not int or top_k < 0:
             raise ValueError("top_k doit être un entier positif ou nul")
         if type(speculative) is not bool:
@@ -1383,7 +1399,8 @@ class Blue(nn.Module):
                     )
                 return self._generate_speculative_stochastic(
                     input_ids, max_new_tokens=max_new_tokens, temperature=temperature,
-                    top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p, eos_id=eos_id,
+                    top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
+                    eta_cutoff=eta_cutoff, eos_id=eos_id,
                     reasoning_steps=reasoning_steps, **penalties, **context,
                 )
             result = input_ids
@@ -1427,7 +1444,7 @@ class Blue(nn.Module):
                     probs = self._filtered_probs(
                         scores,
                         temperature=temperature, top_k=top_k, top_p=top_p,
-                        min_p=min_p, typical_p=typical_p,
+                        min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff,
                     )
                     next_token = torch.multinomial(probs, 1).squeeze(-1)
                 if eos_id is not None:
@@ -1519,7 +1536,8 @@ class Blue(nn.Module):
         return result
 
     def _generate_speculative_stochastic(self, input_ids, *, max_new_tokens, temperature,
-                                         top_k, top_p, min_p=0.0, typical_p=1.0, eos_id, reasoning_steps,
+                                         top_k, top_p, min_p=0.0, typical_p=1.0, eta_cutoff=0.0,
+                                         eos_id, reasoning_steps,
                                          repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0,
                                          no_repeat_ngram_size=0,
                                          **context):
@@ -1535,7 +1553,8 @@ class Blue(nn.Module):
         cache = output.cache
         p0 = self._filtered_probs(
             self._apply_penalties(output.logits[:, -1], result, **penalties),
-            temperature=temperature, top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
+            temperature=temperature, top_k=top_k, top_p=top_p,
+            min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff,
         )
         next_token = torch.multinomial(p0, 1).squeeze(-1)
         result = torch.cat((result, next_token[:, None]), -1)
@@ -1550,14 +1569,15 @@ class Blue(nn.Module):
                 step_out = self(next_token[:, None], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
                 p_last = self._filtered_probs(
                     self._apply_penalties(step_out.logits[:, -1], result, **penalties),
-                    temperature=temperature, top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
+                    temperature=temperature, top_k=top_k, top_p=top_p,
+                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff,
                 )
                 next_token = torch.multinomial(p_last, 1).squeeze(-1)
                 result = torch.cat((result, next_token[:, None]), -1)
                 break
             drafts, q_probs = self._draft_future_stochastic(
                 last_hidden, n_draft, temperature=temperature, top_k=top_k, top_p=top_p,
-                min_p=min_p, typical_p=typical_p,
+                min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff,
                 history_ids=result, **penalties,
             )
             candidate = torch.stack([next_token, *drafts], dim=1)  # [1, 1 + n_draft]
@@ -1569,7 +1589,8 @@ class Blue(nn.Module):
                 hist_j = result if j == 0 else torch.cat((result, candidate[:, 1:j + 1]), dim=-1)
                 p_j = self._filtered_probs(
                     self._apply_penalties(verify_out.logits[:, j], hist_j, **penalties),
-                    temperature=temperature, top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
+                    temperature=temperature, top_k=top_k, top_p=top_p,
+                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff,
                 )
                 tok = drafts[j].item()
                 p_tok = p_j[0, tok].item()
@@ -1592,7 +1613,8 @@ class Blue(nn.Module):
                 hist_bonus = torch.cat((result, candidate[:, 1:n_draft + 1]), dim=-1)
                 p_bonus = self._filtered_probs(
                     self._apply_penalties(verify_out.logits[:, n_draft], hist_bonus, **penalties),
-                    temperature=temperature, top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
+                    temperature=temperature, top_k=top_k, top_p=top_p,
+                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff,
                 )
                 emitted_list.append(torch.multinomial(p_bonus, 1).squeeze(-1))
             emitted = torch.cat(emitted_list, dim=0)
