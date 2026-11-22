@@ -34,6 +34,8 @@
   "cross_kv_lora_rank": 192,
   "attention_sinks": 4,
   "value_residual": true,
+  "qk_residual": true,
+  "dynamic_mixer_router": true,
   "logit_softcap": 30.0,
   "attn_logit_softcap": 50.0,
   "dynamic_attn_scale": true,
@@ -121,6 +123,7 @@
   "forecast_adapter_missing_gate": false,
   "forecast_adapter_separate_missing": false,
   "forecast_tail_power": true,
+  "forecast_smoothness_weight": 0.01,
   "quantiles": [
     0.1,
     0.5,
