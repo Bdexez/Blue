@@ -148,6 +148,8 @@ def build_optimizer(model, *, name: str = "adamw", lr: float, weight_decay: floa
         excluded_muon_ids.add(id(model.flow_head.null_cond))
     if getattr(model, "head_pool_gate", None) is not None:
         excluded_muon_ids.add(id(model.head_pool_gate))
+    if getattr(model, "mtp_chain_gates", None) is not None:
+        excluded_muon_ids.add(id(model.mtp_chain_gates))
     for module in model.modules():
         if getattr(module, "kan_coeffs", None) is not None:
             excluded_muon_ids.add(id(module.kan_coeffs))

@@ -42,6 +42,7 @@ class BlueConfig:
     attention_sinks: int = 0
     value_residual: bool = False
     qk_residual: bool = False
+    qk_norm_temperature: bool = False
     dynamic_mixer_router: bool = False
     logit_softcap: float = 0.0
     attn_logit_softcap: float = 0.0
@@ -128,6 +129,7 @@ class BlueConfig:
     forecast_smoothness_weight: float = 0.0
     quantiles: tuple[float, ...] = (0.1, 0.5, 0.9)
     prediction_steps: int = 2
+    chained_future_heads: bool = False
     balance_weight: float = 0.01
     router_z_weight: float = 0.001
     mtp_weight: float = 0.1
@@ -206,6 +208,8 @@ class BlueConfig:
             raise ValueError("value_residual doit être booléen")
         if type(self.qk_residual) is not bool:
             raise ValueError("qk_residual doit être booléen")
+        if type(self.qk_norm_temperature) is not bool:
+            raise ValueError("qk_norm_temperature doit être booléen")
         if type(self.dynamic_mixer_router) is not bool:
             raise ValueError("dynamic_mixer_router doit être booléen")
         if not math.isfinite(self.logit_softcap) or self.logit_softcap < 0:
@@ -357,6 +361,8 @@ class BlueConfig:
             raise ValueError("evidential_classification doit être booléen")
         if type(self.head_cross_pool) is not bool:
             raise ValueError("head_cross_pool doit être booléen")
+        if type(self.chained_future_heads) is not bool:
+            raise ValueError("chained_future_heads doit être booléen")
         if not math.isfinite(self.mtp_decay) or not 0.0 < self.mtp_decay <= 1.0:
             raise ValueError("mtp_decay doit être fini et appartenir à ]0, 1]")
         if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:

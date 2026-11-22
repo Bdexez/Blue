@@ -196,6 +196,10 @@ def main(argv=None):
                           help="Activer le décodage parallèle par point fixe de Jacobi (temperature=0)")
     generate.add_argument("--jacobi-window", type=int, default=4,
                           help="Taille de la fenêtre lookahead de Jacobi (défaut : 4)")
+    generate.add_argument("--beam-width", type=int, default=1,
+                          help="Largeur de faisceau Beam Search (>= 1, défaut : 1)")
+    generate.add_argument("--length-penalty", type=float, default=1.0,
+                          help="Pénalité de longueur Wu et al. pour Beam Search (défaut : 1.0)")
     generate.add_argument("--repetition-penalty", type=float, default=1.0,
                           help="Pénalité multiplicative de répétition CTRL (> 0, défaut : 1.0)")
     generate.add_argument("--presence-penalty", type=float, default=0.0,
@@ -469,6 +473,7 @@ def main(argv=None):
                                    min_p=args.min_p,
                                    reasoning_steps=args.reasoning_steps, speculative=args.speculative,
                                    jacobi=args.jacobi, jacobi_window=args.jacobi_window,
+                                   beam_width=args.beam_width, length_penalty=args.length_penalty,
                                    repetition_penalty=args.repetition_penalty,
                                    presence_penalty=args.presence_penalty,
                                    frequency_penalty=args.frequency_penalty)
