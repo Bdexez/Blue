@@ -674,10 +674,21 @@ class CrossAttention(nn.Module):
 class GatedCausalConv(nn.Module):
     def __init__(self, dim, kernel):
         super().__init__()
+        self.dim = dim
         self.kernel = kernel
         self.proj = nn.Linear(dim, 2 * dim, bias=False)
         self.conv = nn.Conv1d(dim, dim, kernel, groups=dim, bias=False)
         self.out = nn.Linear(dim, dim, bias=False)
+        self.vel_gain: nn.Parameter | None = None
+        self.acc_gain: nn.Parameter | None = None
+
+    def enable_diff_branch(self):
+        device = self.proj.weight.device
+        dtype = self.proj.weight.dtype
+        if self.kernel >= 2:
+            self.vel_gain = nn.Parameter(torch.zeros(self.dim, device=device, dtype=dtype))
+        if self.kernel >= 3:
+            self.acc_gain = nn.Parameter(torch.zeros(self.dim, device=device, dtype=dtype))
 
     def forward(self, x, valid, state=None):
         u, gate = self.proj(x).chunk(2, dim=-1)
@@ -686,6 +697,15 @@ class GatedCausalConv(nn.Module):
             state = u.new_zeros(u.size(0), u.size(1), self.kernel - 1)
         joined = torch.cat((state, u), -1)
         y = self.conv(joined).transpose(1, 2)
+        if self.vel_gain is not None and self.kernel >= 2:
+            u_cur = joined[..., (self.kernel - 1):]
+            u_prev1 = joined[..., (self.kernel - 2):-1]
+            d1 = (u_cur - u_prev1).transpose(1, 2)
+            y = y + self.vel_gain.to(y.dtype) * d1
+            if self.acc_gain is not None and self.kernel >= 3:
+                u_prev2 = joined[..., (self.kernel - 3):-2]
+                d2 = (u_cur - 2.0 * u_prev1 + u_prev2).transpose(1, 2)
+                y = y + self.acc_gain.to(y.dtype) * d2
         next_state = joined[..., -(self.kernel - 1):] if self.kernel > 1 else joined[..., :0]
         return self.out(F.silu(y) * torch.sigmoid(gate)), next_state
 

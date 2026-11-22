@@ -139,7 +139,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{f', goulot discret FSQ ({_fmt_int(fsq_size)} codes)' if fsq_size else ''}"
         f"{f', diversité orthogonale (w={config.latent_diversity_weight})' if config.latent_diversity_weight > 0 else ''}).",
         f"- **Branche récurrente / SSM / TTT** : "
-        f"Convolution causale (k={config.conv_kernel})"
+        f"Convolution causale (k={config.conv_kernel}{', dérivées Δ1/Δ2' if config.conv_diff_branch else ''})"
         f"{f' + Gated DeltaNet (état {config.ssm_state_dim}, {config.ssm_heads or config.n_heads} têtes, blocs WY {config.ssm_chunk_size}, tous les {config.ssm_every} blocs)' if config.ssm_state_dim else ''}"
         f"{f' + Test-Time Training TTT-Linear (état {config.ttt_state_dim}, {config.ttt_heads or config.n_heads} têtes, tous les {config.ttt_every} blocs)' if config.ttt_state_dim else ''}.",
         f"- **MoE & Profondeur dynamique** : "

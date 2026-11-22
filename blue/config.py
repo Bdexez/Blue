@@ -31,6 +31,7 @@ class BlueConfig:
     sliding_window: int = 256
     global_every: int = 4
     conv_kernel: int = 5
+    conv_diff_branch: bool = False
     rope_theta: float = 10000.0
     rope_scaling_type: str = "none"
     rope_scaling_factor: float = 1.0
@@ -137,6 +138,7 @@ class BlueConfig:
     embedding_output_skip: bool = False
     balance_weight: float = 0.01
     router_z_weight: float = 0.001
+    lm_z_loss_weight: float = 0.0
     mtp_weight: float = 0.1
     mtp_kl_weight: float = 0.0
     mtp_decay: float = 1.0
@@ -232,6 +234,8 @@ class BlueConfig:
             raise ValueError("gated_value_attention doit être booléen")
         if type(self.talking_heads) is not bool:
             raise ValueError("talking_heads doit être booléen")
+        if type(self.conv_diff_branch) is not bool:
+            raise ValueError("conv_diff_branch doit être booléen")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
             raise ValueError("nsa_block_size doit être 0 ou un entier >= 2")
         if type(self.nsa_top_k) is not int or self.nsa_top_k < 1:
@@ -366,7 +370,7 @@ class BlueConfig:
             raise ValueError("Les quantiles doivent être strictement croissants")
         if 0.5 not in self.quantiles:
             raise ValueError("Le quantile médian 0.5 est requis")
-        for name in ("balance_weight", "router_z_weight", "mtp_weight", "mtp_kl_weight", "alignment_weight",
+        for name in ("balance_weight", "router_z_weight", "lm_z_loss_weight", "mtp_weight", "mtp_kl_weight", "alignment_weight",
                      "text_weight", "classification_weight", "forecast_weight",
                      "flow_matching_weight", "jepa_weight", "latent_diversity_weight",
                      "forecast_smoothness_weight"):
