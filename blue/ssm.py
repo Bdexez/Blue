@@ -23,7 +23,7 @@ class GatedDeltaNet(nn.Module):
     """
 
     def __init__(self, d_model: int, state_dim: int, n_heads: int, *, norm_cls,
-                 norm_eps: float = 1e-6, chunk_size: int = 32):
+                 norm_eps: float = 1e-6, chunk_size: int = 32, d_skip: bool = False):
         super().__init__()
         if d_model % n_heads:
             raise ValueError("d_model doit être divisible par ssm_heads")
@@ -38,6 +38,7 @@ class GatedDeltaNet(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.gate_proj = nn.Linear(d_model, d_model, bias=False)
         self.decay_beta_proj = nn.Linear(d_model, 2 * n_heads, bias=True)
+        self.d_skip = nn.Parameter(torch.zeros(1, 1, n_heads, self.value_dim)) if d_skip else None
         self.out_norm = norm_cls(self.value_dim, norm_eps)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.reset_gate_biases()
@@ -47,6 +48,8 @@ class GatedDeltaNet(nn.Module):
         with torch.no_grad():
             self.decay_beta_proj.bias[:self.n_heads].fill_(2.0)
             self.decay_beta_proj.bias[self.n_heads:].fill_(-1.0)
+            if self.d_skip is not None:
+                self.d_skip.zero_()
 
     def _recurrence_sequential(self, q_f, k_f, v_f, decay_logits, beta_logits, valid, S):
         b, t, _, _ = q_f.shape
@@ -159,6 +162,8 @@ class GatedDeltaNet(nn.Module):
                 out, S = self._recurrence_chunkwise_wy(q_f, k_f, v_f, decay_logits, beta_logits, valid, S)
             else:
                 out, S = self._recurrence_sequential(q_f, k_f, v_f, decay_logits, beta_logits, valid, S)
+            if self.d_skip is not None:
+                out = out + self.d_skip.float() * v_f * valid[:, :, None, None].float()
         out = self.out_norm(out.to(x.dtype)) * gate
         out = self.out_proj(out.reshape(b, t, self.d_model)) * valid.unsqueeze(-1)
         return out, S

@@ -1097,7 +1097,8 @@ class DecoderBlock(nn.Module):
             ssm_heads = config.n_heads if config.ssm_heads is None else config.ssm_heads
             self.ssm = GatedDeltaNet(config.d_model, config.ssm_state_dim, ssm_heads,
                                      norm_cls=RMSNorm, norm_eps=config.norm_eps,
-                                     chunk_size=config.ssm_chunk_size)
+                                     chunk_size=config.ssm_chunk_size,
+                                     d_skip=config.ssm_d_skip)
             self.ssm_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         else:
             self.ssm = None
@@ -1106,7 +1107,8 @@ class DecoderBlock(nn.Module):
             ttt_heads = config.n_heads if config.ttt_heads is None else config.ttt_heads
             self.ttt = TTTLinear(config.d_model, config.ttt_state_dim, ttt_heads,
                                  norm_cls=RMSNorm, norm_eps=config.norm_eps,
-                                 base_lr=config.ttt_base_lr)
+                                 base_lr=config.ttt_base_lr,
+                                 weight_decay=config.ttt_weight_decay)
             self.ttt_gate = nn.Parameter(torch.full((config.d_model,), -1.0))
         else:
             self.ttt = None

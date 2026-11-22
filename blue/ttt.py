@@ -43,7 +43,8 @@ class TTTLinear(nn.Module):
     """
 
     def __init__(self, d_model: int, state_dim: int, n_heads: int, *,
-                 norm_cls, norm_eps: float = 1e-6, base_lr: float = 0.5):
+                 norm_cls, norm_eps: float = 1e-6, base_lr: float = 0.5,
+                 weight_decay: bool = False):
         super().__init__()
         if type(state_dim) is not int or state_dim < 1:
             raise ValueError("ttt_state_dim doit être un entier strictement positif")
@@ -57,6 +58,7 @@ class TTTLinear(nn.Module):
 
         self.qkv_proj = nn.Linear(d_model, 3 * inner_total, bias=False)
         self.lr_proj = nn.Linear(d_model, n_heads, bias=True)
+        self.decay_proj = nn.Linear(d_model, n_heads, bias=True) if weight_decay else None
         self.gate_proj = nn.Linear(d_model, inner_total, bias=False)
         self.out_norm = norm_cls(state_dim, norm_eps)
         self.out_proj = nn.Linear(inner_total, d_model, bias=False)
@@ -75,6 +77,9 @@ class TTTLinear(nn.Module):
             nn.init.ones_(self.ln_weight)
             nn.init.zeros_(self.ln_bias)
             self.lr_proj.bias.fill_(-2.0)
+            if self.decay_proj is not None:
+                self.decay_proj.weight.zero_()
+                self.decay_proj.bias.fill_(4.0)
 
     def initial_state(self, batch_size: int, device: torch.device) -> torch.Tensor:
         packed = torch.cat((self.W0.float(), self.b0.float().unsqueeze(-2)), dim=-2)  # [H, K+1, K]
@@ -85,18 +90,22 @@ class TTTLinear(nn.Module):
         q, k, v = self.qkv_proj(x).view(b, t, 3, self.n_heads, self.state_dim).unbind(2)
         gate = F.silu(self.gate_proj(x)).view(b, t, self.n_heads, self.state_dim)
         lr_logits = self.lr_proj(x)
+        decay_logits = self.decay_proj(x) if self.decay_proj is not None else None
 
         with torch.autocast(device_type=x.device.type, enabled=False):
             q_f = F.normalize(q.float(), p=2, dim=-1, eps=1e-6)
             k_f = F.normalize(k.float(), p=2, dim=-1, eps=1e-6)
             v_f = v.float()
             eta = self.base_lr * torch.sigmoid(lr_logits.float())  # [B, T, H]
+            alpha = torch.sigmoid(decay_logits.float()) if decay_logits is not None else None
             gamma = self.ln_weight.float().unsqueeze(0)  # [1, H, K]
             beta = self.ln_bias.float().unsqueeze(0)     # [1, H, K]
+            W0_f = self.W0.float().unsqueeze(0)
+            b0_f = self.b0.float().unsqueeze(0)
 
             if state is None:
-                W = self.W0.float().unsqueeze(0).expand(b, -1, -1, -1)
-                bias = self.b0.float().unsqueeze(0).expand(b, -1, -1)
+                W = W0_f.expand(b, -1, -1, -1)
+                bias = b0_f.expand(b, -1, -1)
             else:
                 s_f = state.float()
                 W = s_f[:, :, :-1, :]
@@ -114,10 +123,18 @@ class TTTLinear(nn.Module):
                 # 1. Passe avant interne et gradient analytique auto-supervisé.
                 z_k = torch.einsum("bhk,bhkd->bhd", k_t, W) + bias
                 _, grad_z = _inner_layernorm_and_grad(z_k, v_t - k_t, gamma, beta)
-                # 2. Mise à jour des poids rapides neuronaux à temps de test.
+                # 2. Mise à jour des poids rapides neuronaux à temps de test (avec relaxation vers W0/b0 si activée).
                 dW = torch.einsum("bhk,bhd->bhkd", k_t, eta_t * grad_z)
-                W_next = W - dW
-                b_next = bias - eta_t * grad_z
+                if alpha is not None:
+                    a_w = alpha[:, step].view(b, self.n_heads, 1, 1)
+                    a_b = alpha[:, step].view(b, self.n_heads, 1)
+                    W_base = a_w * W + (1.0 - a_w) * W0_f
+                    b_base = a_b * bias + (1.0 - a_b) * b0_f
+                else:
+                    W_base = W
+                    b_base = bias
+                W_next = W_base - dW
+                b_next = b_base - eta_t * grad_z
                 W = torch.where(mask_w, W_next, W)
                 bias = torch.where(mask_b, b_next, bias)
                 # 3. Inférence du mini-réseau adapté sur la requête courante q_t.
