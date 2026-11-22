@@ -127,6 +127,11 @@ class Blue(nn.Module):
             self.reasoning_gate = None
             self.ponder_halt = None
         self.norm = RMSNorm(d, config.norm_eps)
+        if config.embedding_output_skip:
+            self.embed_skip_norm = RMSNorm(d, config.norm_eps)
+            self.embed_skip_gate = nn.Parameter(torch.full((d,), -3.0))
+        else:
+            self.embed_skip_norm = self.embed_skip_gate = None
         self.episodic_memory = (EpisodicMemoryBank(d, config.memory_slots, config.n_heads, norm_eps=config.norm_eps)
                                 if config.memory_slots > 0 else None)
         self.lm_head = nn.Linear(d, config.vocab_size, bias=False)
@@ -228,6 +233,8 @@ class Blue(nn.Module):
             nn.init.constant_(self.head_pool_gate, 0.1)
         if self.mtp_chain_gates is not None:
             nn.init.zeros_(self.mtp_chain_gates)
+        if self.embed_skip_gate is not None:
+            nn.init.constant_(self.embed_skip_gate, -3.0)
         if self.episodic_memory is not None:
             self.episodic_memory.reset_memory_parameters()
         for block in self.blocks:
@@ -675,7 +682,11 @@ class Blue(nn.Module):
         if self.episodic_memory is not None:
             prev_mem = None if cache is None else cache.episodic_memory
             collapsed, next_memory = self.episodic_memory(collapsed, valid, prev_mem)
-        return self.norm(collapsed), balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory
+        out_hidden = self.norm(collapsed)
+        if self.embed_skip_gate is not None:
+            skip = torch.sigmoid(self.embed_skip_gate).to(out_hidden.dtype) * self.embed_skip_norm(x_raw)
+            out_hidden = (out_hidden + skip) * valid.unsqueeze(-1)
+        return out_hidden, balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory
 
     def _embed_text(self, input_ids: torch.Tensor, valid: torch.Tensor, cache: ModelCache | None = None):
         x = self.embedding(input_ids)
@@ -1071,23 +1082,37 @@ class Blue(nn.Module):
     @staticmethod
     def _apply_penalties(scores: torch.Tensor, history_ids: torch.Tensor | None, *,
                          repetition_penalty: float = 1.0, presence_penalty: float = 0.0,
-                         frequency_penalty: float = 0.0) -> torch.Tensor:
+                         frequency_penalty: float = 0.0,
+                         no_repeat_ngram_size: int = 0) -> torch.Tensor:
         scores = scores.float().clone()
         if history_ids is None or (
-            repetition_penalty == 1.0 and presence_penalty == 0.0 and frequency_penalty == 0.0
+            repetition_penalty == 1.0 and presence_penalty == 0.0
+            and frequency_penalty == 0.0 and no_repeat_ngram_size <= 0
         ):
             return scores
-        counts = torch.zeros_like(scores)
-        ones = torch.ones_like(history_ids, dtype=scores.dtype)
-        counts.scatter_add_(1, history_ids, ones)
-        present = counts > 0
-        if repetition_penalty != 1.0:
-            scores = torch.where(present & (scores > 0), scores / repetition_penalty, scores)
-            scores = torch.where(present & (scores < 0), scores * repetition_penalty, scores)
-        if presence_penalty != 0.0:
-            scores = scores - presence_penalty * present.to(scores.dtype)
-        if frequency_penalty != 0.0:
-            scores = scores - frequency_penalty * counts
+        if repetition_penalty != 1.0 or presence_penalty != 0.0 or frequency_penalty != 0.0:
+            counts = torch.zeros_like(scores)
+            ones = torch.ones_like(history_ids, dtype=scores.dtype)
+            counts.scatter_add_(1, history_ids, ones)
+            present = counts > 0
+            if repetition_penalty != 1.0:
+                scores = torch.where(present & (scores > 0), scores / repetition_penalty, scores)
+                scores = torch.where(present & (scores < 0), scores * repetition_penalty, scores)
+            if presence_penalty != 0.0:
+                scores = scores - presence_penalty * present.to(scores.dtype)
+            if frequency_penalty != 0.0:
+                scores = scores - frequency_penalty * counts
+        if no_repeat_ngram_size == 1:
+            scores.scatter_(1, history_ids, -torch.inf)
+        elif no_repeat_ngram_size >= 2 and history_ids.size(1) >= no_repeat_ngram_size:
+            n = no_repeat_ngram_size
+            windows = history_ids.unfold(1, n, 1)  # [B, L - n + 1, n]
+            prefix = history_ids[:, -(n - 1):].unsqueeze(1)  # [B, 1, n - 1]
+            matches = (windows[:, :, :-1] == prefix).all(dim=-1)  # [B, L - n + 1]
+            for b in range(history_ids.size(0)):
+                if bool(matches[b].any()):
+                    banned = windows[b, matches[b], -1]
+                    scores[b, banned] = -torch.inf
         return scores
 
     @staticmethod
@@ -1119,7 +1144,8 @@ class Blue(nn.Module):
     def _draft_future_tokens(self, last_hidden: torch.Tensor, count: int, *,
                              history_ids: torch.Tensor | None = None,
                              repetition_penalty: float = 1.0, presence_penalty: float = 0.0,
-                             frequency_penalty: float = 0.0) -> list[torch.Tensor]:
+                             frequency_penalty: float = 0.0,
+                             no_repeat_ngram_size: int = 0) -> list[torch.Tensor]:
         drafts = []
         cur_hist = history_ids
         h_prev = None
@@ -1132,7 +1158,7 @@ class Blue(nn.Module):
             scores = self._apply_penalties(
                 self._lm_logits(h_prev)[:, -1], cur_hist,
                 repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
-                frequency_penalty=frequency_penalty,
+                frequency_penalty=frequency_penalty, no_repeat_ngram_size=no_repeat_ngram_size,
             )
             scores[:, [0, 1, 3]] = -torch.inf
             tok = scores.argmax(-1)
@@ -1145,7 +1171,8 @@ class Blue(nn.Module):
                                  temperature: float, top_k: int, top_p: float, min_p: float = 0.0,
                                  history_ids: torch.Tensor | None = None,
                                  repetition_penalty: float = 1.0, presence_penalty: float = 0.0,
-                                 frequency_penalty: float = 0.0):
+                                 frequency_penalty: float = 0.0,
+                                 no_repeat_ngram_size: int = 0):
         drafts, q_probs = [], []
         cur_hist = history_ids
         h_prev = None
@@ -1158,7 +1185,7 @@ class Blue(nn.Module):
             penalized = self._apply_penalties(
                 self._lm_logits(h_prev)[:, -1], cur_hist,
                 repetition_penalty=repetition_penalty, presence_penalty=presence_penalty,
-                frequency_penalty=frequency_penalty,
+                frequency_penalty=frequency_penalty, no_repeat_ngram_size=no_repeat_ngram_size,
             )
             probs = self._filtered_probs(
                 penalized,
@@ -1217,6 +1244,7 @@ class Blue(nn.Module):
                  jacobi_window: int = 4, beam_width: int = 1, length_penalty: float = 1.0,
                  repetition_penalty: float = 1.0,
                  presence_penalty: float = 0.0, frequency_penalty: float = 0.0,
+                 no_repeat_ngram_size: int = 0,
                  **context):
         if input_ids.ndim != 2 or input_ids.size(1) < 1:
             raise ValueError("Le prompt doit avoir la forme [B, T] avec T > 0")
@@ -1244,6 +1272,8 @@ class Blue(nn.Module):
             raise ValueError("repetition_penalty doit être fini et > 0")
         if not math.isfinite(presence_penalty) or not math.isfinite(frequency_penalty):
             raise ValueError("presence_penalty et frequency_penalty doivent être finis")
+        if type(no_repeat_ngram_size) is not int or no_repeat_ngram_size < 0:
+            raise ValueError("no_repeat_ngram_size doit être un entier positif ou nul")
         if input_ids.size(1) + max_new_tokens > self.config.max_seq_len:
             raise ValueError("Prompt + génération dépassent max_seq_len")
         if eos_id is not None and (type(eos_id) is not int or not 0 <= eos_id < self.config.vocab_size
@@ -1259,6 +1289,7 @@ class Blue(nn.Module):
             repetition_penalty=float(repetition_penalty),
             presence_penalty=float(presence_penalty),
             frequency_penalty=float(frequency_penalty),
+            no_repeat_ngram_size=int(no_repeat_ngram_size),
         )
         try:
             if beam_width > 1 and input_ids.size(0) == 1 and max_new_tokens > 0:
@@ -1324,12 +1355,14 @@ class Blue(nn.Module):
 
     def _generate_speculative_greedy(self, input_ids, *, max_new_tokens, eos_id, reasoning_steps,
                                      repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0,
+                                     no_repeat_ngram_size=0,
                                      **context):
         """Décodage auto-spéculatif exact (greedy) exploitant les future_heads."""
         penalties = dict(
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
         )
         result = input_ids
         output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
@@ -1391,12 +1424,14 @@ class Blue(nn.Module):
     def _generate_speculative_stochastic(self, input_ids, *, max_new_tokens, temperature,
                                          top_k, top_p, min_p=0.0, eos_id, reasoning_steps,
                                          repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0,
+                                         no_repeat_ngram_size=0,
                                          **context):
         """Décodage auto-spéculatif stochastique exact (échantillonnage par rejet de Leviathan et al.)."""
         penalties = dict(
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
         )
         result = input_ids
         output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
@@ -1487,12 +1522,14 @@ class Blue(nn.Module):
     def _generate_jacobi_greedy(self, input_ids, *, max_new_tokens, eos_id,
                                 reasoning_steps, jacobi_window,
                                 repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0,
+                                no_repeat_ngram_size=0,
                                 **context):
         """Décodage parallèle par itération de point fixe de Jacobi (lookahead exact sans future_heads requis)."""
         penalties = dict(
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
         )
         result = input_ids
         output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
@@ -1576,12 +1613,14 @@ class Blue(nn.Module):
 
     def _generate_beam_search(self, input_ids, *, max_new_tokens, beam_width, length_penalty,
                               eos_id, reasoning_steps, repetition_penalty=1.0,
-                              presence_penalty=0.0, frequency_penalty=0.0, **context):
+                              presence_penalty=0.0, frequency_penalty=0.0,
+                              no_repeat_ngram_size=0, **context):
         """Recherche de faisceau exacte exploitant le cache KV/SSM/TTT/Mémoire/NGram réordonné à chaque pas."""
         penalties = dict(
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
         )
         device = input_ids.device
         vocab_size = self.config.vocab_size

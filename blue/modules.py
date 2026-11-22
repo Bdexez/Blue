@@ -587,6 +587,10 @@ class CrossAttention(nn.Module):
         norm_dim = self.head_dim // 2 if self.differential else self.head_dim
         self.q_norm = RMSNorm(norm_dim, config.norm_eps)
         self.k_norm = RMSNorm(norm_dim, config.norm_eps)
+        self.qk_log_scale = (
+            nn.Parameter(torch.zeros(1, self.heads, 1, 1))
+            if config.cross_qk_temperature else None
+        )
         self.dropout = config.dropout
         if self.differential:
             self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_index)
@@ -633,6 +637,11 @@ class CrossAttention(nn.Module):
             q1, q2 = self.q(queries).view(b, t, self.heads, 2, sub).unbind(3)
             q1 = self.q_norm(q1.transpose(1, 2))
             q2 = self.q_norm(q2.transpose(1, 2))
+            if self.qk_log_scale is not None:
+                with torch.autocast(device_type=queries.device.type, enabled=False):
+                    qk_mult = torch.exp(self.qk_log_scale.float().clamp(-2.0, 2.5))
+                q1 = q1 * qk_mult.to(q1.dtype)
+                q2 = q2 * qk_mult.to(q2.dtype)
             k1, k2 = k.chunk(2, dim=-1)
             a1 = F.scaled_dot_product_attention(q1, k1, v, attn_mask=mask, dropout_p=dropout_p)
             a2 = F.scaled_dot_product_attention(q2, k2, v, attn_mask=mask, dropout_p=dropout_p)
@@ -642,9 +651,13 @@ class CrossAttention(nn.Module):
                 lam = (dot1.exp() - dot2.exp() + self.lambda_init).to(a1.dtype)
             y = self.sub_norm(a1 - lam * a2) * (1.0 - self.lambda_init)
         else:
-            q = self.q(queries).view(b, t, self.heads, self.head_dim).transpose(1, 2)
+            q = self.q_norm(self.q(queries).view(b, t, self.heads, self.head_dim).transpose(1, 2))
+            if self.qk_log_scale is not None:
+                with torch.autocast(device_type=queries.device.type, enabled=False):
+                    qk_mult = torch.exp(self.qk_log_scale.float().clamp(-2.0, 2.5))
+                q = q * qk_mult.to(q.dtype)
             y = F.scaled_dot_product_attention(
-                self.q_norm(q), k, v, attn_mask=mask, dropout_p=dropout_p,
+                q, k, v, attn_mask=mask, dropout_p=dropout_p,
             )
         return self.out(y.transpose(1, 2).contiguous().view(b, t, d))
 
