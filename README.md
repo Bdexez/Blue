@@ -2,7 +2,7 @@
 
 Un réseau PyTorch qui réunit les quatre usages demandés : modèle multimodal, génération de texte, vision et prévision de séries temporelles. Les trois modalités partagent un décodeur à mélange d'experts et peuvent être utilisées seules, par paires ou ensemble.
 
-La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. BLUE fournit une architecture réellement entraînable, des configurations allant de **739 506 à 1 695 114 396 246 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
+La complexité n'a pas de maximum absolu : on peut toujours ajouter des couches et des experts. BLUE fournit une architecture réellement entraînable, des configurations allant de **739 506 à 1 695 115 391 574 paramètres**, et un entraînement local de la configuration **549 485 298 paramètres**. Les grandes configurations sont décrites et comptées sans allocation des poids ; elles n'ont pas été entraînées ici.
 
 Le checkpoint livré apprend sur des signaux synthétiques associés à des images de motifs et à de courtes descriptions. Il sert à démontrer l'apprentissage conjoint. Ce n'est pas un assistant préentraîné ni un modèle déjà performant sur des photos ou des textes quelconques. La complexité seule ne garantit pas la qualité.
 
@@ -103,8 +103,8 @@ Les comptes dédupliquent l'embedding et la tête de texte, qui partagent leurs 
 | `base` | 1 534 337 266 | 16 | 16 / 2 | 2,858 Gio |
 | `large` | 39 285 370 354 | 32 | 32 / 2 | 73,175 Gio |
 | `ultra` | 588 945 015 026 | 64 | 64 / 4 | 1 096,996 Gio |
-| `hyper` | 1 847 121 309 | 16 (32 effectives) | 16 / 2 | 3,441 Gio |
-| `titan` | 1 695 114 396 246 | 80 (160 effectives) | 64 / 4 | 3 157,397 Gio |
+| `hyper` | 1 847 147 421 | 16 (32 effectives) | 16 / 2 | 3,441 Gio |
+| `titan` | 1 695 115 391 574 | 80 (160 effectives) | 64 / 4 | 3 157,398 Gio |
 
 Les experts partagés s'ajoutent aux experts routés : un pour la plupart des presets, deux pour `ultra` et `titan`. Les presets `hyper` et `titan` activent l'ensemble de l'architecture hybride (**8 modalités** : texte UTF-8 + Byte-NGrams, vision 2D-RoPE, séries spectrales + ondelettes de Haar, audio, graphes, nuages 3D SE(3)-invariants, tabulaire hétérogène PLR, vidéo 3D-RoPE ; resampler hiérarchique FSQ + registres cognitifs + diversité orthogonale, cross-attention différentielle & latente MLA, modulation AdaLN-Zero multimodale, mHC à 4 flux, mixeur quad-paradigme entrelacé MLA/DiffAttn/Sinks/ResFormer/SoftCap/NSA + CausalConv + Gated DeltaNet WY + TTT-Linear, MoE++ KAN-SwiGLU à routeur hyperbolique Poincaré et experts nuls, Causal Mixture-of-Depths, YaRN RoPE, mémoire épisodique, Flow Matching continu CFG + RK4, prédicteur latent Multimodal-JEPA, alignement hyperbolique 28 paires, queues lourdes quantiles, pondération multi-tâches adaptative par incertitude et raisonnement latent récursif PonderNet). Le nombre de paramètres sélectionnés par token n'est ni un compte de FLOPS ni une mesure du pic mémoire. Tous les poids restent en mémoire dans cette implémentation.
 
