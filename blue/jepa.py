@@ -18,11 +18,12 @@ class MultimodalJEPAPredictor(nn.Module):
     """
 
     def __init__(self, d_model: int, *, num_modalities: int = 8, norm_eps: float = 1e-6,
-                 variance_weight: float = 0.1):
+                 variance_weight: float = 0.1, covariance_weight: float = 0.0):
         super().__init__()
         self.d_model = d_model
         self.num_modalities = num_modalities
         self.variance_weight = float(variance_weight)
+        self.covariance_weight = float(covariance_weight)
         hidden = max(d_model, min(2 * d_model, 2048))
         self.target_embed = nn.Embedding(num_modalities, d_model)
         self.context_norm = RMSNorm(d_model, norm_eps)
@@ -56,11 +57,20 @@ class MultimodalJEPAPredictor(nn.Module):
                 pred_norm = F.normalize(pred_f, p=2, dim=-1, eps=1e-6)
                 targ_norm = F.normalize(target_vec.detach().float(), p=2, dim=-1, eps=1e-6)
                 mse = (pred_norm - targ_norm).square().sum(dim=-1).mean()
+                loss_j = mse
                 if pred_f.size(0) > 1 and self.variance_weight > 0.0:
                     std = torch.sqrt(pred_f.var(dim=0, unbiased=False) + 1e-4)
                     var_reg = F.relu(1.0 - std).mean()
-                    loss_j = mse + self.variance_weight * var_reg
-                else:
-                    loss_j = mse
+                    loss_j = loss_j + self.variance_weight * var_reg
+                if pred_f.size(0) > 1 and self.covariance_weight > 0.0:
+                    # Identité exacte de trace en O(B^2 D) évitant la matrice [D, D] :
+                    # sum_{i!=j} C_{ij}^2 = ||Z_c Z_c^T||_F^2 / (B-1)^2 - sum_i C_{ii}^2.
+                    z_c = pred_f - pred_f.mean(dim=0, keepdim=True)
+                    denom_b = float(pred_f.size(0) - 1)
+                    gram_b = torch.matmul(z_c, z_c.t()) / denom_b
+                    diag_c = z_c.square().sum(dim=0) / denom_b
+                    off_diag_sq = (gram_b.square().sum() - diag_c.square().sum()).clamp_min(0.0)
+                    cov_reg = off_diag_sq / float(pred_f.size(-1))
+                    loss_j = loss_j + self.covariance_weight * cov_reg
             losses.append(loss_j)
         return torch.stack(losses).mean()

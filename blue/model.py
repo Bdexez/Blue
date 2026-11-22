@@ -155,7 +155,10 @@ class Blue(nn.Module):
         self.classifier = nn.Linear(d, config.num_classes)
         self.forecaster = QuantileForecastHead(config)
         self.flow_head = ConditionalFlowHead(config) if config.flow_matching_dim > 0 else None
-        self.jepa = MultimodalJEPAPredictor(d, norm_eps=config.norm_eps) if config.jepa_weight > 0 else None
+        self.jepa = (
+            MultimodalJEPAPredictor(d, norm_eps=config.norm_eps, covariance_weight=config.jepa_cov_weight)
+            if config.jepa_weight > 0 else None
+        )
         self.task_log_vars = nn.Parameter(torch.zeros(7)) if config.adaptive_loss_weighting else None
         self.alignment = nn.ModuleList([nn.Linear(d, d, bias=False) for _ in range(3)])
         self.audio_alignment = nn.Linear(d, d, bias=False) if config.audio_enabled else None

@@ -168,7 +168,7 @@ def generate_model_card(config: BlueConfig, *, name: str | None = None,
         f"{f' (courbure c={config.alignment_curvature})' if config.alignment_geometry == 'hyperbolic' else ''}"
         f"{f' (marge m={config.alignment_margin})' if config.alignment_margin > 0 else ''}"
         f"{f', Conditional Flow Matching (dim={config.flow_matching_dim}, {config.flow_matching_layers} blocs AdaLN-Zero, temps `{config.flow_time_schedule}`)' if config.flow_matching_dim else ''}"
-        f"{f', Multimodal-JEPA (poids={config.jepa_weight})' if config.jepa_weight > 0 else ''}"
+        f"{f', Multimodal-JEPA (poids={config.jepa_weight}' + (f', VICReg cov={config.jepa_cov_weight}' if config.jepa_cov_weight > 0 else '') + ')' if config.jepa_weight > 0 else ''}"
         f"{', pondération adaptative par incertitude' if config.adaptive_loss_weighting else ''}.",
         "",
         f"## Empreinte mémoire de génération (seq_len={cache['seq_len']}, batch={cache['batch_size']})",

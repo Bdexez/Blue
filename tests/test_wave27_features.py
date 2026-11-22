@@ -31,6 +31,41 @@ class Wave27FlowTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(s_mid).all())
         self.assertTrue(torch.isfinite(s_rk4).all())
 
+    def test_jepa_vicreg_exact_covariance_decorrelation(self):
+        from blue.jepa import MultimodalJEPAPredictor
+        torch.manual_seed(2702)
+        pred_no_cov = MultimodalJEPAPredictor(32, variance_weight=0.0, covariance_weight=0.0)
+        pred_cov = MultimodalJEPAPredictor(32, variance_weight=0.0, covariance_weight=1.0)
+        pred_cov.load_state_dict(pred_no_cov.state_dict())
+
+        v0 = torch.randn(4, 32, requires_grad=True)
+        v1 = torch.randn(4, 32, requires_grad=True)
+        loss_base = pred_no_cov([(0, v0), (1, v1)])
+        loss_cov = pred_cov([(0, v0), (1, v1)])
+        cov_diff = (loss_cov - loss_base).item()
+
+        # Verify exact algebraic match with explicit D x D covariance matrix
+        manual_covs = []
+        for mod_id, ctx in ((0, v1), (1, v0)):
+            z = pred_cov.predict(ctx, mod_id).float()
+            zc = z - z.mean(dim=0, keepdim=True)
+            cov = (zc.t() @ zc) / (z.size(0) - 1)
+            off = cov - torch.diag(torch.diag(cov))
+            manual_covs.append((off.square().sum() / z.size(-1)).item())
+        self.assertAlmostEqual(cov_diff, sum(manual_covs) / 2.0, places=5)
+
+        cfg = BlueConfig.preset("tiny")
+        cfg.jepa_weight = 0.1
+        cfg.jepa_cov_weight = 0.04
+        model = Blue(cfg).train()
+        ids = torch.tensor([[1, 10, 20, 30], [1, 12, 22, 32], [1, 14, 24, 34]])
+        img = torch.randn(3, cfg.image_channels, cfg.image_size, cfg.image_size)
+        out = model(ids, images=img, labels=ids)
+        self.assertIn("jepa", out.losses)
+        out.loss.backward()
+        self.assertIsNotNone(model.jepa.out_proj.weight.grad)
+        self.assertGreater(model.jepa.out_proj.weight.grad.abs().sum().item(), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
