@@ -117,9 +117,42 @@ class EmbeddingFile:
             yield torch.stack(vectors), torch.tensor(indexes, dtype=torch.long)
 
 
+class _CandidateBatches:
+    """Parcourir les candidats une fois par lot de requêtes sans les relire à chaque fois.
+
+    Le premier parcours lit, vérifie et décode le fichier ; ses lots restent en
+    mémoire tant qu'ils tiennent dans ``budget`` octets, sinon chaque parcours
+    relit le fichier comme auparavant. ``verify`` confirme ensuite que le fichier
+    n'a pas changé depuis sa lecture.
+    """
+
+    def __init__(self, source, size, budget):
+        self.source, self.size, self.budget = source, size, budget
+        self.cache = None
+
+    def __iter__(self):
+        if self.cache is not None:
+            yield from self.cache
+            return
+        cache, used = [], 0
+        for vectors, indices in self.source.batches(self.size):
+            if cache is not None:
+                used += vectors.numel() * vectors.element_size() + indices.numel() * indices.element_size()
+                if used <= self.budget:
+                    cache.append((vectors, indices))
+                else:
+                    cache = None
+            yield vectors, indices
+        self.cache = cache
+
+    def verify(self):
+        if self.cache is not None and file_identity(self.source.path.stat()) != self.source.identity:
+            raise ValueError(f'Fichier de vecteurs modifié : {self.source.path}')
+
+
 def search_embeddings(query_path, candidate_path, query_modality, candidate_modality, *, top_k=5,
                       query_batch_size=16, candidate_batch_size=1024, exclude_self=False, skip_missing=False,
-                      geometry="euclidean", curvature=1.0):
+                      geometry="euclidean", curvature=1.0, candidate_cache_bytes=512 * 1024 * 1024):
     """Produire les voisins exacts, triés par score décroissant puis indice croissant."""
     if min(top_k, query_batch_size, candidate_batch_size) < 1:
         raise ValueError('top_k et les tailles de lot doivent être positifs')
@@ -130,10 +163,11 @@ def search_embeddings(query_path, candidate_path, query_modality, candidate_moda
     norm_vecs = geometry == "euclidean"
     queries = EmbeddingFile(query_path, query_modality, skip_missing=skip_missing, normalize=norm_vecs)
     candidates = EmbeddingFile(candidate_path, candidate_modality, skip_missing=skip_missing, normalize=norm_vecs)
+    candidate_batches = _CandidateBatches(candidates, candidate_batch_size, candidate_cache_bytes)
     for query_vectors, query_indices in queries.batches(query_batch_size):
         best_scores = torch.empty((len(query_indices), 0), dtype=torch.float64)
         best_indices = torch.empty((len(query_indices), 0), dtype=torch.long)
-        for candidate_vectors, candidate_indices in candidates.batches(candidate_batch_size):
+        for candidate_vectors, candidate_indices in candidate_batches:
             for field in ('checkpoint_sha256', 'amp'):
                 if queries.metadata[field] != candidates.metadata[field]:
                     raise ValueError(f'Fichiers de vecteurs incompatibles : {field}')
@@ -163,3 +197,4 @@ def search_embeddings(query_path, candidate_path, query_modality, candidate_moda
             yield {'index': index, 'query_modality': query_modality, 'candidate_modality': candidate_modality,
                    'query_embeddings_sha256': queries.sha256, 'candidate_embeddings_sha256': candidates.sha256,
                    'matches': matches}
+    candidate_batches.verify()
