@@ -1472,51 +1472,42 @@ class Blue(nn.Module):
             rows.append(row)
         return torch.cat(rows, dim=0)
 
-    def _generate_speculative_greedy(self, input_ids, *, max_new_tokens, eos_id, reasoning_steps,
-                                     repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0,
-                                     no_repeat_ngram_size=0,
-                                     **context):
-        """Décodage auto-spéculatif exact (greedy) exploitant les future_heads."""
-        penalties = dict(
-            repetition_penalty=repetition_penalty,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            no_repeat_ngram_size=no_repeat_ngram_size,
-        )
+    @staticmethod
+    def _accepted_prefix(verified: torch.Tensor, drafts) -> int:
+        """Nombre de brouillons consécutifs égaux aux tokens vérifiés."""
+        accepted = 0
+        for j, draft in enumerate(drafts):
+            if verified[j].item() != draft.item():
+                break
+            accepted += 1
+        return accepted
+
+    def _parallel_decode(self, input_ids, *, max_new_tokens, eos_id, reasoning_steps, window,
+                         first_token, propose_round, context):
+        """Boucle commune des décodeurs auto-spéculatifs et de Jacobi (batch de 1).
+
+        ``first_token(logits, history)`` choisit un token à partir de logits bruts ;
+        ``propose_round(result, next_token, last_hidden, cache, n_draft)`` propose puis
+        vérifie ``n_draft`` brouillons et renvoie ``(emitted, accepted, candidate, verify_out)``.
+        Le cache n'est resynchronisé que sur les tokens réellement acceptés.
+        """
         result = input_ids
         output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
         cache = output.cache
-        scores = self._apply_penalties(output.logits[:, -1], result, **penalties)
-        scores[:, [0, 1, 3]] = -torch.inf
-        next_token = scores.argmax(-1)
+        next_token = first_token(output.logits[:, -1], result)
         result = torch.cat((result, next_token[:, None]), -1)
         generated = 1
         if eos_id is not None and next_token.item() == eos_id:
             return result
         last_hidden = output.last_hidden
         while generated < max_new_tokens:
-            remaining = max_new_tokens - generated
-            n_draft = min(len(self.future_heads), remaining - 1)
+            n_draft = min(window, max_new_tokens - generated - 1)
             if n_draft == 0:
                 step_out = self(next_token[:, None], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-                step_scores = self._apply_penalties(step_out.logits[:, -1], result, **penalties)
-                step_scores[:, [0, 1, 3]] = -torch.inf
-                next_token = step_scores.argmax(-1)
+                next_token = first_token(step_out.logits[:, -1], result)
                 result = torch.cat((result, next_token[:, None]), -1)
                 break
-            drafts = self._draft_future_tokens(last_hidden, n_draft, history_ids=result, **penalties)
-            candidate = torch.stack([next_token, *drafts], dim=1)  # [1, 1 + n_draft]
-            verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-            v_scores = self._penalized_verify_logits(verify_out.logits, result, candidate, **penalties)
-            verified = v_scores.argmax(-1)  # verified[j] is true token after candidate[0..j]
-            accepted = 0
-            for j in range(n_draft):
-                if verified[j].item() == drafts[j].item():
-                    accepted += 1
-                else:
-                    break
-            # Les tokens exacts produits sont verified[0..accepted].
-            emitted = verified[:accepted + 1]
+            emitted, accepted, candidate, verify_out = propose_round(result, next_token, last_hidden, cache, n_draft)
             stop_now = False
             if eos_id is not None:
                 eos_positions = (emitted == eos_id).nonzero(as_tuple=True)[0]
@@ -1529,16 +1520,44 @@ class Blue(nn.Module):
                 break
             next_token = emitted[-1:]
             if accepted == n_draft:
-                # Tous les brouillons acceptés : le cache de verify_out est déjà synchronisé !
-                cache = verify_out.cache
-                last_hidden = verify_out.last_hidden
+                # Tous les brouillons acceptés : le cache de vérification est déjà synchronisé.
+                cache, last_hidden = verify_out.cache, verify_out.last_hidden
             else:
-                # Resynchroniser exactement le cache sur les seuls tokens validés.
-                sync_tokens = candidate[:, :accepted + 1]
-                sync_out = self(sync_tokens, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-                cache = sync_out.cache
-                last_hidden = sync_out.last_hidden
+                sync_out = self(candidate[:, :accepted + 1], cache=cache, use_cache=True,
+                                reasoning_steps=reasoning_steps)
+                cache, last_hidden = sync_out.cache, sync_out.last_hidden
         return result
+
+    def _greedy_token(self, logits, history, penalties):
+        scores = self._apply_penalties(logits, history, **penalties)
+        scores[:, [0, 1, 3]] = -torch.inf
+        return scores.argmax(-1)
+
+    def _generate_speculative_greedy(self, input_ids, *, max_new_tokens, eos_id, reasoning_steps,
+                                     repetition_penalty=1.0, presence_penalty=0.0, frequency_penalty=0.0,
+                                     no_repeat_ngram_size=0,
+                                     **context):
+        """Décodage auto-spéculatif exact (greedy) exploitant les future_heads."""
+        penalties = dict(
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+        )
+
+        def propose_round(result, next_token, last_hidden, cache, n_draft):
+            drafts = self._draft_future_tokens(last_hidden, n_draft, history_ids=result, **penalties)
+            candidate = torch.stack([next_token, *drafts], dim=1)  # [1, 1 + n_draft]
+            verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
+            # verified[j] est le token exact qui suit candidate[0..j].
+            verified = self._penalized_verify_logits(verify_out.logits, result, candidate, **penalties).argmax(-1)
+            accepted = self._accepted_prefix(verified, drafts)
+            return verified[:accepted + 1], accepted, candidate, verify_out
+
+        return self._parallel_decode(
+            input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id, reasoning_steps=reasoning_steps,
+            window=len(self.future_heads), first_token=lambda logits, history: self._greedy_token(logits, history, penalties),
+            propose_round=propose_round, context=context)
 
     def _generate_speculative_stochastic(self, input_ids, *, max_new_tokens, temperature,
                                          top_k, top_p, min_p=0.0, typical_p=1.0, eta_cutoff=0.0,
@@ -1554,101 +1573,48 @@ class Blue(nn.Module):
             frequency_penalty=frequency_penalty,
             no_repeat_ngram_size=no_repeat_ngram_size,
         )
-        result = input_ids
-        output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
-        cache = output.cache
-        p0 = self._filtered_probs(
-            self._apply_penalties(output.logits[:, -1], result, **penalties),
-            temperature=temperature, top_k=top_k, top_p=top_p,
-            min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
-            top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
-        )
-        next_token = torch.multinomial(p0, 1).squeeze(-1)
-        result = torch.cat((result, next_token[:, None]), -1)
-        generated = 1
-        if eos_id is not None and next_token.item() == eos_id:
-            return result
-        last_hidden = output.last_hidden
-        while generated < max_new_tokens:
-            remaining = max_new_tokens - generated
-            n_draft = min(len(self.future_heads), remaining - 1)
-            if n_draft == 0:
-                step_out = self(next_token[:, None], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-                p_last = self._filtered_probs(
-                    self._apply_penalties(step_out.logits[:, -1], result, **penalties),
-                    temperature=temperature, top_k=top_k, top_p=top_p,
-                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
-                    top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
-                )
-                next_token = torch.multinomial(p_last, 1).squeeze(-1)
-                result = torch.cat((result, next_token[:, None]), -1)
-                break
-            drafts, q_probs = self._draft_future_stochastic(
-                last_hidden, n_draft, temperature=temperature, top_k=top_k, top_p=top_p,
-                min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
-                top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
-                history_ids=result, **penalties,
-            )
+        filters = dict(temperature=temperature, top_k=top_k, top_p=top_p, min_p=min_p, typical_p=typical_p,
+                       eta_cutoff=eta_cutoff, tfs_z=tfs_z, top_a=top_a, edt_theta=edt_theta, edt_n=edt_n)
+
+        def target_probs(logits, history):
+            return self._filtered_probs(self._apply_penalties(logits, history, **penalties), **filters)
+
+        def sample(logits, history):
+            return torch.multinomial(target_probs(logits, history), 1).squeeze(-1)
+
+        def propose_round(result, next_token, last_hidden, cache, n_draft):
+            drafts, q_probs = self._draft_future_stochastic(last_hidden, n_draft, **filters,
+                                                            history_ids=result, **penalties)
             candidate = torch.stack([next_token, *drafts], dim=1)  # [1, 1 + n_draft]
             verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
             accepted = 0
-            emitted_list = []
-            rejected = False
+            emitted = []
             for j in range(n_draft):
-                hist_j = result if j == 0 else torch.cat((result, candidate[:, 1:j + 1]), dim=-1)
-                p_j = self._filtered_probs(
-                    self._apply_penalties(verify_out.logits[:, j], hist_j, **penalties),
-                    temperature=temperature, top_k=top_k, top_p=top_p,
-                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
-                    top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
-                )
-                tok = drafts[j].item()
-                p_tok = p_j[0, tok].item()
-                q_tok = q_probs[j][0, tok].item()
+                history = result if j == 0 else torch.cat((result, candidate[:, 1:j + 1]), dim=-1)
+                p_j = target_probs(verify_out.logits[:, j], history)
+                token = drafts[j].item()
+                p_token = p_j[0, token].item()
+                q_token = q_probs[j][0, token].item()
                 u = torch.rand((), device=input_ids.device).item()
-                if q_tok > 0.0 and u <= min(1.0, p_tok / q_tok):
-                    emitted_list.append(drafts[j])
+                if q_token > 0.0 and u <= min(1.0, p_token / q_token):
+                    emitted.append(drafts[j])
                     accepted += 1
-                else:
-                    residual = (p_j - q_probs[j]).clamp_min(0.0)
-                    res_sum = residual.sum().item()
-                    if res_sum > 0.0:
-                        corrected = torch.multinomial(residual / res_sum, 1).squeeze(-1)
-                    else:
-                        corrected = torch.multinomial(p_j, 1).squeeze(-1)
-                    emitted_list.append(corrected)
-                    rejected = True
-                    break
-            if not rejected:
-                hist_bonus = torch.cat((result, candidate[:, 1:n_draft + 1]), dim=-1)
-                p_bonus = self._filtered_probs(
-                    self._apply_penalties(verify_out.logits[:, n_draft], hist_bonus, **penalties),
-                    temperature=temperature, top_k=top_k, top_p=top_p,
-                    min_p=min_p, typical_p=typical_p, eta_cutoff=eta_cutoff, tfs_z=tfs_z,
-                    top_a=top_a, edt_theta=edt_theta, edt_n=edt_n,
-                )
-                emitted_list.append(torch.multinomial(p_bonus, 1).squeeze(-1))
-            emitted = torch.cat(emitted_list, dim=0)
-            stop_now = False
-            if eos_id is not None:
-                eos_positions = (emitted == eos_id).nonzero(as_tuple=True)[0]
-                if eos_positions.numel():
-                    emitted = emitted[:eos_positions[0].item() + 1]
-                    stop_now = True
-            result = torch.cat((result, emitted[None, :]), -1)
-            generated += emitted.numel()
-            if stop_now or generated >= max_new_tokens:
+                    continue
+                # Rejet : rééchantillonner selon le résidu normalisé max(p - q, 0).
+                residual = (p_j - q_probs[j]).clamp_min(0.0)
+                residual_sum = residual.sum().item()
+                corrected = torch.multinomial(residual / residual_sum if residual_sum > 0.0 else p_j, 1)
+                emitted.append(corrected.squeeze(-1))
                 break
-            next_token = emitted[-1:]
-            if accepted == n_draft:
-                cache = verify_out.cache
-                last_hidden = verify_out.last_hidden
             else:
-                sync_tokens = candidate[:, :accepted + 1]
-                sync_out = self(sync_tokens, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-                cache = sync_out.cache
-                last_hidden = sync_out.last_hidden
-        return result
+                # Tous acceptés : un token bonus tiré de la distribution cible suivante.
+                bonus_history = torch.cat((result, candidate[:, 1:n_draft + 1]), dim=-1)
+                emitted.append(sample(verify_out.logits[:, n_draft], bonus_history))
+            return torch.cat(emitted, dim=0), accepted, candidate, verify_out
+
+        return self._parallel_decode(
+            input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id, reasoning_steps=reasoning_steps,
+            window=len(self.future_heads), first_token=sample, propose_round=propose_round, context=context)
 
     def _generate_jacobi_greedy(self, input_ids, *, max_new_tokens, eos_id,
                                 reasoning_steps, jacobi_window,
@@ -1662,85 +1628,36 @@ class Blue(nn.Module):
             frequency_penalty=frequency_penalty,
             no_repeat_ngram_size=no_repeat_ngram_size,
         )
-        result = input_ids
-        output = self(input_ids, cache=None, use_cache=True, reasoning_steps=reasoning_steps, **context)
-        cache = output.cache
-        scores = self._apply_penalties(output.logits[:, -1], result, **penalties)
-        scores[:, [0, 1, 3]] = -torch.inf
-        next_token = scores.argmax(-1)
-        result = torch.cat((result, next_token[:, None]), -1)
-        generated = 1
-        if eos_id is not None and next_token.item() == eos_id:
-            return result
-        last_hidden = output.last_hidden
         carry: list[torch.Tensor] = []
-        while generated < max_new_tokens:
-            remaining = max_new_tokens - generated
-            n_draft = min(jacobi_window, remaining - 1)
-            if n_draft == 0:
-                step_out = self(next_token[:, None], cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-                step_scores = self._apply_penalties(step_out.logits[:, -1], result, **penalties)
-                step_scores[:, [0, 1, 3]] = -torch.inf
-                next_token = step_scores.argmax(-1)
-                result = torch.cat((result, next_token[:, None]), -1)
-                break
-            drafts = list(carry[:n_draft])
-            if len(drafts) < n_draft and len(self.future_heads) > 0 and last_hidden is not None:
-                fh_drafts = self._draft_future_tokens(
-                    last_hidden, min(n_draft, len(self.future_heads)),
-                    history_ids=result, **penalties,
-                )
-                for j in range(len(drafts), min(n_draft, len(fh_drafts))):
-                    drafts.append(fh_drafts[j])
-            while len(drafts) < n_draft:
-                fallback = drafts[-1] if drafts else next_token
-                drafts.append(fallback)
+
+        def verify(result, next_token, cache, drafts):
             candidate = torch.stack([next_token, *drafts], dim=1)
             verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-            v_scores = self._penalized_verify_logits(verify_out.logits, result, candidate, **penalties)
-            verified = v_scores.argmax(-1)
-            accepted = 0
-            for j in range(n_draft):
-                if verified[j].item() == drafts[j].item():
-                    accepted += 1
-                else:
-                    break
+            verified = self._penalized_verify_logits(verify_out.logits, result, candidate, **penalties).argmax(-1)
+            return candidate, verify_out, verified, self._accepted_prefix(verified, drafts)
+
+        def propose_round(result, next_token, last_hidden, cache, n_draft):
+            nonlocal carry
+            drafts = list(carry[:n_draft])
+            if len(drafts) < n_draft and len(self.future_heads) > 0 and last_hidden is not None:
+                head_drafts = self._draft_future_tokens(last_hidden, min(n_draft, len(self.future_heads)),
+                                                        history_ids=result, **penalties)
+                drafts.extend(head_drafts[len(drafts):n_draft])
+            while len(drafts) < n_draft:
+                drafts.append(drafts[-1] if drafts else next_token)
+            candidate, verify_out, verified, accepted = verify(result, next_token, cache, drafts)
             if accepted == 0:
-                # Raffinement de point fixe de Jacobi sur la trajectoire mise à jour :
-                # drafts[0] = verified[0] est désormais exact, garantissant accepted >= 1.
+                # Raffinement de point fixe sur la trajectoire mise à jour : drafts[0] = verified[0]
+                # est désormais exact, ce qui garantit accepted >= 1.
                 drafts = [verified[j].unsqueeze(0) for j in range(n_draft)]
-                candidate = torch.stack([next_token, *drafts], dim=1)
-                verify_out = self(candidate, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-                v_scores = self._penalized_verify_logits(verify_out.logits, result, candidate, **penalties)
-                verified = v_scores.argmax(-1)
-                accepted = 0
-                for j in range(n_draft):
-                    if verified[j].item() == drafts[j].item():
-                        accepted += 1
-                    else:
-                        break
-            emitted = verified[:accepted + 1]
+                candidate, verify_out, verified, accepted = verify(result, next_token, cache, drafts)
             carry = [verified[j].unsqueeze(0) for j in range(accepted + 1, n_draft + 1)]
-            stop_now = False
-            if eos_id is not None:
-                eos_positions = (emitted == eos_id).nonzero(as_tuple=True)[0]
-                if eos_positions.numel():
-                    emitted = emitted[:eos_positions[0].item() + 1]
-                    stop_now = True
-            result = torch.cat((result, emitted[None, :]), -1)
-            generated += emitted.numel()
-            if stop_now or generated >= max_new_tokens:
-                break
-            next_token = emitted[-1:]
-            if accepted == n_draft:
-                cache = verify_out.cache
-                last_hidden = verify_out.last_hidden
-            else:
-                sync_tokens = candidate[:, :accepted + 1]
-                sync_out = self(sync_tokens, cache=cache, use_cache=True, reasoning_steps=reasoning_steps)
-                cache = sync_out.cache
-                last_hidden = sync_out.last_hidden
-        return result
+            return verified[:accepted + 1], accepted, candidate, verify_out
+
+        return self._parallel_decode(
+            input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id, reasoning_steps=reasoning_steps,
+            window=jacobi_window, first_token=lambda logits, history: self._greedy_token(logits, history, penalties),
+            propose_round=propose_round, context=context)
 
     def _generate_beam_search(self, input_ids, *, max_new_tokens, beam_width, length_penalty,
                               eos_id, reasoning_steps, repetition_penalty=1.0,
