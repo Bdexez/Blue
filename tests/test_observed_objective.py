@@ -18,12 +18,12 @@ from blue.observed_objective import observed_objective, target_counts
 from blue.training import DistributedTrainingModel, load_checkpoint
 
 
-def test_config():
+def make_config():
     return replace(BlueConfig.preset("tiny"), prediction_steps=4, balance_weight=0,
                    router_z_weight=0, alignment_weight=0)
 
 
-def test_batch(config):
+def make_batch(config):
     batch = synthetic_batch(config, batch_size=4, seed=912)
     batch["labels"][0, 2:] = -100
     batch["labels"][1, 5:] = -100
@@ -37,11 +37,11 @@ def distributed_worker(rank, init_file, output_dir, mixed=False):
     torch.set_num_threads(1)
     dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=2)
     try:
-        config = test_config()
+        config = make_config()
         torch.manual_seed(316)
         model = Blue(config).eval()
         wrapped = DistributedDataParallel(DistributedTrainingModel(model), find_unused_parameters=True)
-        batch = test_batch(config)
+        batch = make_batch(config)
         chunks = [{name: value[rank * 2 + index:rank * 2 + index + 1] for name, value in batch.items()}
                   for index in range(2)]
         if mixed is True:
@@ -72,12 +72,12 @@ class ObservedObjectiveTests(unittest.TestCase):
         torch.set_num_threads(2)
 
     def test_accumulated_gradients_match_full_batch_with_missing_targets(self):
-        config = test_config()
+        config = make_config()
         torch.manual_seed(316)
         full = Blue(config).eval()
         accumulated = Blue(config).eval()
         accumulated.load_state_dict(full.state_dict())
-        batch = test_batch(config)
+        batch = make_batch(config)
         chunks = [{name: value[section] for name, value in batch.items()}
                   for section in (slice(0, 1), slice(1, 4))]
         counts = [target_counts(chunk, config.prediction_steps) for chunk in chunks]
@@ -95,10 +95,10 @@ class ObservedObjectiveTests(unittest.TestCase):
 
     @unittest.skipUnless(dist.is_available() and dist.is_gloo_available(), "Gloo indisponible")
     def test_distributed_gradients_match_full_batch_with_missing_targets(self):
-        config = test_config()
+        config = make_config()
         torch.manual_seed(316)
         model = Blue(config).eval()
-        model(**test_batch(config)).loss.backward()
+        model(**make_batch(config)).loss.backward()
         with tempfile.TemporaryDirectory() as directory:
             torch.multiprocessing.spawn(distributed_worker, args=(str(Path(directory) / "group"), directory),
                                         nprocs=2, join=True)
@@ -114,10 +114,10 @@ class ObservedObjectiveTests(unittest.TestCase):
 
     @unittest.skipUnless(dist.is_available() and dist.is_gloo_available(), "Gloo indisponible")
     def test_distributed_gradients_with_varying_modalities(self):
-        config = test_config()
+        config = make_config()
         torch.manual_seed(316)
         model = Blue(config).eval()
-        batch = test_batch(config)
+        batch = make_batch(config)
         chunks = [{name: value[index:index + 1] for name, value in batch.items()} for index in range(4)]
         for chunk in chunks[:2]:
             chunk.pop("class_labels")
@@ -144,10 +144,10 @@ class ObservedObjectiveTests(unittest.TestCase):
 
     @unittest.skipUnless(dist.is_available() and dist.is_gloo_available(), "Gloo indisponible")
     def test_distributed_rank_can_have_no_supervised_targets(self):
-        config = test_config()
+        config = make_config()
         torch.manual_seed(316)
         model = Blue(config).eval()
-        batch = test_batch(config)
+        batch = make_batch(config)
         chunks = [{name: value[index:index + 1] for name, value in batch.items()} for index in range(4)]
         for chunk in chunks[2:]:
             for key in ("labels", "class_labels", "forecast_targets"):
