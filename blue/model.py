@@ -39,6 +39,8 @@ class ModelCache:
     episodic_memory: torch.Tensor | None = None
     ngram_tail: torch.Tensor | None = None
     ngram_tail_valid: torch.Tensor | None = None
+    # Toutes les positions déjà mises en cache sont valides (None : inconnu).
+    dense: bool | None = None
 
 
 @dataclass
@@ -591,6 +593,8 @@ class Blue(nn.Module):
         adaptive = self.ponder_halt is not None and steps > 1
         step_states = [] if adaptive else None
         halt_hazards = [] if adaptive else None
+        # Une seule synchronisation par passe : toutes les positions (et le cache) sont-elles valides ?
+        dense = bool(valid.all()) and (cache is None or cache.dense is True)
         for rec_step in range(steps):
             x = self._prepare_reasoning_step(x, initial, valid, rec_step)
             v0 = None
@@ -604,12 +608,12 @@ class Blue(nn.Module):
                 )
                 if use_ckpt:
                     # Les sorties absentes (None) traversent checkpoint sans tenseur factice.
-                    result = checkpoint(block, x, valid, latents, v0=v0, q0=q0, use_reentrant=False)
+                    result = checkpoint(block, x, valid, latents, v0=v0, q0=q0, dense=dense, use_reentrant=False)
                 else:
                     result = block(
                         x, valid, latents, offset=offset,
                         cache=None if cache is None else cache.layers[cache_slot],
-                        use_cache=use_cache, v0=v0, q0=q0,
+                        use_cache=use_cache, v0=v0, q0=q0, dense=dense,
                     )
                     if use_cache:
                         next_layers.append(result.cache)
@@ -665,7 +669,7 @@ class Blue(nn.Module):
         if self.embed_skip_gate is not None:
             skip = torch.sigmoid(self.embed_skip_gate).to(out_hidden.dtype) * self.embed_skip_norm(x_raw)
             out_hidden = (out_hidden + skip) * valid.unsqueeze(-1)
-        return out_hidden, balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory
+        return out_hidden, balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory, dense
 
     def _embed_text(self, input_ids: torch.Tensor, valid: torch.Tensor, cache: ModelCache | None = None):
         x = self.embedding(input_ids)
@@ -821,7 +825,7 @@ class Blue(nn.Module):
                      if attention_mask is None else attention_mask.bool())
             x, next_ngram_tail, next_ngram_valid = self._embed_text(input_ids, valid, cache=cache)
         offset = 0 if cache is None else cache.offset
-        hidden, balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory = self._run_decoder_stack(
+        hidden, balance_losses, z_losses, depth_losses, entropy_losses, ponder_kl, usage, next_layers, next_memory, dense = self._run_decoder_stack(
             x, valid, latents, offset=offset, cache=cache, use_cache=use_cache,
             reasoning_steps=reasoning_steps,
         )
@@ -1009,7 +1013,7 @@ class Blue(nn.Module):
             total = total + self._weight_task_loss("alignment", c.alignment_weight, losses["alignment"])
         next_cache = (ModelCache(next_layers, latents, offset + hidden.size(1), mean, scale, baseline,
                                  adapter_context, episodic_memory=next_memory,
-                                 ngram_tail=next_ngram_tail, ngram_tail_valid=next_ngram_valid)
+                                 ngram_tail=next_ngram_tail, ngram_tail_valid=next_ngram_valid, dense=dense)
                       if use_cache else None)
         return BlueOutput(logits, class_logits, forecast, total if supervised else None,
                           losses, torch.stack(usage), next_cache, auxiliary_text_losses, valid.sum(),
@@ -1313,6 +1317,7 @@ class Blue(nn.Module):
             episodic_memory=_sel(cache.episodic_memory),
             ngram_tail=_sel(cache.ngram_tail),
             ngram_tail_valid=_sel(cache.ngram_tail_valid),
+            dense=cache.dense,
         )
 
     @torch.inference_mode()

@@ -112,6 +112,31 @@ class RotaryEmbedding(nn.Module):
         self.mscale = (0.1 * math.log(self.scaling_factor) + 1.0
                        if scaling_type == "yarn" and self.scaling_factor > 1.0 else 1.0)
         self.register_buffer("inv_freq", self.frequencies(), persistent=False)
+        self._tables = None
+
+    def _phase_tables(self, offset, length, device, dtype):
+        """Cosinus et sinus des positions [offset, offset + length[, mis en cache.
+
+        Les tables croissent par puissances de deux, sont reconstruites si
+        ``inv_freq`` est remplacé (chargement) et ne participent jamais au graphe.
+        """
+        end = offset + length
+        tables = self._tables
+        if (tables is None or tables[0] is not self.inv_freq or tables[1] != (device, dtype)
+                or tables[2].size(0) < end):
+            size = 1 << max(end - 1, 1).bit_length()
+            with torch.inference_mode(False), torch.no_grad(), torch.autocast(device_type=device.type, enabled=False):
+                positions = torch.arange(size, device=device, dtype=torch.float32)
+                phase = torch.outer(positions, self.inv_freq.to(device).float())
+                cos = (phase.cos() * self.mscale).to(dtype)
+                sin = (phase.sin() * self.mscale).to(dtype)
+            tables = self._tables = (self.inv_freq, (device, dtype), cos, sin)
+        return tables[2][offset:end], tables[3][offset:end]
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_tables"] = None  # Cache dérivé : ni copié ni sérialisé.
+        return state
 
     def frequencies(self, device=None):
         exponent = torch.arange(0, self.head_dim, 2, dtype=torch.float32, device=device) / self.head_dim
@@ -132,12 +157,8 @@ class RotaryEmbedding(nn.Module):
         return base
 
     def forward(self, x, offset=0):
-        # [B, H, T, D] ; calcul des phases en fp32, même en précision mixte.
-        with torch.autocast(device_type=x.device.type, enabled=False):
-            positions = torch.arange(offset, offset + x.size(-2), device=x.device).float()
-            phase = torch.outer(positions, self.inv_freq.float())
-            cos = (phase.cos() * self.mscale).to(x.dtype)
-            sin = (phase.sin() * self.mscale).to(x.dtype)
+        # [B, H, T, D] ; phases calculées en fp32, même en précision mixte.
+        cos, sin = self._phase_tables(offset, x.size(-2), x.device, x.dtype)
         even, odd = x[..., 0::2], x[..., 1::2]
         return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
 
@@ -386,7 +407,7 @@ class GroupedQueryAttention(nn.Module):
             dot2 = (self.lambda_q2.float() * self.lambda_k2.float()).sum().clamp(-10.0, 10.0)
             return (dot1.exp() - dot2.exp() + self.lambda_init).to(dtype)
 
-    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None, q0=None):
+    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None, q0=None, dense=None):
         b, t, _ = x.shape
         v_first = q_first = None
         q_proj = self.q(x)
@@ -483,7 +504,9 @@ class GroupedQueryAttention(nn.Module):
         # Les positions RoPE restent absolues après l'éviction des anciennes clés.
         inside_window = not self.window or offset + t - 1 - start_pos < self.window
         mask, is_causal, forget_bias = None, False, None
-        if (self.attention_sinks == 0 and not self.forgetting and bool(key_valid.all()) and inside_window
+        # dense : indication calculée une fois par passe que toutes les clés sont valides.
+        all_valid = bool(key_valid.all()) if dense is None else dense
+        if (self.attention_sinks == 0 and not self.forgetting and all_valid and inside_window
                 and (not self.causal or t == 1 or offset == 0)):
             is_causal = self.causal and t > 1
         else:
@@ -804,10 +827,11 @@ class SparseMoE(nn.Module):
         self.expert_bias.add_(self.router_bias_update_rate * torch.sign(error))
         self.expert_bias.sub_(self.expert_bias.mean())
 
-    def forward(self, x, valid):
+    def forward(self, x, valid, *, dense=None):
         flat = x.reshape(-1, x.size(-1))
-        indices = valid.reshape(-1).nonzero(as_tuple=True)[0]
-        tokens = flat[indices]
+        # dense : toutes les positions sont valides, sans synchronisation par nonzero.
+        indices = None if dense else valid.reshape(-1).nonzero(as_tuple=True)[0]
+        tokens = flat if indices is None else flat[indices]
         if tokens.size(0) == 0:
             zero = x.sum() * 0
             self._null_fraction = None
@@ -855,15 +879,28 @@ class SparseMoE(nn.Module):
                 expert_mods[selected].to(h_lat.dtype) * weights.to(h_lat.dtype).unsqueeze(-1)
             ).sum(dim=1)
             mixed = mixed + self.latent_up(h_lat * token_mod)
-        for expert_id, expert in enumerate(self.experts):
-            rows, slots = torch.where(selected == expert_id)
+        # Regrouper les créneaux par expert (tri stable : ordre des lignes conservé)
+        # avec une seule synchronisation pour toutes les tailles de groupes.
+        flat_selected = selected.reshape(-1)
+        slot_counts = torch.bincount(flat_selected, minlength=self.total_slots)
+        order = flat_selected.argsort(stable=True)
+        flat_weights = weights.reshape(-1)
+        rows_all, contributions = [], []
+        start = 0
+        for expert, count in zip(self.experts, slot_counts[:self.n_experts].tolist()):
             # Un expert vide reste un graphe valide, sans traitement de tokens inutiles.
-            if rows.numel():
+            if count:
+                positions = order[start:start + count]
+                rows = positions // self.top_k
                 expert_output = expert(tokens[rows])
-                contribution = expert_output * weights[rows, slots, None].to(expert_output.dtype)
-                mixed = mixed.index_add(0, rows, contribution)
-        result = torch.zeros_like(flat).index_copy(0, indices, mixed.to(flat.dtype)).view_as(x)
-        full_fraction = F.one_hot(selected, self.total_slots).float().mean((0, 1))
+                contributions.append(expert_output * flat_weights[positions, None].to(expert_output.dtype))
+                rows_all.append(rows)
+            start += count
+        if contributions:
+            mixed = mixed.index_add(0, torch.cat(rows_all), torch.cat(contributions).to(mixed.dtype))
+        mixed = mixed.to(flat.dtype)
+        result = (mixed if indices is None else torch.zeros_like(flat).index_copy(0, indices, mixed)).view_as(x)
+        full_fraction = slot_counts.float() / flat_selected.numel()
         # Conservée détachée : la lecture seule (propriété) synchronise le GPU.
         self._null_fraction = full_fraction[self.n_experts:].sum().detach() if self.n_null > 0 else None
         balance = self.total_slots * (probs.mean(0) * full_fraction).sum()
@@ -1181,14 +1218,14 @@ class DecoderBlock(nn.Module):
                 self.ls_cross.fill_(self.ls_init)
                 self.ls_moe.fill_(self.ls_init)
 
-    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None, q0=None):
+    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None, q0=None, dense=None):
         if self.hc_attn is not None:
             h_pre, h_post, h_res = self.hc_attn.routing_weights(x)
             h = self.norm1(self.hc_attn.combine_input(x, h_pre))
         else:
             h = self.norm1(x)
         attention, (k, v, key_valid, v_first, q_first) = self.attn(
-            h, valid, offset=offset, cache=cache, use_cache=use_cache, v0=v0, q0=q0,
+            h, valid, offset=offset, cache=cache, use_cache=use_cache, v0=v0, q0=q0, dense=dense,
         )
         local, conv_state = self.conv(h, valid, None if cache is None else cache.conv_state)
         if self.mixer_router is not None:
@@ -1250,7 +1287,7 @@ class DecoderBlock(nn.Module):
             update, balance, z_loss, usage, entropy = self.moe(moe_in, selected)
             update = update * depth_prob.to(update.dtype).unsqueeze(-1)
         else:
-            update, balance, z_loss, usage, entropy = self.moe(moe_in, valid)
+            update, balance, z_loss, usage, entropy = self.moe(moe_in, valid, dense=dense)
         if adaln_gate is not None:
             update = update * (1.0 + adaln_gate.to(update.dtype))
         if self.ls_moe is not None:
