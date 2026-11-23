@@ -76,8 +76,7 @@ class EpisodicMemoryBank(nn.Module):
             addr_f = addr_all.float()
             gate_f = gate_all.float()
             decay_f = torch.sigmoid(decay_all.float()) if decay_all is not None else None
-            rk_w = self.read_k.weight.float()
-            rv_w = self.read_v.weight.float()
+            read_w = torch.cat((self.read_k.weight, self.read_v.weight)).float()  # [2D, D]
             mn_w = self.mem_norm.weight.float()
             mn_eps = self.mem_norm.eps
             s_scale = self.surprise_scale.float()
@@ -88,34 +87,40 @@ class EpisodicMemoryBank(nn.Module):
             else:
                 mem = memory.float()
 
+            # unbind : un seul nœud arrière, au lieu d'un tenseur complet par pas indexé.
+            q_steps = (q_f * scale_inv).unsqueeze(-1).unbind(1)  # [B, H, Dh, 1]
+            val_steps = val_f.unsqueeze(-2).unbind(1)  # [B, 1, D]
+            addr_steps = torch.softmax(addr_f, dim=-1).unbind(1)  # [B, M]
+            gate_steps = gate_f.unbind(1)
+            decay_steps = decay_f.unsqueeze(-1).unbind(1) if decay_f is not None else None
+            dense = bool(valid.all())
+            mask_steps = None if dense else valid[:, :, None, None].unbind(1)
+
             reads = []
             for step in range(t):
                 # Normalisation RMS FP32 des emplacements mémoire.
                 mem_n = mem * torch.rsqrt(mem.square().mean(-1, keepdim=True) + mn_eps) * mn_w
-                k_m = F.linear(mem_n, rk_w).view(b, self.memory_slots, self.n_heads, self.head_dim)
+                projected = F.linear(mem_n, read_w).view(b, self.memory_slots, 2, self.n_heads, self.head_dim)
+                k_m, v_m = projected.permute(2, 0, 3, 1, 4).unbind(0)  # [B, H, M, Dh]
                 k_m = F.normalize(k_m, p=2, dim=-1, eps=1e-6)
-                v_m = F.linear(mem_n, rv_w).view(b, self.memory_slots, self.n_heads, self.head_dim)
                 # Lecture multi-têtes : [B, H, M]
-                q_t = q_f[:, step]  # [B, H, Dh]
-                logits = torch.einsum("bhd,bmhd->bhm", q_t, k_m) * scale_inv
-                attn = torch.softmax(logits, dim=-1)
-                r_t = torch.einsum("bhm,bmhd->bhd", attn, v_m).reshape(b, d)
+                attn = torch.softmax(torch.matmul(k_m, q_steps[step]).squeeze(-1), dim=-1)
+                r_t = torch.matmul(attn.unsqueeze(-2), v_m).reshape(b, 1, d)
 
                 # Surprise et écriture convexe modulée (avec relaxation vers init_slots si activée).
-                v_t = val_f[:, step]
+                v_t = val_steps[step]
                 surprise = torch.log1p((v_t - r_t).square().sum(dim=-1).clamp_min(1e-12).sqrt() * dim_inv)
-                slot_addr = torch.softmax(addr_f[:, step], dim=-1)  # [B, M]
-                eta = torch.sigmoid(gate_f[:, step] + s_scale * surprise.unsqueeze(-1))  # [B, M]
-                blend = (slot_addr * eta).unsqueeze(-1)  # [B, M, 1]
-                if decay_f is not None:
-                    gamma_t = decay_f[:, step].unsqueeze(-1)  # [B, M, 1]
-                    mem_base = gamma_t * mem + (1.0 - gamma_t) * init_f
+                eta = torch.sigmoid(gate_steps[step] + s_scale * surprise)  # [B, M]
+                blend = (addr_steps[step] * eta).unsqueeze(-1)  # [B, M, 1]
+                if decay_steps is not None:
+                    mem_base = torch.lerp(init_f, mem, decay_steps[step])
                 else:
                     mem_base = mem
-                mem_next = (1.0 - blend) * mem_base + blend * v_t.unsqueeze(1)
-                mask = valid[:, step]
-                mem = torch.where(mask.view(b, 1, 1), mem_next, mem)
-                reads.append(torch.where(mask.unsqueeze(-1), r_t, torch.zeros_like(r_t)))
-            read_out = torch.stack(reads, dim=1)  # [B, T, D]
+                mem_next = torch.lerp(mem_base, v_t, blend)
+                mem = mem_next if dense else torch.where(mask_steps[step], mem_next, mem)
+                reads.append(r_t)
+            read_out = torch.cat(reads, dim=1)  # [B, T, D]
+            if not dense:
+                read_out = torch.where(valid.unsqueeze(-1), read_out, torch.zeros_like(read_out))
         out = x + torch.sigmoid(self.read_gate) * self.out_proj(read_out.to(x.dtype))
         return out * valid.unsqueeze(-1), mem
