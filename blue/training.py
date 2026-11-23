@@ -462,7 +462,12 @@ def train(args, config):
     ema = ModelEMA(model, args.ema_decay) if args.ema_decay > 0 else None
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp == "fp16")
     if "optimizer" in payload:
-        optimizer.load_state_dict(payload["optimizer"])
+        try:
+            optimizer.load_state_dict(payload["optimizer"])
+        except ValueError as exc:
+            raise ValueError("L'état de l'optimiseur ne correspond pas à ses groupes de paramètres "
+                             "(checkpoint Muon antérieur à la restriction de Muon aux poids linéaires ?) ; "
+                             "reprendre avec --init-from pour repartir d'un optimiseur neuf") from exc
     if ema is not None and "ema" in payload:
         ema.load_state_dict(payload["ema"])
     if "scaler" in payload:

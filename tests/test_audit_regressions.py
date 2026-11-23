@@ -126,6 +126,22 @@ class DispatchAndCacheTests(unittest.TestCase):
         torch.testing.assert_close(step, dense[:, 5:], rtol=1e-4, atol=1e-4)
 
 
+class MuonGroupTests(unittest.TestCase):
+    def test_muon_only_orthogonalises_linear_weights(self):
+        from blue.optimizer import build_optimizer
+        model = tiny(ttt_state_dim=8, residual_streams=2, tabular_enabled=True,
+                     temporal_spectral_mixing=True, ngram_vocab_size=64)
+        optimizer = build_optimizer(model, name="muon", lr=1e-3, weight_decay=0.0)
+        linear = {id(module.weight) for module in model.modules() if isinstance(module, nn.Linear)}
+        muon = [p for group in optimizer.param_groups if group["use_muon"] for p in group["params"]]
+        self.assertTrue(muon)
+        self.assertTrue(all(id(p) in linear for p in muon))
+        names = {id(p): name for name, p in model.named_parameters()}
+        adam = {names[id(p)] for group in optimizer.param_groups if not group["use_muon"] for p in group["params"]}
+        for expected in ("modality", "blocks.0.ttt.ln_weight", "blocks.0.hc_attn.res_bias", "tabular.plr_freq"):
+            self.assertIn(expected, adam)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):

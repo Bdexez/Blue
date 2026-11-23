@@ -4,6 +4,8 @@ import math
 import torch
 from torch.optim import Optimizer
 
+from .lora import DoRALinear
+
 
 def newton_schulz_orthogonalize(matrix: torch.Tensor, *, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
     """Approcher le facteur polaire U V^T d'une matrice 2D par itération quintique.
@@ -133,35 +135,23 @@ def build_optimizer(model, *, name: str = "adamw", lr: float, weight_decay: floa
             {"params": temporal_parameters, "lr_scale": 10.0},
         ]
         return torch.optim.AdamW([g for g in groups if g["params"]], lr=lr, weight_decay=weight_decay)
-    excluded_muon_ids = set(temporal_ids)
-    excluded_muon_ids.add(id(model.embedding.weight))
-    excluded_muon_ids.add(id(model.lm_head.weight))
-    if model.reasoning_step_embed is not None:
-        excluded_muon_ids.add(id(model.reasoning_step_embed.weight))
-    if getattr(model, "ngram", None) is not None:
-        excluded_muon_ids.add(id(model.ngram.table.weight))
-    if getattr(model, "tabular", None) is not None and model.tabular.cat_embed is not None:
-        excluded_muon_ids.add(id(model.tabular.cat_embed.weight))
-    if getattr(model, "jepa", None) is not None:
-        excluded_muon_ids.add(id(model.jepa.target_embed.weight))
-    if getattr(model, "flow_head", None) is not None and model.flow_head.null_cond is not None:
-        excluded_muon_ids.add(id(model.flow_head.null_cond))
-    if getattr(model, "head_pool_gate", None) is not None:
-        excluded_muon_ids.add(id(model.head_pool_gate))
-    if getattr(model, "mtp_chain_gates", None) is not None:
-        excluded_muon_ids.add(id(model.mtp_chain_gates))
+    # Muon orthogonalise des matrices de projection. Les gains, biais, embeddings,
+    # positions, coefficients et autres tableaux 2D qui ne sont pas des poids
+    # linéaires suivent AdamW : une mise à jour orthogonale de RMS fixe n'y a pas de sens.
+    matrix_ids = set()
     for module in model.modules():
-        if getattr(module, "kan_coeffs", None) is not None:
-            excluded_muon_ids.add(id(module.kan_coeffs))
-        if getattr(module, "detail_gain", None) is not None:
-            excluded_muon_ids.add(id(module.detail_gain))
-        if getattr(module, "latent_expert_mod", None) is not None:
-            excluded_muon_ids.add(id(module.latent_expert_mod))
+        if isinstance(module, torch.nn.Linear):
+            matrix_ids.add(id(module.weight))
+        elif isinstance(module, DoRALinear):
+            matrix_ids.update((id(module.lora_a), id(module.lora_b)))
+    # Poids lié à l'embedding : une table de correspondance, pas une projection.
+    matrix_ids.discard(id(model.lm_head.weight))
+    matrix_ids.discard(id(model.embedding.weight))
     muon_params, adamw_params = [], []
     for p in trainable:
         if id(p) in temporal_ids:
             continue
-        if p.ndim == 2 and id(p) not in excluded_muon_ids:
+        if p.ndim == 2 and id(p) in matrix_ids:
             muon_params.append(p)
         else:
             adamw_params.append(p)
