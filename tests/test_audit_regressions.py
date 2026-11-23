@@ -216,6 +216,44 @@ class EmbeddingSearchCacheTests(unittest.TestCase):
                 list(search)
 
 
+class BatchedPredictTests(unittest.TestCase):
+    def test_batched_predictions_match_one_example_at_a_time(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from blue.cli import main
+        from blue.training import save_checkpoint
+        model = tiny()
+        generator = torch.Generator().manual_seed(3)
+        rows = []
+        for index in range(7):
+            row = {"class_label": index % 3}
+            if index != 3:  # Une ligne sans texte coupe le regroupement consécutif.
+                row["text"] = "Signal " * (1 + index % 3)
+            row["series"] = torch.randn(6 + index, model.config.series_features, generator=generator).tolist()
+            rows.append(row)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint, data = root / "model.pt", root / "data.jsonl"
+            save_checkpoint(checkpoint, model)
+            data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            results = {}
+            for size in (1, 4):
+                output = root / f"predictions-{size}.jsonl"
+                main(["predict", "--checkpoint", str(checkpoint), "--data", str(data), "--output", str(output),
+                      "--batch-size", str(size), "--max-new-tokens", "2"])
+                results[size] = [json.loads(line) for line in output.read_text().splitlines()]
+        self.assertEqual([row["index"] for row in results[4]], list(range(7)))
+        for single, batched in zip(results[1], results[4]):
+            self.assertEqual(single.keys(), batched.keys())
+            self.assertEqual(single["class_id"], batched["class_id"])
+            self.assertEqual(single.get("generated_text"), batched.get("generated_text"))
+            torch.testing.assert_close(torch.tensor(batched["forecast"]), torch.tensor(single["forecast"]),
+                                       rtol=1e-4, atol=1e-4)
+            torch.testing.assert_close(torch.tensor(batched["class_probabilities"]),
+                                       torch.tensor(single["class_probabilities"]), rtol=1e-4, atol=1e-5)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
