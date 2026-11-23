@@ -887,7 +887,9 @@ class SparseMoE(nn.Module):
         # Regrouper les créneaux par expert (tri stable : ordre des lignes conservé)
         # avec une seule synchronisation pour toutes les tailles de groupes.
         flat_selected = selected.reshape(-1)
-        slot_counts = torch.bincount(flat_selected, minlength=self.total_slots)
+        # scatter_add plutôt que bincount, qui synchronise pour lire le maximum.
+        slot_counts = flat_selected.new_zeros(self.total_slots).scatter_add_(
+            0, flat_selected, torch.ones_like(flat_selected))
         order = flat_selected.argsort(stable=True)
         flat_weights = weights.reshape(-1)
         rows_all, contributions = [], []
@@ -921,8 +923,9 @@ class EncoderBlock(nn.Module):
         self.ffn = SwiGLU(config.d_model, config.hidden_dim)
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x, valid):
-        x = x + self.dropout(self.attn(self.norm1(x), valid)[0])
+    def forward(self, x, valid, *, dense=None):
+        # dense : indication, connue de l'appelant, que toutes les positions sont valides.
+        x = x + self.dropout(self.attn(self.norm1(x), valid, dense=dense)[0])
         return (x + self.dropout(self.ffn(self.norm2(x)))) * valid.unsqueeze(-1)
 
 
@@ -946,7 +949,7 @@ class VisionEncoder(nn.Module):
         x = self.patch(x).flatten(2).transpose(1, 2) + self.position
         valid = torch.ones(x.shape[:2], dtype=torch.bool, device=x.device)
         for block in self.blocks:
-            x = block(x, valid)
+            x = block(x, valid, dense=True)
         return self.norm(x), valid
 
 
@@ -1026,8 +1029,9 @@ class TemporalEncoder(nn.Module):
                 x = x + self.spectral(x, valid)
             if self.wavelet is not None:
                 x = x + self.wavelet(x, valid)
+        dense = bool(valid.all()) if self.blocks else None
         for block in self.blocks:
-            x = block(x, valid)
+            x = block(x, valid, dense=dense)
         # Connexion temporelle directe : partir de la persistance puis apprendre
         # une correction multihorizon sur l'historique centré à la dernière observation.
         centered_last = torch.where(observed, (clean - anchor[:, None]) / scale, 0.0)
@@ -1102,7 +1106,7 @@ class LatentResampler(nn.Module):
             for ctx, mask in zip(contexts, masks):
                 # Niveau 1 : chaque modalité est distillée vers un budget équilibré de latents locaux.
                 q = local_queries + self.local_cross(self.local_norm(local_queries), ctx, mask)
-                q = self.local_block(q, local_valid)
+                q = self.local_block(q, local_valid, dense=True)
                 stage1_contexts.append(q)
                 stage1_masks.append(local_valid)
             contexts, masks = stage1_contexts, stage1_masks
@@ -1116,7 +1120,7 @@ class LatentResampler(nn.Module):
         latent_valid = torch.ones(x.shape[:2], dtype=torch.bool, device=x.device)
         for norm, cross, block in zip(self.norms, self.cross, self.blocks):
             x = x + cross(norm(x), context, valid)
-            x = block(x, latent_valid)
+            x = block(x, latent_valid, dense=True)
         if self.registers is not None:
             x = x[:, :self.n_latents]
         if self.fsq is not None:
