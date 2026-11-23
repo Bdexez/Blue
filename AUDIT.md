@@ -47,7 +47,7 @@ Origine des gains :
 - **Mélangeurs temporels.** Les boucles Python par exemple (spectral, ondelettes, historique de prévision) traitent ensemble les lignes de même longueur valide (`blue/ragged.py`), ce qui garde chaque calcul inchangé.
 - **RMSNorm.** Le noyau fusionné `F.rms_norm` donne une passe avant identique au bit près.
 
-Sur ce preset de taille réduite, `--amp bf16` reste plus lent que FP32 sur GPU (76.9 contre 68.9 ms par pas avec la CLI) : les conversions vers FP32 des routeurs, normalisations et récurrences dominent le temps des multiplications matricielles.
+Sur le preset `small`, `--amp bf16` reste plus lent que FP32 sur GPU (76.9 contre 68.9 ms par pas avec la CLI) : à cette taille, le temps est dominé par les lancements de noyaux et les conversions vers FP32 des routeurs, normalisations et récurrences. Avec un modèle plus large (`d_model=768`, `hidden_dim=2048`, 454 M paramètres, 256 tokens), bf16 est 1.8 fois plus rapide (168 contre 304 ms par pas).
 
 ## Vérifications
 
