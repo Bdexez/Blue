@@ -13,7 +13,7 @@ from pathlib import Path
 
 import torch
 
-from .modalities import MODALITIES, TARGETS
+from .modalities import INPUT_MODALITIES, TARGETS
 
 
 def file_sha256(path):
@@ -25,7 +25,8 @@ def file_sha256(path):
 
 
 def modality_signature(batch):
-    return tuple(name for name in MODALITIES if name in batch)
+    """Entrées présentes : une calibration n'est valide que pour la même combinaison."""
+    return tuple(name for name in INPUT_MODALITIES if name in batch)
 
 
 def validate_score_scale(score_scale, scale_floor):
@@ -132,7 +133,7 @@ class ForecastCalibration:
                    1 - (1 - self.coverage) * (1 - self.lower_tail_fraction)))
         if any(math.ceil((int(n) + 1) * level) > int(n) for n in self.counts.flatten() for level in levels):
             raise ValueError("Effectif insuffisant pour une correction conformelle finie")
-        if not self.modalities or self.modalities != tuple(name for name in MODALITIES if name in self.modalities):
+        if not self.modalities or self.modalities != tuple(name for name in INPUT_MODALITIES if name in self.modalities):
             raise ValueError("La signature de modalités est invalide")
         if type(self.dataset_images_recorded) is not bool or (
                 self.dataset_images_sha256 is not None and not self.dataset_images_recorded):

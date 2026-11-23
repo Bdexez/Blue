@@ -11,7 +11,9 @@ from pathlib import Path
 from .data import file_identity
 
 
-MODEL_FIELDS = ("text", "image", "image_path", "series", "class_label", "future")
+# Toutes les entrées et cibles que JointDataset transmet au modèle.
+INPUT_FIELDS = ("text", "image", "image_path", "series", "audio", "graph_nodes", "points", "tabular_num", "video")
+MODEL_FIELDS = (*INPUT_FIELDS, "graph_edges", "point_features", "tabular_cat", "class_label", "future")
 
 
 def canonical(value):
@@ -72,7 +74,7 @@ def _scan(path, *, fields, interval_fields, output):
                 record = json.loads(line, parse_int=Decimal, parse_float=Decimal, parse_constant=float)
                 if not isinstance(record, dict):
                     raise ValueError("un objet JSON est attendu")
-                if not any(key in record for key in ("text", "image", "image_path", "series")):
+                if not any(key in record for key in INPUT_FIELDS):
                     raise ValueError("une modalité d'entrée est requise")
                 if "image_path" in record and "image" not in record:
                     image_path = record["image_path"]
