@@ -17,7 +17,7 @@ def se3_invariant_geometry(points: torch.Tensor, valid: torch.Tensor, *, n_rbf: 
       - les produits scalaires normalisés <x_i - c, x_j - c> / (||x_i - c|| ||x_j - c||).
     Les points masqués (~valid) n'affectent jamais le centroïde ni les statistiques.
     """
-    b, p, _ = points.shape
+    p = points.size(1)
     with torch.autocast(device_type=points.device.type, enabled=False):
         pts = points.float()
         vf = valid.float()

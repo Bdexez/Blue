@@ -32,7 +32,7 @@ class ByteNGramEmbedding(nn.Module):
 
     def forward(self, input_ids: torch.Tensor, valid: torch.Tensor,
                 prev_bytes: torch.Tensor | None = None, prev_valid: torch.Tensor | None = None):
-        b, t = input_ids.shape
+        b = input_ids.size(0)
         device = input_ids.device
         if prev_bytes is None or prev_valid is None:
             p_bytes = torch.zeros((b, 3), device=device, dtype=torch.long)

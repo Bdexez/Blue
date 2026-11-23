@@ -14,7 +14,7 @@ def random_walk_structural_encoding(edges: torch.Tensor, valid: torch.Tensor, st
     L'encodage est strictement équivariant par permutation des nœuds et strictement
     invariant au padding (les nœuds masqués ont un degré nul et n'affectent pas les marches).
     """
-    b, n, _, _ = edges.shape
+    n = edges.size(1)
     with torch.autocast(device_type=edges.device.type, enabled=False):
         pair_mask = valid[:, :, None] & valid[:, None, :]
         eye = torch.eye(n, device=edges.device, dtype=torch.bool).unsqueeze(0)

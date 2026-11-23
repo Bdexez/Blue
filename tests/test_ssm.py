@@ -101,7 +101,6 @@ class GatedDeltaNetTests(unittest.TestCase):
             full_lp = model(ids, attention_mask=mask).logits
             lp1 = model(ids[:, :20], attention_mask=mask[:, :20], use_cache=True)
             lp2 = model(ids[:, 20:], cache=lp1.cache, use_cache=True)
-            unpadded = model(ids[0:1, 4:]).logits
         torch.testing.assert_close(lp2.logits, full_lp[:, 20:], rtol=2e-5, atol=2e-6)
         # Right padding does not alter losses.
         padded_batch = batch.copy()

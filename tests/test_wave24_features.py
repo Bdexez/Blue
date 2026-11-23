@@ -10,12 +10,9 @@ from blue.modules import CrossAttention
 
 class Wave24FeaturesTest(unittest.TestCase):
     def test_cross_head_gating_and_talking_heads(self):
-        cfg_base = BlueConfig.preset("tiny")
         cfg_gate = BlueConfig.preset("tiny")
         cfg_gate.cross_head_gating = True
 
-        torch.manual_seed(2401)
-        m_base = Blue(cfg_base).eval()
         torch.manual_seed(2401)
         m_gate = Blue(cfg_gate).eval()
 
