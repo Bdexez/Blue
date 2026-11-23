@@ -1,6 +1,7 @@
 """Entraînement conjoint, AMP, accumulation, DDP et sauvegarde atomique."""
 
 from contextlib import nullcontext
+import itertools
 import json
 import math
 import os
@@ -13,7 +14,7 @@ import warnings
 import torch
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import BatchSampler, DataLoader, DistributedSampler, Sampler
 
 from .config import BlueConfig
 from .augmentation import SeriesAffineAugmentation, SeriesAugmentation
@@ -30,6 +31,19 @@ from .lora import DoRALinear, inject_dora
 from .modules import RotaryEmbedding
 from .optimizer import build_optimizer
 from .quantize import quantize_model_int4, quantize_model_int8
+
+
+class SkippedBatches(Sampler):
+    """Les lots d'un échantillonneur de lots, sans les ``skip`` premiers."""
+
+    def __init__(self, batches, skip):
+        self.batches, self.skip = batches, skip
+
+    def __len__(self):
+        return max(len(self.batches) - self.skip, 0)
+
+    def __iter__(self):
+        return itertools.islice(iter(self.batches), self.skip, None)
 
 
 def seed_everything(seed):
@@ -516,9 +530,15 @@ def train(args, config):
                                 generator=torch.Generator().manual_seed(args.seed))
         epoch, skip = divmod(start * args.accumulation, len(loader))
         sampler.set_epoch(epoch)
-        iterator = iter(loader)
-        for _ in range(skip):
-            next(iterator)
+        if skip:
+            # Reprendre au milieu d'une époque sans lire ni décoder les lots déjà vus :
+            # les indices sont ceux qu'aurait produits le chargeur complet.
+            batches = sampler if args.mixed_modalities else BatchSampler(sampler, args.batch_size, drop_last=False)
+            iterator = iter(DataLoader(dataset, batch_sampler=SkippedBatches(batches, skip),
+                                       collate_fn=collate_records, num_workers=args.workers,
+                                       generator=torch.Generator().manual_seed(args.seed)))
+        else:
+            iterator = iter(loader)
     output_dir = Path(args.output)
     val = None
     if rank == 0:
