@@ -16,6 +16,7 @@ Cet audit a relu les modules du modèle, de l'entraînement, du décodage, de l'
 | Muon appliqué à tout tenseur 2D entraînable | Gains de LayerNorm, biais, embeddings de modalité, fréquences PLR et biais résiduels orthogonalisés | Muon limité aux poids linéaires (et facteurs LoRA), le reste suit AdamW |
 | Reprise au milieu d'une époque | Tous les lots déjà vus étaient relus, parsés et assemblés | Les indices sont sautés dans l'échantillonneur de lots, sans lecture |
 | `search_embeddings` | Les vecteurs candidats étaient relus et parsés à chaque lot de requêtes | Lots gardés en mémoire dans une limite de 512 Mio |
+| `predict` | Une passe avant par exemple | Option `--batch-size` (1 par défaut, sorties inchangées) |
 
 ## Performances
 
@@ -36,6 +37,7 @@ Mesures de `tools/benchmark_hotpaths.py`, médianes après échauffement : prese
 | TTT-Linear, avant + arrière | 53.3 ms | 31.3 ms | ×1.70 |
 | Décodage, `small` | 9.49 ms/token | 8.92 ms/token | ×1.06 |
 | Recherche exacte, 3 000 vecteurs contre eux-mêmes | 23.1 s | 0.69 s | ×33 |
+| `predict`, 512 lignes texte + série (`--batch-size 32`) | 8.1 s | 1.5 s | ×5.4 |
 
 Origine des gains :
 
