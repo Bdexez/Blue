@@ -639,10 +639,13 @@ def train(args, config):
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"Perte non finie à l'étape {step + 1}")
             scaler.scale(loss).backward()
-            logged_loss = batch_loss.item() / args.accumulation if total_counts is None else loss.item()
+            # Une seule copie vers l'hôte pour la perte et toutes ses composantes.
+            logged = torch.stack([(batch_loss if total_counts is None else loss).detach().double(),
+                                  *(value.detach().double() for value in batch_losses.values())]).tolist()
+            logged_loss = logged[0] / args.accumulation if total_counts is None else logged[0]
             metrics["loss"] = metrics.get("loss", 0) + logged_loss
-            for key, value in batch_losses.items():
-                metrics[key] = metrics.get(key, 0) + value.detach().item() / args.accumulation
+            for key, value in zip(batch_losses, logged[1:]):
+                metrics[key] = metrics.get(key, 0) + value / args.accumulation
             expert_totals += batch_usage.detach().double() * batch_routed
             expert_tokens += batch_routed
         norm, skipped = step_optimizer(model, optimizer, scaler, args.grad_clip)
