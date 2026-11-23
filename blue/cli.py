@@ -221,6 +221,7 @@ def main(argv=None):
     generate.add_argument("--edt-n", type=float, default=0.8,
                           help="Exposant de sensibilité d'entropie EDT (> 0, défaut : 0.8)")
     generate.add_argument("--device", default="cpu")
+    generate.add_argument("--seed", type=int, help="Graine de l'échantillonnage, pour une génération reproductible")
     predict = commands.add_parser("predict", help="Classer et prévoir depuis ses propres données JSONL")
     predict.add_argument("--checkpoint", required=True)
     predict.add_argument("--data", required=True)
@@ -483,6 +484,8 @@ def main(argv=None):
         run_demo(args, load_checkpoint_fn=load_checkpoint)
     elif args.command == "generate":
         model, _ = load_checkpoint(args.checkpoint, args.device)
+        if args.seed is not None:
+            torch.manual_seed(args.seed)  # Graine aussi les générateurs CUDA.
         tokens = torch.tensor([ByteTokenizer().encode(args.prompt, eos=False)], device=args.device)
         generated = model.generate(tokens, max_new_tokens=args.max_new_tokens,
                                    temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
