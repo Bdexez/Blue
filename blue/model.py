@@ -1099,10 +1099,9 @@ class Blue(nn.Module):
             windows = history_ids.unfold(1, n, 1)  # [B, L - n + 1, n]
             prefix = history_ids[:, -(n - 1):].unsqueeze(1)  # [B, 1, n - 1]
             matches = (windows[:, :, :-1] == prefix).all(dim=-1)  # [B, L - n + 1]
-            for b in range(history_ids.size(0)):
-                if bool(matches[b].any()):
-                    banned = windows[b, matches[b], -1]
-                    scores[b, banned] = -torch.inf
+            # Compter, sans synchronisation ni boucle par ligne, les suites qui recréeraient un N-gramme vu.
+            banned = torch.zeros_like(scores, dtype=torch.long).scatter_add_(1, windows[:, :, -1], matches.long())
+            scores = scores.masked_fill(banned > 0, -torch.inf)
         return scores
 
     @staticmethod
