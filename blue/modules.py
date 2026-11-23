@@ -44,7 +44,10 @@ class RMSNorm(nn.Module):
                 normalized = torch.tanh(self.dyt_alpha.float() * x.float())
             return normalized.to(x.dtype) * self.weight
         if not self.stable:
-            # Noyau fusionné : x * rsqrt(mean(x^2) + eps), calculé en fp32.
+            if torch.promote_types(x.dtype, self.weight.dtype) == torch.float32:
+                # Cas courant (poids fp32, entrée fp32 ou précision mixte) : un seul noyau
+                # fusionné, sans arrondi intermédiaire vers le dtype réduit de l'entrée.
+                return F.rms_norm(x.float(), x.shape[-1:], self.weight, eps=self.eps)
             normalized = F.rms_norm(x.float(), x.shape[-1:], eps=self.eps)
         else:
             # Le facteur détaché s'élimine algébriquement ; il borne les carrés
