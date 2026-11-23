@@ -99,7 +99,7 @@ class EpisodicMemoryBank(nn.Module):
             reads = []
             for step in range(t):
                 # Normalisation RMS FP32 des emplacements mémoire.
-                mem_n = mem * torch.rsqrt(mem.square().mean(-1, keepdim=True) + mn_eps) * mn_w
+                mem_n = F.rms_norm(mem, mem.shape[-1:], mn_w, eps=mn_eps)
                 projected = F.linear(mem_n, read_w).view(b, self.memory_slots, 2, self.n_heads, self.head_dim)
                 k_m, v_m = projected.permute(2, 0, 3, 1, 4).unbind(0)  # [B, H, M, Dh]
                 k_m = F.normalize(k_m, p=2, dim=-1, eps=1e-6)

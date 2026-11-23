@@ -44,7 +44,8 @@ class RMSNorm(nn.Module):
                 normalized = torch.tanh(self.dyt_alpha.float() * x.float())
             return normalized.to(x.dtype) * self.weight
         if not self.stable:
-            normalized = x.float() * torch.rsqrt(x.float().square().mean(-1, keepdim=True) + self.eps)
+            # Noyau fusionné : x * rsqrt(mean(x^2) + eps), calculé en fp32.
+            normalized = F.rms_norm(x.float(), x.shape[-1:], eps=self.eps)
         else:
             # Le facteur détaché s'élimine algébriquement ; il borne les carrés
             # sans modifier le gradient, même pour des activations très grandes.
