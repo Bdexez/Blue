@@ -5,6 +5,8 @@ import math
 import torch
 from torch import nn
 
+from .ragged import map_valid_positions
+
 
 class HaarWaveletMixer(nn.Module):
     """Décomposition et reconstruction exacte en ondelettes de Haar multi-niveaux.
@@ -37,27 +39,28 @@ class HaarWaveletMixer(nn.Module):
             self.gate.fill_(-1.0)
 
     def _dwt_idwt_1d(self, u: torch.Tensor) -> torch.Tensor:
+        """Décomposer puis reconstruire le long de l'avant-dernière dimension [..., L, D]."""
         inv_sqrt2 = 1.0 / math.sqrt(2.0)
-        a_Gain = self.approx_gain.float()
-        d_Gain = self.detail_gain.float()
+        a_gain = self.approx_gain.float()
+        d_gain = self.detail_gain.float()
         lengths = []
         details = []
         a = u
         for lvl in range(self.levels):
-            n = a.size(0)
+            n = a.size(-2)
             lengths.append(n)
             if n < 2:
                 details.append(None)
                 continue
             if n % 2 == 1:
-                a = torch.cat((a, a[-1:]), dim=0)
-            even = a[0::2]
-            odd = a[1::2]
+                a = torch.cat((a, a[..., -1:, :]), dim=-2)
+            even = a[..., 0::2, :]
+            odd = a[..., 1::2, :]
             a = (even + odd) * inv_sqrt2
-            d = (even - odd) * inv_sqrt2 * d_Gain[lvl]
+            d = (even - odd) * inv_sqrt2 * d_gain[lvl]
             details.append(d)
 
-        a = a * a_Gain
+        a = a * a_gain
         for lvl in range(self.levels - 1, -1, -1):
             d = details[lvl]
             orig_n = lengths[lvl]
@@ -65,19 +68,12 @@ class HaarWaveletMixer(nn.Module):
                 continue
             even = (a + d) * inv_sqrt2
             odd = (a - d) * inv_sqrt2
-            a = torch.stack((even, odd), dim=1).reshape(-1, self.d_model)[:orig_n]
+            a = torch.stack((even, odd), dim=-2).flatten(-3, -2)[..., :orig_n, :]
         return a
 
     def forward(self, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
-        b, t, d = x.shape
         h = self.norm(x)
-        rows = []
         with torch.autocast(device_type=x.device.type, enabled=False):
-            for row in range(b):
-                row_valid = valid[row]
-                u = h[row, row_valid].float()
-                rec = self._dwt_idwt_1d(u).to(x.dtype)
-                row_out = x.new_zeros(t, d).masked_scatter(row_valid.unsqueeze(-1).expand(t, d), rec)
-                rows.append(row_out)
-        stacked = torch.stack(rows, dim=0)
+            # Les exemples de même longueur valide sont décomposés ensemble.
+            stacked = map_valid_positions(h, valid, lambda u: self._dwt_idwt_1d(u.float()).to(x.dtype))
         return torch.sigmoid(self.gate) * self.out_proj(stacked) * valid.unsqueeze(-1)
