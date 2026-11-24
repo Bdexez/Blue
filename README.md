@@ -171,11 +171,12 @@ python3 -m venv .venv
 # 6. Audit causality, caching, SE(3)/padding invariances and gradients
 .venv/bin/python -m blue verify --preset tiny
 
-# 7. Run all 132 test suites
-.venv/bin/python -m unittest discover -s tests -v
+# 7. Run all 132 test suites in parallel (dev tools: pip install -e '.[dev]'), then lint
+.venv/bin/python -m pytest -n auto tests      # serial alternative: python -m unittest discover -s tests
+.venv/bin/ruff check blue tools tests
 ```
 
-> On GPU, install a CUDA PyTorch build and add `--device cuda` (optionally `--amp bf16`). Training and decoding were benchmarked on an RTX 3060 Ti ([audit](AUDIT.md)); the test suite itself runs on CPU.
+> On GPU, install a CUDA PyTorch build and add `--device cuda` (optionally `--amp bf16`). Training and decoding were benchmarked on an RTX 3060 Ti ([audit](AUDIT.md)); the test suite runs on CPU, plus CUDA smoke tests when a GPU is available.
 
 ---
 
