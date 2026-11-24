@@ -545,6 +545,7 @@ def train(args, config):
         end_step = start
     report = None
     for step in range(start, end_step):
+        step_started = time.monotonic()
         optimizer.zero_grad(set_to_none=True)
         for group in optimizer.param_groups:
             group["lr"] = learning_rate(
@@ -670,6 +671,7 @@ def train(args, config):
                                                       int(routing[-1].item()))
             row = dict(step=last_step, **metrics, grad_norm=norm, optimizer_step_skipped=skipped,
                        lr=optimizer.param_groups[0]["lr"], elapsed_seconds=round(time.monotonic() - started, 3),
+                       step_seconds=round(time.monotonic() - step_started, 4),
                        **routing_summary, modality_batches=modality_batches,
                        series_statistics=series_statistics)
             with (output_dir / "metrics.jsonl").open("a", encoding="utf-8") as stream:
