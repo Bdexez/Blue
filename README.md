@@ -6,7 +6,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-CPU%20%2F%20CUDA-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![Modalities](https://img.shields.io/badge/Modalities-8%20native%20(255%20combinations)-0A7EA4)](#modalities-and-tasks)
 [![Parameters](https://img.shields.io/badge/Parameters-740K%20%E2%86%92%201.695T-6E40C9)](#sizes-and-configurations)
-[![Tests](https://img.shields.io/badge/Tests-131%20suites-2EA043)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-132%20suites-2EA043)](tests/)
 
 > [!NOTE]
 > **Scope and experimental honesty** — Complexity has no absolute ceiling: you can always stack more layers and experts. **BLUE** provides a modular, mathematically verified, genuinely trainable architecture spanning **739,506 to 1,695,180,105,990 parameters**, with local training demonstrated on the `workstation` preset (**549,485,298 parameters**). Giant configurations (`large`, `ultra`, `hyper`, `titan`) are constructed and counted on `torch.device("meta")` without allocating weights; they have not been pretrained here. Local checkpoints under `runs/` (excluded from Git due to their size) train on paired synthetic signals and demonstrate joint learning — they are not general-purpose pretrained assistants.
@@ -171,7 +171,7 @@ python3 -m venv .venv
 # 6. Audit causality, caching, SE(3)/padding invariances and gradients
 .venv/bin/python -m blue verify --preset tiny
 
-# 7. Run all 131 test suites
+# 7. Run all 132 test suites
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
