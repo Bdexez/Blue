@@ -183,7 +183,7 @@ python3 -m venv .venv
 ## Training, optimization and adaptation
 
 The trainer ([`blue/training.py`](blue/training.py)) supports:
-- **Optimizers**: `AdamW` or hybrid **`MuonAdamW`** (`--optimizer muon`, Newton-Schulz orthogonalization on 2D matrix weights + AdamW on embeddings/norms/scalars).
+- **Optimizers**: `AdamW` or hybrid **`MuonAdamW`** (`--optimizer muon`, Newton-Schulz orthogonalization on linear projection weights and LoRA factors + AdamW on embeddings, norms, gains, biases and other tensors).
 - **LR schedules**: `cosine` or **Warmup-Stable-Decay (`--lr-schedule wsd`)**.
 - **Stability & efficiency**: weight EMA (`--ema-decay`), BF16/FP16 AMP, gradient clipping with FP64 fallback, selective activation checkpointing (`checkpoint_every`), adaptive uncertainty loss weighting (`adaptive_loss_weighting`), label smoothing (`label_smoothing`), and PaLM Z-loss (`lm_z_loss_weight`).
 - **Native lightweight adaptation**: **DoRA / LoRA** directly from the CLI (`--dora-rank`) with exact algebraic merge on export.
