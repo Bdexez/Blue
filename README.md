@@ -220,12 +220,19 @@ The trainer ([`blue/training.py`](blue/training.py)) supports:
 | **Guidance & dynamic compute** | **Multimodal contrastive CFG** (`--context-guidance-scale`), dynamic recursive reasoning depth at inference (`--reasoning-steps`) |
 | **Adaptive samplers** | `top-k`, `top-p`, **Min-P** (`--min-p`), **Locally Typical** (`--typical-p`), **$\eta$-Sampling** (`--eta-cutoff`), **Tail-Free Sampling** (`--tfs-z`), **Top-A** (`--top-a`), **Entropy-Based Dynamic Temperature (EDT)** (`--edt-theta`, `--edt-n`), **Mirostat v2** (`--mirostat-tau`, `--mirostat-eta`) |
 | **Repetition control** | CTRL repetition penalty (`--repetition-penalty`), presence (`--presence-penalty`), frequency (`--frequency-penalty`), and exact N-gram blocking (`--no-repeat-ngram-size`) |
+| **Reproducibility** | `--seed` fixes the sampling stream of `blue generate` |
+
+Beam search also runs on batches (one search per row, rows padded with `eos_id`). Contrastive guidance and Mirostat are only implemented by the standard sampling loop: combining them with beam, speculative or Jacobi decoding raises an error instead of being silently ignored.
 
 ```bash
 # Generation with self-speculative decoding, Min-P and trigram blocking
 .venv/bin/python -m blue generate --checkpoint runs/custom/best.pt \
   --prompt "Class signal " --max-new-tokens 64 \
   --temperature 0.8 --min-p 0.05 --no-repeat-ngram-size 3 --speculative
+
+# Batched predictions: consecutive rows sharing the same modalities run together
+.venv/bin/python -m blue predict --checkpoint runs/custom/best.pt \
+  --data data/test.jsonl --batch-size 32 --output runs/custom/predictions.jsonl
 
 # Inference export: EMA selection, algebraic DoRA merge and packed INT4 quantization
 .venv/bin/python -m blue export --checkpoint runs/dora/latest.pt \
@@ -238,7 +245,7 @@ The trainer ([`blue/training.py`](blue/training.py)) supports:
 
 ## Cross-modal search and data hygiene
 
-The JSONL input format accepts any combination of fields (`text`, `image` / `image_path`, `series`, `class_label`, `future`, plus extended modalities through the Python API). The indexed reader ([`blue/data.py`](blue/data.py)) loads examples on demand and verifies SHA-256 integrity for external files and images.
+The JSONL input format accepts any combination of fields (`text`, `image` / `image_path`, `series`, `audio`, `graph_nodes` / `graph_edges`, `points` / `point_features`, `tabular_num` / `tabular_cat`, `video`, `class_label`, `future`; the extended modalities must be enabled in the configuration). The indexed reader ([`blue/data.py`](blue/data.py)) loads examples on demand, checks every array against the configured shapes (errors name the file and line) and verifies SHA-256 integrity for external files and images.
 
 ```bash
 # 1. Create chronological splits without temporal window leakage
