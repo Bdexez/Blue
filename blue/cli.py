@@ -54,6 +54,9 @@ def audit_series_calibration(data, dataset_sha256, references, *, output, subjec
 def main(argv=None):
     parser = argparse.ArgumentParser(description="BLUE — réseau multimodal à experts")
     parser.add_argument("--threads", type=int, default=4, help="Threads CPU (défaut : 4)")
+    parser.add_argument("--matmul-precision", choices=("highest", "high", "medium"), default="highest",
+                        help="Précision des produits matriciels FP32 : high active TF32 sur GPU Ampere+ "
+                             "(plus rapide, mantisse réduite) ; défaut : highest")
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect", help="Compter les paramètres sans allouer les poids")
     inspect.add_argument("--all", action="store_true", help="Inspecter tous les presets")
@@ -421,6 +424,7 @@ def main(argv=None):
     if args.threads < 1:
         parser.error("threads doit être > 0")
     torch.set_num_threads(args.threads)
+    torch.set_float32_matmul_precision(args.matmul_precision)
     if args.command == "prepare-series":
         report = prepare_temporal_splits(args.input, args.output_dir, get_config(args), history=args.history,
                                          train_end=args.train_end, validation_end=args.validation_end,

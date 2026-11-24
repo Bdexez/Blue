@@ -176,7 +176,7 @@ python3 -m venv .venv
 .venv/bin/ruff check blue tools tests
 ```
 
-> On GPU, install a CUDA PyTorch build and add `--device cuda` (optionally `--amp bf16`). Training and decoding were benchmarked on an RTX 3060 Ti ([audit](AUDIT.md)); the test suite runs on CPU, plus CUDA smoke tests when a GPU is available.
+> On GPU, install a CUDA PyTorch build and add `--device cuda` (optionally `--amp bf16`, or `--matmul-precision high` to use TF32 for FP32 matrix products on Ampere and newer GPUs). Training and decoding were benchmarked on an RTX 3060 Ti ([audit](AUDIT.md)); the test suite runs on CPU, plus CUDA smoke tests when a GPU is available.
 
 ---
 

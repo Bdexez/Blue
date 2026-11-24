@@ -61,6 +61,8 @@ Sur le preset `small`, `--amp bf16` reste plus lent que FP32 sur GPU (76.9 contr
 
 Le preset `hyper` (1.85 milliard de paramètres, bf16, RTX 3060 Ti) fonctionne en inférence (3.8 Gio de pointe) mais décode à environ 320 ms par token : 16 couches × 2 itérations latentes, et la projection de Sinkhorn des hyper-connexions (20 itérations sur des matrices 4×4, trois fois par couche) occupe à elle seule 30 % du temps, en lancements de petits noyaux. Seule une compilation (`torch.compile`) de cette fonction les fusionnerait ; elle n'a pas été ajoutée, faute de gain bout à bout démontré sur l'entraînement (voir ci-dessous) et pour ne pas imposer de compilation à l'exécution.
 
+L'option globale `--matmul-precision high` active TF32 pour les produits matriciels FP32 (désactivé par défaut, résultats inchangés). Sur un pas d'entraînement isolé (lot de 8, 256 tokens), elle accélère le preset `small` de ×1.09 (77.2 contre 71.1 ms) et un modèle de 454 M paramètres de ×1.27 (294.8 contre 232.8 ms) ; la boucle CLI du preset `small` sur les textes courts synthétiques, limitée par les lancements de noyaux, n'en bénéficie pas (62.2 contre 62.1 ms).
+
 Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélérait un pas isolé de 51.5 à 41.5 ms, mais n'apportait rien dans la boucle d'entraînement réelle (61.7 contre 59.5 ms) : les formes changent d'un lot à l'autre (abandon de modalités, validation) et les recompilations annulent le gain. L'option n'a donc pas été conservée.
 
 ## Vérifications

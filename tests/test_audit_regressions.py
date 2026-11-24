@@ -402,6 +402,19 @@ class LeftPaddingTests(unittest.TestCase):
                 self.assertTrue(torch.equal(batched[1, 8:], single[0, 5:]))
 
 
+class MatmulPrecisionOptionTests(unittest.TestCase):
+    def test_global_option_sets_float32_matmul_precision(self):
+        import contextlib
+        import io
+        from blue.cli import main
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(["--matmul-precision", "high", "inspect", "--preset", "tiny"])
+            self.assertEqual(torch.get_float32_matmul_precision(), "high")
+        finally:
+            torch.set_float32_matmul_precision("highest")
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
