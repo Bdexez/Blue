@@ -2,6 +2,27 @@
 
 import torch
 
+# Poids de configuration de chaque perte émise par Blue.forward : source unique
+# pour l'objectif observé et la perte de validation (test de couverture associé).
+REGULARIZER_WEIGHTS = {
+    "balance": "balance_weight", "router_z": "router_z_weight", "depth_budget": "depth_budget_weight",
+    "ponder_kl": "ponder_kl_weight", "latent_diversity": "latent_diversity_weight",
+    "router_entropy": "moe_entropy_weight", "router_orthogonality": "moe_router_orthogonality_weight",
+    "mtp_kl": "mtp_kl_weight", "lm_z": "lm_z_loss_weight", "forecast_smoothness": "forecast_smoothness_weight",
+}
+# Pertes de tâche pondérables par incertitude (adaptive_loss_weighting).
+TASK_WEIGHTS = {
+    "text": "text_weight", "classification": "classification_weight", "forecast": "forecast_weight",
+    "multi_token": "mtp_weight", "flow": "flow_matching_weight", "jepa": "jepa_weight",
+    "alignment": "alignment_weight",
+}
+# Ordre de sommation historique de la perte de validation observée.
+LOSS_WEIGHTS = {name: TASK_WEIGHTS[name] for name in ("text", "classification", "forecast", "multi_token")}
+LOSS_WEIGHTS.update(REGULARIZER_WEIGHTS)
+LOSS_WEIGHTS.update((name, TASK_WEIGHTS[name]) for name in ("flow", "jepa", "alignment"))
+# Tâches normalisées par leurs cibles observées, dans l'ordre de target_counts.
+COUNTED_TASKS = ("text", "classification", "forecast")
+
 
 def target_counts(batch, prediction_steps):
     """Compter texte, classes, prévisions, puis chaque horizon de texte auxiliaire."""
@@ -39,24 +60,16 @@ def observed_objective(output, local_counts, total_counts, config, *, world, acc
         return weight_task(name, base, value * (factor * accumulation)) / accumulation
 
     loss = (config.balance_weight * losses["balance"] + config.router_z_weight * losses["router_z"]) / accumulation
-    for name, weight in (("depth_budget", config.depth_budget_weight), ("ponder_kl", config.ponder_kl_weight),
-                         ("latent_diversity", config.latent_diversity_weight),
-                         ("router_entropy", config.moe_entropy_weight),
-                         ("router_orthogonality", config.moe_router_orthogonality_weight),
-                         ("mtp_kl", config.mtp_kl_weight), ("lm_z", config.lm_z_loss_weight),
-                         ("forecast_smoothness", config.forecast_smoothness_weight)):
+    for name, attribute in REGULARIZER_WEIGHTS.items():
+        if name in losses and name not in ("balance", "router_z"):
+            loss = loss + getattr(config, attribute) * losses[name] / accumulation
+    for name in ("flow", "jepa", "alignment"):
         if name in losses:
-            loss = loss + weight * losses[name] / accumulation
-    for name, weight in (("flow", config.flow_matching_weight), ("jepa", config.jepa_weight),
-                         ("alignment", config.alignment_weight)):
-        if name in losses:
-            loss = loss + weighted(name, weight, losses[name], 1.0 / accumulation)
-    for index, (name, weight) in enumerate((("text", config.text_weight),
-                                            ("classification", config.classification_weight),
-                                            ("forecast", config.forecast_weight))):
+            loss = loss + weighted(name, getattr(config, TASK_WEIGHTS[name]), losses[name], 1.0 / accumulation)
+    for index, name in enumerate(COUNTED_TASKS):
         if name in losses:
             factor = world * local_counts[index] / total_counts[index].clamp_min(1)
-            loss = loss + weighted(name, weight, losses[name], factor)
+            loss = loss + weighted(name, getattr(config, TASK_WEIGHTS[name]), losses[name], factor)
     if output.auxiliary_text_losses:
         # Même pondération que la passe avant : décroissance géométrique mtp_decay
         # normalisée sur les horizons ayant au moins une cible dans l'étape.
