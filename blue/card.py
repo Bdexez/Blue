@@ -52,9 +52,9 @@ def _build_mermaid(config: BlueConfig, modalities: list[str]) -> list[str]:
     if config.latent_reasoning_steps > 1:
         dec_label += f" [Raisonnement {config.latent_reasoning_steps}x{' PonderNet' if config.latent_reasoning_adaptive else ''}]"
 
-    lines = ["```mermaid", "flowchart TD"]
+    lines = ["```mermaid", "flowchart TD", f'    RES["{res_label}"]']
     for node_id, label in mod_nodes:
-        lines.append(f'    {node_id}["{label}"] --> RES["{res_label}"]')
+        lines.append(f'    {node_id}["{label}"] --> RES')
     lines.append(
         f'    TXT["Texte UTF-8{f" + Byte-NGrams ({_fmt_int(config.ngram_vocab_size)})" if config.ngram_vocab_size else ""}"]'
         f' --> DEC["{dec_label}"]'
