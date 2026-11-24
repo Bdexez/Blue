@@ -91,7 +91,17 @@ def save_checkpoint(path, model, *, optimizer=None, scaler=None, step=0, trainer
                                          suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
             torch.save(payload, stream)
+            # Données sur disque avant le renommage : après une coupure, latest.pt
+            # désigne soit l'ancien, soit le nouveau checkpoint complet.
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
+        if hasattr(os, "O_DIRECTORY"):
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
