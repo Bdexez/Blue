@@ -1481,12 +1481,10 @@ class Blue(nn.Module):
     @staticmethod
     def _accepted_prefix(verified: torch.Tensor, drafts) -> int:
         """Nombre de brouillons consécutifs égaux aux tokens vérifiés."""
-        accepted = 0
-        for j, draft in enumerate(drafts):
-            if verified[j].item() != draft.item():
-                break
-            accepted += 1
-        return accepted
+        if not drafts:
+            return 0
+        matches = verified[:len(drafts)] == torch.cat(list(drafts))
+        return int(matches.long().cumprod(0).sum())  # Une seule synchronisation.
 
     def _parallel_decode(self, input_ids, *, max_new_tokens, eos_id, reasoning_steps, window,
                          first_token, propose_round, context):
