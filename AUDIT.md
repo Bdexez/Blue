@@ -59,6 +59,10 @@ Origine des gains :
 
 Sur le preset `small`, `--amp bf16` reste plus lent que FP32 sur GPU (76.9 contre 68.9 ms par pas avec la CLI) : à cette taille, le temps est dominé par les lancements de noyaux et les conversions vers FP32 des routeurs, normalisations et récurrences. Avec un modèle plus large (`d_model=768`, `hidden_dim=2048`, 454 M paramètres, 256 tokens), bf16 est 1.9 fois plus rapide (161 contre 298 ms par pas).
 
+Le preset `hyper` (1.85 milliard de paramètres, bf16, RTX 3060 Ti) fonctionne en inférence (3.8 Gio de pointe) mais décode à environ 320 ms par token : 16 couches × 2 itérations latentes, et la projection de Sinkhorn des hyper-connexions (20 itérations sur des matrices 4×4, trois fois par couche) occupe à elle seule 30 % du temps, en lancements de petits noyaux. Seule une compilation (`torch.compile`) de cette fonction les fusionnerait ; elle n'a pas été ajoutée, faute de gain bout à bout démontré sur l'entraînement (voir ci-dessous) et pour ne pas imposer de compilation à l'exécution.
+
+Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélérait un pas isolé de 51.5 à 41.5 ms, mais n'apportait rien dans la boucle d'entraînement réelle (61.7 contre 59.5 ms) : les formes changent d'un lot à l'autre (abandon de modalités, validation) et les recompilations annulent le gain. L'option n'a donc pas été conservée.
+
 ## Vérifications
 
 - `tests/test_audit_regressions.py` et `tests/test_ragged.py` couvrent chaque défaut ci-dessus : copie après entraînement, absence de graphe résiduel (y compris après recalcul des checkpoints), beam en lot, refus des options incompatibles, échelles INT4, identité de l'objectif observé, gradients des poids d'incertitude, répartition Muon, tables RoPE, indicateur dense, cache de recherche et détection d'un fichier modifié.
