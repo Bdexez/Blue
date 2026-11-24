@@ -67,8 +67,10 @@ class Wave21FeaturesTests(unittest.TestCase):
 
         model.eval()
         prompt = torch.tensor([[1, 66, 108]])
-        g_std = model.generate(prompt, max_new_tokens=6, temperature=0.8, typical_p=0.6)
-        g_spec = model.generate(prompt, max_new_tokens=6, temperature=0.8, typical_p=0.6, speculative=True)
+        # Sans eos : la forme ne dépend pas d'un éventuel tirage du token de fin.
+        g_std = model.generate(prompt, max_new_tokens=6, temperature=0.8, typical_p=0.6, eos_id=None)
+        g_spec = model.generate(prompt, max_new_tokens=6, temperature=0.8, typical_p=0.6, speculative=True,
+                                eos_id=None)
         self.assertEqual(g_std.shape, (1, 9))
         self.assertEqual(g_spec.shape, (1, 9))
 

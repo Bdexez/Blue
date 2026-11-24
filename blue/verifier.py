@@ -8,9 +8,18 @@ from .model import Blue
 
 
 def verify_architecture(config: BlueConfig, *, seed: int = 0, device: str = "cpu") -> dict:
-    """Auditer causalité, équivalence du cache, invariances de padding/géométrie et finitude des gradients."""
-    torch.manual_seed(seed)
+    """Auditer causalité, équivalence du cache, invariances de padding/géométrie et finitude des gradients.
+
+    Les générateurs aléatoires de l'appelant sont restaurés après l'audit.
+    """
     dev = torch.device(device)
+    devices = [dev] if dev.type == "cuda" else []
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(seed)
+        return _verify(config, seed=seed, dev=dev, device=device)
+
+
+def _verify(config, *, seed, dev, device):
     model = Blue(config).to(dev).eval()
     checks = {}
 
