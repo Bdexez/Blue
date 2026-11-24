@@ -199,7 +199,9 @@ def run_export(args, parser, *, load_checkpoint_fn=load_checkpoint,
     if args.quantize_int8 and args.quantize_int4:
         parser.error("Choisir soit --quantize-int8 soit --quantize-int4, pas les deux")
     transforms = args.stable_rms_norm or args.merge_dora or args.quantize_int8 or args.quantize_int4
-    if transforms and same_file(args.output, args.checkpoint):
+    # Même sans transformation, exporter sur place supprimerait l'optimiseur, les états
+    # aléatoires et (avec --use-ema) les poids d'origine du checkpoint d'entraînement.
+    if same_file(args.output, args.checkpoint):
         parser.error("Le checkpoint exporté doit être distinct du checkpoint source")
     if args.int8_min_numel < 1:
         parser.error("int8-min-numel doit être >= 1")

@@ -415,6 +415,23 @@ class MatmulPrecisionOptionTests(unittest.TestCase):
             torch.set_float32_matmul_precision("highest")
 
 
+class ExportProtectionTests(unittest.TestCase):
+    def test_export_refuses_to_overwrite_its_source(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        from blue.cli import main
+        from blue.training import save_checkpoint
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "latest.pt"
+            save_checkpoint(checkpoint, tiny(), step=3, trainer={"seed": 1})
+            before = checkpoint.read_bytes()
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                main(["export", "--checkpoint", str(checkpoint), "--output", str(checkpoint)])
+            self.assertEqual(checkpoint.read_bytes(), before)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
