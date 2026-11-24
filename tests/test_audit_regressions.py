@@ -376,7 +376,8 @@ class VerifierInvariantTests(unittest.TestCase):
 class LeftPaddingTests(unittest.TestCase):
     def test_left_padded_rows_match_unpadded_rows(self):
         for changes in ({"attention_sinks": 2}, {"attention_sinks": 2, "kv_lora_rank": 16},
-                        {"dynamic_attn_scale": True}, {"attention_sinks": 1, "sliding_window": 3, "global_every": 2}):
+                        {"dynamic_attn_scale": True}, {"attention_sinks": 1, "sliding_window": 3, "global_every": 2},
+                        {"nsa_block_size": 2}, {"nsa_block_size": 2, "differential_attention": True}):
             with self.subTest(changes):
                 model = tiny(**changes).eval()
                 with torch.no_grad():  # Paramètres non neutres : sinks et échelle dépendent des positions.
@@ -385,6 +386,8 @@ class LeftPaddingTests(unittest.TestCase):
                             module.pos_temp_alpha.fill_(2.0)
                         if getattr(module, "sink_v", None) is not None:
                             module.sink_v.normal_()
+                        if type(module).__name__ == "CompressedBlockSparseAttention":
+                            module.gate.fill_(3.0)
                 first = torch.randint(4, 200, (1, 8), generator=torch.Generator().manual_seed(1))
                 second = torch.randint(4, 200, (1, 5), generator=torch.Generator().manual_seed(2))
                 ids = torch.cat((first, torch.cat((torch.zeros(1, 3, dtype=torch.long), second), 1)))

@@ -39,10 +39,22 @@ class CompressedBlockSparseAttention(nn.Module):
             self.gate.fill_(-2.0)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                key_valid: torch.Tensor, *, offset: int = 0, start_pos: int = 0) -> torch.Tensor:
+                key_valid: torch.Tensor, *, offset: int = 0, start_pos: int = 0,
+                shift: torch.Tensor | None = None) -> torch.Tensor:
         # q: [B, H, T_q, D_q], k: [B, H_kv, S, D_q], v: [B, H_kv, S, D_v], key_valid: [B, S]
         b, h, t_q, d_q = q.shape
         seq_k = k.size(-2)
+        query_shift = None
+        if shift is not None and start_pos == 0:
+            # Padding à gauche : réaligner chaque ligne sur son premier token valide, pour
+            # que les blocs et la causalité soient ceux de la même ligne sans padding.
+            index = torch.arange(seq_k, device=k.device)[None] + shift[:, None]  # [B, S]
+            inside = index < seq_k
+            index = index.clamp_max(seq_k - 1)
+            k = k.gather(2, index[:, None, :, None].expand(b, k.size(1), seq_k, k.size(-1)))
+            v = v.gather(2, index[:, None, :, None].expand(b, v.size(1), seq_k, v.size(-1)))
+            key_valid = key_valid.gather(1, index) & inside
+            query_shift = shift
         bs = self.block_size
         n_blocks = seq_k // bs
         if n_blocks == 0 or start_pos != 0:
@@ -79,7 +91,11 @@ class CompressedBlockSparseAttention(nn.Module):
             # Causalité stricte : le bloc m couvre [m*bs, (m+1)*bs - 1] ; il est visible ssi (m+1)*bs - 1 <= pos_q.
             block_ends = (torch.arange(1, n_blocks + 1, device=q.device) * bs) - 1  # [N]
             query_pos = torch.arange(offset, offset + t_q, device=q.device)         # [T_q]
-            allowed = (block_ends[None, :] <= query_pos[:, None])[None, None, :, :] & block_valid.unsqueeze(2)
+            if query_shift is None:
+                allowed = (block_ends[None, :] <= query_pos[:, None])[None, None, :, :] & block_valid.unsqueeze(2)
+            else:
+                shifted = query_pos[None, :] - query_shift[:, None]  # [B, T_q]
+                allowed = (block_ends[None, None, :] <= shifted[:, :, None])[:, None] & block_valid.unsqueeze(2)
 
             scores = scores.masked_fill(~allowed, -float("inf"))
             k_sel = min(self.top_k, n_blocks)
