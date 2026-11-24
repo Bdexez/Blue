@@ -42,6 +42,8 @@ def prediction_stream(path):
                                          prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
             yield stream
+            stream.flush()
+            os.fsync(stream.fileno())  # Contenu durable avant la publication atomique.
         os.replace(temporary, path)
     finally:
         if temporary is not None:
