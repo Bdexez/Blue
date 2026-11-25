@@ -66,6 +66,8 @@ Le preset `hyper` (1.85 milliard de paramètres, bf16, RTX 3060 Ti) fonctionne e
 
 L'option globale `--matmul-precision high` active TF32 pour les produits matriciels FP32 (désactivé par défaut, résultats inchangés). Sur un pas d'entraînement isolé (lot de 8, 256 tokens), elle accélère le preset `small` de ×1.09 (77.2 contre 71.1 ms) et un modèle de 454 M paramètres de ×1.27 (294.8 contre 232.8 ms) ; la boucle CLI du preset `small` sur les textes courts synthétiques, limitée par les lancements de noyaux, n'en bénéficie pas (62.2 contre 62.1 ms).
 
+Les experts routés du MoE représentent environ 39 % d'un pas d'entraînement GPU du preset `small` (50.9 ms, contre 31.2 ms si l'on ne garde que l'expert partagé). Un calcul groupé de tous les experts (deux `bmm` sur des groupes complétés jusqu'à l'expert le plus chargé) s'est révélé plus lent (55.5 ms sur GPU, 536 ms contre 320 ms sur CPU) : l'empilement des poids et le remplissage coûtent davantage que les lancements économisés. Il n'a pas été conservé.
+
 Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélérait un pas isolé de 51.5 à 41.5 ms, mais n'apportait rien dans la boucle d'entraînement réelle (61.7 contre 59.5 ms) : les formes changent d'un lot à l'autre (abandon de modalités, validation) et les recompilations annulent le gain. L'option n'a donc pas été conservée.
 
 ## Vérifications
