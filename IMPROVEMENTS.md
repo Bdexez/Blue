@@ -47,7 +47,7 @@ Une CI sur Python 3.11 et 3.14 exécute désormais les tests et un smoke test DD
 ## Reproduire
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pytest -n auto tests   # en parallèle (pip install -e '.[dev]') ; ou : python -m unittest discover -s tests -v
 .venv/bin/python tools/profile_runtime.py --cache --output runs/cache-profile.json
 .venv/bin/python tools/profile_runtime.py --dataset votre-jeu.jsonl --output runs/data-profile.json
 .venv/bin/python tools/profile_runtime.py --checkpoint runs/workstation/model.pt --output runs/load-profile.json

@@ -44,7 +44,7 @@ Elle vérifie aussi la causalité du texte, l'équivalence entre calcul complet 
 ## Reproduire
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pytest -n auto tests   # en parallèle (pip install -e '.[dev]') ; ou : python -m unittest discover -s tests -v
 .venv/bin/python tools/benchmark.py --checkpoint runs/workstation/latest.pt
 .venv/bin/python -m blue demo --checkpoint runs/workstation/model.pt
 ```
