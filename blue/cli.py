@@ -595,7 +595,9 @@ def _run_evaluate_or_calibrate(args, parser):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="BLUE — réseau multimodal à experts")
-    parser.add_argument("--threads", type=int, default=4, help="Threads CPU (défaut : 4)")
+    parser.add_argument("--threads", type=int,
+                        help="Threads CPU (défaut : choix de PyTorch, en général les cœurs physiques ; "
+                             "torchrun en donne 1 par processus)")
     parser.add_argument("--deterministic", action="store_true",
                         help="Algorithmes déterministes (GPU compris) : exécutions et reprises identiques au bit près, "
                              "au prix d'un peu de vitesse")
@@ -967,9 +969,10 @@ def main(argv=None):
     refining.add_argument("--device", default="cpu")
     refining.add_argument("--amp", choices=("none", "bf16", "fp16"), default="none")
     args = parser.parse_args(argv)
-    if args.threads < 1:
-        parser.error("threads doit être > 0")
-    torch.set_num_threads(args.threads)
+    if args.threads is not None:
+        if args.threads < 1:
+            parser.error("threads doit être > 0")
+        torch.set_num_threads(args.threads)
     torch.set_float32_matmul_precision(args.matmul_precision)
     if args.deterministic:
         # cuBLAS exige cet espace de travail fixe pour des réductions reproductibles.
