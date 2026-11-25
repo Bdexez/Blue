@@ -254,6 +254,28 @@ class BatchedPredictTests(unittest.TestCase):
                                        torch.tensor(single["class_probabilities"]), rtol=1e-4, atol=1e-5)
 
 
+class GenerateSeedTests(unittest.TestCase):
+    def test_seeded_generation_is_reproducible(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        from blue.cli import main
+        from blue.training import save_checkpoint
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "model.pt"
+            save_checkpoint(checkpoint, tiny())
+            texts = []
+            for seed in (7, 7, 8):
+                stream = io.StringIO()
+                with contextlib.redirect_stdout(stream):
+                    main(["generate", "--checkpoint", str(checkpoint), "--max-new-tokens", "24",
+                          "--temperature", "1.5", "--seed", str(seed)])
+                texts.append(stream.getvalue())
+        self.assertEqual(texts[0], texts[1])
+        self.assertNotEqual(texts[0], texts[2])
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
