@@ -92,6 +92,40 @@ class DecodingTests(unittest.TestCase):
             self.assertTrue(torch.equal(explicit, implicit))
 
 
+class DispatchAndCacheTests(unittest.TestCase):
+    def test_rotary_tables_follow_reloaded_frequencies_and_devices(self):
+        from blue.modules import RotaryEmbedding
+        rope = RotaryEmbedding(8, 10000.0)
+        x = torch.randn(1, 2, 5, 8)
+        first = rope(x, offset=3)
+        rope.inv_freq = rope.frequencies() * 2  # Comme load_checkpoint, qui réassigne le tampon.
+        second = rope(x, offset=3)
+        self.assertFalse(torch.allclose(first, second))
+        fresh = RotaryEmbedding(8, 10000.0)
+        fresh.inv_freq = fresh.frequencies() * 2
+        self.assertTrue(torch.equal(second, fresh(x, offset=3)))
+        self.assertEqual(rope(x.double(), offset=3).dtype, torch.float64)
+
+    def test_rotary_tables_built_under_inference_mode_can_train(self):
+        model = tiny()
+        batch = synthetic_batch(model.config, batch_size=2)
+        with torch.inference_mode():
+            model.eval()(**batch)
+        model.train()(**batch).loss.backward()
+
+    def test_dense_hint_matches_masked_path(self):
+        model = tiny(moe_null_experts=1).eval()
+        ids = torch.randint(4, 200, (2, 9))
+        with torch.no_grad():
+            dense = model(ids).logits
+            masked = model(ids, attention_mask=torch.ones_like(ids)).logits
+            prefix = model(ids[:, :5], use_cache=True)
+            step = model(ids[:, 5:], cache=prefix.cache, use_cache=True).logits
+        self.assertTrue(prefix.cache.dense)
+        torch.testing.assert_close(dense, masked)
+        torch.testing.assert_close(step, dense[:, 5:], rtol=1e-4, atol=1e-4)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
