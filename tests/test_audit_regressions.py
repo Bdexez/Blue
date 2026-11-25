@@ -174,6 +174,48 @@ class ObservedObjectiveTests(unittest.TestCase):
         self.assertGreater(model.task_log_vars.grad.abs().sum().item(), 0)
 
 
+class EmbeddingSearchCacheTests(unittest.TestCase):
+    def write(self, path, count, generator):
+        import json
+        digest = "a" * 64
+        with open(path, "w", encoding="utf-8") as stream:
+            for index in range(count):
+                stream.write(json.dumps(dict(
+                    index=index, format_version=1, checkpoint_sha256=digest, dataset_sha256=digest,
+                    dataset_images_sha256=None, alignment_text_view="joint", amp="none", device="cpu",
+                    batch_size=4, torch_version="x",
+                    vectors={"text": torch.randn(8, generator=generator).tolist()})) + "\n")
+
+    def test_cached_and_streamed_candidates_give_the_same_neighbours(self):
+        import tempfile
+        from pathlib import Path
+        from blue.embedding_search import search_embeddings
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vectors.jsonl"
+            self.write(path, 37, torch.Generator().manual_seed(0))
+            common = dict(top_k=4, query_batch_size=5, candidate_batch_size=6, exclude_self=True)
+            cached = list(search_embeddings(path, path, "text", "text", **common))
+            streamed = list(search_embeddings(path, path, "text", "text", candidate_cache_bytes=0, **common))
+            self.assertEqual(cached, streamed)
+            self.assertEqual(len(cached), 37)
+
+    def test_candidates_modified_after_caching_are_detected(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from blue.embedding_search import search_embeddings
+        with tempfile.TemporaryDirectory() as directory:
+            queries, candidates = Path(directory) / "q.jsonl", Path(directory) / "c.jsonl"
+            self.write(queries, 6, torch.Generator().manual_seed(1))
+            self.write(candidates, 6, torch.Generator().manual_seed(2))
+            search = search_embeddings(queries, candidates, "text", "text", top_k=2, query_batch_size=2)
+            next(search)
+            stat = candidates.stat()
+            os.utime(candidates, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+            with self.assertRaisesRegex(ValueError, "modifié"):
+                list(search)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
