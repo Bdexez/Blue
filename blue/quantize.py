@@ -116,7 +116,11 @@ class Int4Linear(nn.Module):
             if pad:
                 weight = F.pad(weight, (0, pad))
             grouped = weight.view(module.out_features, module.n_groups, group_size)
-            scale = grouped.abs().amax(dim=-1, keepdim=True).clamp_min(1e-8) / 7.0
+            # Borner aux valeurs FP16 représentables : une échelle arrondie à zéro
+            # produirait 0/0 et une échelle infinie des poids non finis.
+            smallest_subnormal = 2.0 ** -24
+            scale = (grouped.abs().amax(dim=-1, keepdim=True) / 7.0).clamp(
+                smallest_subnormal, torch.finfo(torch.float16).max)
             scale_fp16 = scale.to(torch.float16)
             q_signed = (grouped / scale_fp16.float()).round().clamp(-7, 7).to(torch.int16)
             q_u4 = (q_signed + 8).to(torch.uint8).reshape(module.out_features, module.padded_in)

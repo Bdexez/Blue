@@ -603,61 +603,26 @@ class Blue(nn.Module):
                     and (index % self.config.checkpoint_every == 0)
                 )
                 if use_ckpt:
-                    if index == 0 and (self.config.value_residual or self.config.qk_residual):
-                        def run0(hidden, memory, current=block):
-                            result = current(hidden, valid, memory)
-                            d_loss = result[5] if result[5] is not None else hidden.sum() * 0
-                            e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
-                            v_out = result[6] if self.config.value_residual else hidden.sum() * 0
-                            q_out = current.attn.last_q_first if self.config.qk_residual else hidden.sum() * 0
-                            return result[0], result[1], result[2], result[3], d_loss, v_out, q_out, e_loss
-                        x, balance, z_loss, expert_usage, depth_loss, v_out, q_out, ent_loss = checkpoint(run0, x, latents, use_reentrant=False)
-                        v0 = v_out if self.config.value_residual else None
-                        q0 = q_out if self.config.qk_residual else None
-                    elif (self.config.value_residual and v0 is not None) or (self.config.qk_residual and q0 is not None):
-                        v_arg = v0 if v0 is not None else x.new_zeros(())
-                        q_arg = q0 if q0 is not None else x.new_zeros(())
-                        def run_vq(hidden, memory, v_first, q_first, current=block):
-                            result = current(
-                                hidden, valid, memory,
-                                v0=v_first if self.config.value_residual else None,
-                                q0=q_first if self.config.qk_residual else None,
-                            )
-                            d_loss = result[5] if result[5] is not None else hidden.sum() * 0
-                            e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
-                            return result[0], result[1], result[2], result[3], d_loss, e_loss
-                        x, balance, z_loss, expert_usage, depth_loss, ent_loss = checkpoint(run_vq, x, latents, v_arg, q_arg, use_reentrant=False)
-                    else:
-                        def run(hidden, memory, current=block):
-                            result = current(hidden, valid, memory)
-                            d_loss = result[5] if result[5] is not None else hidden.sum() * 0
-                            e_loss = current.moe.last_router_entropy if current.moe.last_router_entropy is not None else hidden.sum() * 0
-                            return result[0], result[1], result[2], result[3], d_loss, e_loss
-                        x, balance, z_loss, expert_usage, depth_loss, ent_loss = checkpoint(run, x, latents, use_reentrant=False)
-                    if block.depth_router is None:
-                        depth_loss = None
+                    # Les sorties absentes (None) traversent checkpoint sans tenseur factice.
+                    result = checkpoint(block, x, valid, latents, v0=v0, q0=q0, use_reentrant=False)
                 else:
                     result = block(
                         x, valid, latents, offset=offset,
                         cache=None if cache is None else cache.layers[cache_slot],
                         use_cache=use_cache, v0=v0, q0=q0,
                     )
-                    if self.config.value_residual and index == 0:
-                        x, balance, z_loss, expert_usage, layer_cache, depth_loss, v0 = result
-                    else:
-                        x, balance, z_loss, expert_usage, layer_cache, depth_loss = result
-                    if self.config.qk_residual and index == 0:
-                        q0 = block.attn.last_q_first
-                    ent_loss = block.moe.last_router_entropy
                     if use_cache:
-                        next_layers.append(layer_cache)
-                balance_losses.append(balance)
-                z_losses.append(z_loss)
-                if ent_loss is not None:
-                    entropy_losses.append(ent_loss)
-                if depth_loss is not None:
-                    depth_losses.append(depth_loss)
-                layer_usage[index] = expert_usage if layer_usage[index] is None else layer_usage[index] + expert_usage
+                        next_layers.append(result.cache)
+                x = result.hidden
+                if index == 0:
+                    v0, q0 = result.v_first, result.q_first
+                balance_losses.append(result.balance)
+                z_losses.append(result.z_loss)
+                entropy_losses.append(result.router_entropy)
+                if result.depth_loss is not None:
+                    depth_losses.append(result.depth_loss)
+                layer_usage[index] = (result.usage if layer_usage[index] is None
+                                      else layer_usage[index] + result.usage)
             if adaptive:
                 collapsed_step = self._collapse_streams(x)
                 step_states.append(collapsed_step)
@@ -1414,10 +1379,21 @@ class Blue(nn.Module):
         if eos_id is not None and (type(eos_id) is not int or not 0 <= eos_id < self.config.vocab_size
                                    or eos_id in (0, 1, 3)):
             raise ValueError("eos_id doit être un entier générable du vocabulaire ou None")
+        context = {name: value for name, value in context.items() if value is not None}
         if "attention_mask" in context:
             mask = context["attention_mask"]
-            if not mask[:, -1].bool().all():
+            if mask.ndim != 2 or not mask[:, -1].bool().all():
                 raise ValueError("La génération en batch nécessite du padding à gauche")
+        if sum((beam_width > 1, jacobi, speculative)) > 1:
+            raise ValueError("beam_width > 1, jacobi et speculative sont mutuellement exclusifs")
+        if beam_width > 1 or jacobi or speculative:
+            # Ces décodeurs n'implémentent ni le guidage ni Mirostat : refuser
+            # plutôt que d'ignorer silencieusement une option demandée.
+            mode = "beam search" if beam_width > 1 else "jacobi" if jacobi else "speculative"
+            if context_guidance_scale != 1.0:
+                raise ValueError(f"context_guidance_scale est incompatible avec le décodage {mode}")
+            if mirostat_tau > 0.0:
+                raise ValueError(f"mirostat_tau est incompatible avec le décodage {mode}")
         was_training = self.training
         self.eval()
         penalties = dict(
@@ -1427,12 +1403,21 @@ class Blue(nn.Module):
             no_repeat_ngram_size=int(no_repeat_ngram_size),
         )
         try:
-            if beam_width > 1 and input_ids.size(0) == 1 and max_new_tokens > 0:
-                return self._generate_beam_search(
-                    input_ids, max_new_tokens=max_new_tokens, beam_width=beam_width,
-                    length_penalty=length_penalty, eos_id=eos_id,
-                    reasoning_steps=reasoning_steps, **penalties, **context,
-                )
+            if beam_width > 1 and max_new_tokens > 0:
+                rows = [
+                    self._generate_beam_search(
+                        input_ids[row:row + 1], max_new_tokens=max_new_tokens, beam_width=beam_width,
+                        length_penalty=length_penalty, eos_id=eos_id, reasoning_steps=reasoning_steps,
+                        **penalties, **{name: value[row:row + 1] for name, value in context.items()},
+                    )
+                    for row in range(input_ids.size(0))
+                ]
+                # Les lignes achevées plus tôt sont complétées par eos_id, comme en glouton.
+                width = max(row.size(1) for row in rows)
+                return torch.cat([
+                    row if row.size(1) == width else F.pad(row, (0, width - row.size(1)), value=eos_id)
+                    for row in rows
+                ])
             if jacobi and input_ids.size(0) == 1 and max_new_tokens > 0:
                 return self._generate_jacobi_greedy(
                     input_ids, max_new_tokens=max_new_tokens, eos_id=eos_id,
@@ -1805,16 +1790,18 @@ class Blue(nn.Module):
         scores = self._apply_penalties(output.logits[:, -1], input_ids, **penalties)
         scores[:, [0, 1, 3]] = -torch.inf
         log_probs = scores.log_softmax(-1)
-        top_lp, top_tok = log_probs[0].topk(beam_width, dim=-1)
-        seqs = torch.cat((input_ids.expand(beam_width, -1), top_tok[:, None]), dim=-1)
+        # Le premier pas n'offre que vocab_size candidats ; les suivants élargissent le faisceau.
+        width = min(beam_width, vocab_size)
+        top_lp, top_tok = log_probs[0].topk(width, dim=-1)
+        seqs = torch.cat((input_ids.expand(width, -1), top_tok[:, None]), dim=-1)
         beam_scores = top_lp
-        beam_lengths = torch.ones(beam_width, dtype=torch.long, device=device)
+        beam_lengths = torch.ones(width, dtype=torch.long, device=device)
         finished = (
             (top_tok == eos_id) if eos_id is not None
-            else torch.zeros(beam_width, dtype=torch.bool, device=device)
+            else torch.zeros(width, dtype=torch.bool, device=device)
         )
         cache = self._reorder_cache(
-            output.cache, torch.zeros(beam_width, dtype=torch.long, device=device),
+            output.cache, torch.zeros(width, dtype=torch.long, device=device),
         )
         for _ in range(1, max_new_tokens):
             if eos_id is not None and bool(finished.all()):
@@ -1829,16 +1816,18 @@ class Blue(nn.Module):
                 eos_row[eos_id] = 0.0
                 step_lp = torch.where(finished[:, None], eos_row[None, :], step_lp)
             cand_scores = beam_scores[:, None] + step_lp
-            top_scores, flat_idx = cand_scores.view(-1).topk(beam_width, dim=-1)
+            flat_scores = cand_scores.view(-1)
+            top_scores, flat_idx = flat_scores.topk(min(beam_width, flat_scores.numel()), dim=-1)
             parent_beams = flat_idx // vocab_size
             next_tokens = flat_idx % vocab_size
             prev_fin = finished.index_select(0, parent_beams)
             seqs = torch.cat((seqs.index_select(0, parent_beams), next_tokens[:, None]), dim=-1)
             beam_scores = top_scores
             beam_lengths = beam_lengths.index_select(0, parent_beams) + (~prev_fin).long()
-            if eos_id is not None:
-                finished = prev_fin | (next_tokens == eos_id)
+            finished = prev_fin if eos_id is None else prev_fin | (next_tokens == eos_id)
             cache = self._reorder_cache(next_cache, parent_beams)
         norm_factor = ((5.0 + beam_lengths.float()) / 6.0) ** length_penalty
         best_beam = int((beam_scores / norm_factor).argmax(dim=0).item())
-        return seqs[best_beam:best_beam + 1]
+        # Ne pas renvoyer les eos ajoutés pendant que les autres faisceaux se terminaient.
+        length = input_ids.size(1) + int(beam_lengths[best_beam])
+        return seqs[best_beam:best_beam + 1, :length]

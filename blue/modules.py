@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+from typing import NamedTuple
 
 import torch
 from torch import nn
@@ -235,7 +236,6 @@ class GroupedQueryAttention(nn.Module):
         self.attention_sinks = config.attention_sinks if causal else 0
         self.value_residual = config.value_residual and causal
         self.qk_residual = config.qk_residual and causal
-        self.last_q_first: torch.Tensor | None = None
         self.attn_logit_softcap = float(config.attn_logit_softcap)
         self.dynamic_attn_scale = config.dynamic_attn_scale and causal
         self.pos_temp_base = float(max(config.sliding_window, 16))
@@ -388,16 +388,14 @@ class GroupedQueryAttention(nn.Module):
 
     def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None, q0=None):
         b, t, _ = x.shape
-        v_first = None
+        v_first = q_first = None
         q_proj = self.q(x)
         if self.qk_residual:
             if self.layer_index == 0:
-                self.last_q_first = q_proj
+                q_first = q_proj
             elif q0 is not None and self.q_res_gate is not None:
                 lam_q = torch.sigmoid(self.q_res_gate).to(q_proj.dtype)
                 q_proj = (1.0 - lam_q) * q_proj + lam_q * q0.to(q_proj.dtype)
-        else:
-            self.last_q_first = None
         if self.kv_lora_rank > 0:
             c_kv = self.kv_norm(self.kv_down(x)).unsqueeze(1)
             if self.value_residual:
@@ -586,7 +584,7 @@ class GroupedQueryAttention(nn.Module):
             # clone libère réellement le stockage du préremplissage, même avec B=H=1.
             cache_k, cache_v = cache_k[:, :, begin:].clone(), cache_v[:, :, begin:].clone()
             key_valid = key_valid[:, begin:].clone()
-        return self.out(y) * valid.unsqueeze(-1), (cache_k, cache_v, key_valid, v_first)
+        return self.out(y) * valid.unsqueeze(-1), (cache_k, cache_v, key_valid, v_first, q_first)
 
 
 class CrossAttention(nn.Module):
@@ -777,8 +775,12 @@ class SparseMoE(nn.Module):
         self.router_log_temp = nn.Parameter(torch.zeros(())) if config.moe_router_temperature else None
         self.routed_scaling_factor = float(config.moe_routed_scaling_factor)
         self.routed_log_scale = nn.Parameter(torch.zeros(())) if config.moe_learnable_scaling else None
-        self.last_null_fraction: float = 0.0
-        self.last_router_entropy: torch.Tensor | None = None
+        self._null_fraction: torch.Tensor | None = None
+
+    @property
+    def last_null_fraction(self) -> float:
+        """Part des créneaux routés vers les experts nuls lors de la dernière passe."""
+        return 0.0 if self._null_fraction is None else float(self._null_fraction)
 
     def reset_moe_parameters(self, n_layers: int):
         if self.latent_expert_mod is not None:
@@ -808,9 +810,8 @@ class SparseMoE(nn.Module):
         tokens = flat[indices]
         if tokens.size(0) == 0:
             zero = x.sum() * 0
-            self.last_null_fraction = 0.0
-            self.last_router_entropy = zero
-            return torch.zeros_like(x), zero, zero, x.new_zeros(self.n_experts)
+            self._null_fraction = None
+            return torch.zeros_like(x), zero, zero, x.new_zeros(self.n_experts), zero
         # Router en fp32 pour éviter la saturation en bf16/fp16.
         with torch.autocast(device_type=tokens.device.type, enabled=False):
             if self.router_geometry == "hyperbolic":
@@ -825,7 +826,7 @@ class SparseMoE(nn.Module):
                 scores = scores * inv_temp
             probs = scores.softmax(-1)
             log_probs = scores.log_softmax(-1)
-            self.last_router_entropy = -(probs * log_probs).sum(-1).mean() / math.log(max(self.total_slots, 2))
+            entropy = -(probs * log_probs).sum(-1).mean() / math.log(max(self.total_slots, 2))
             if self.expert_bias is not None:
                 bias = (F.pad(self.expert_bias.float(), (0, self.n_null))
                         if self.n_null > 0 else self.expert_bias.float())
@@ -863,10 +864,11 @@ class SparseMoE(nn.Module):
                 mixed = mixed.index_add(0, rows, contribution)
         result = torch.zeros_like(flat).index_copy(0, indices, mixed.to(flat.dtype)).view_as(x)
         full_fraction = F.one_hot(selected, self.total_slots).float().mean((0, 1))
-        self.last_null_fraction = float(full_fraction[self.n_experts:].sum().item()) if self.n_null > 0 else 0.0
+        # Conservée détachée : la lecture seule (propriété) synchronise le GPU.
+        self._null_fraction = full_fraction[self.n_experts:].sum().detach() if self.n_null > 0 else None
         balance = self.total_slots * (probs.mean(0) * full_fraction).sum()
         z_loss = scores.logsumexp(-1).square().mean()
-        return result, balance, z_loss, full_fraction[:self.n_experts].detach()
+        return result, balance, z_loss, full_fraction[:self.n_experts].detach(), entropy
 
 
 class EncoderBlock(nn.Module):
@@ -1083,6 +1085,20 @@ class LatentResampler(nn.Module):
         return x
 
 
+class DecoderBlockOutput(NamedTuple):
+    """Sorties d'un bloc ; rien n'est conservé dans les modules entre deux passes."""
+
+    hidden: torch.Tensor
+    balance: torch.Tensor
+    z_loss: torch.Tensor
+    usage: torch.Tensor
+    cache: LayerCache | None
+    depth_loss: torch.Tensor | None
+    v_first: torch.Tensor | None
+    q_first: torch.Tensor | None
+    router_entropy: torch.Tensor
+
+
 class DecoderBlock(nn.Module):
     def __init__(self, config, index):
         super().__init__()
@@ -1171,7 +1187,7 @@ class DecoderBlock(nn.Module):
             h = self.norm1(self.hc_attn.combine_input(x, h_pre))
         else:
             h = self.norm1(x)
-        attention, (k, v, key_valid, v_first) = self.attn(
+        attention, (k, v, key_valid, v_first, q_first) = self.attn(
             h, valid, offset=offset, cache=cache, use_cache=use_cache, v0=v0, q0=q0,
         )
         local, conv_state = self.conv(h, valid, None if cache is None else cache.conv_state)
@@ -1231,10 +1247,10 @@ class DecoderBlock(nn.Module):
                 mean_prob = (depth_prob * valid.float()).sum() / valid.sum().clamp_min(1)
                 depth_loss = (mean_prob - self.depth_capacity).square()
             selected = valid & (depth_prob >= 0.5)
-            update, balance, z_loss, usage = self.moe(moe_in, selected)
+            update, balance, z_loss, usage, entropy = self.moe(moe_in, selected)
             update = update * depth_prob.to(update.dtype).unsqueeze(-1)
         else:
-            update, balance, z_loss, usage = self.moe(moe_in, valid)
+            update, balance, z_loss, usage, entropy = self.moe(moe_in, valid)
         if adaln_gate is not None:
             update = update * (1.0 + adaln_gate.to(update.dtype))
         if self.ls_moe is not None:
@@ -1246,9 +1262,8 @@ class DecoderBlock(nn.Module):
         next_cache = (LayerCache(k, v, key_valid, conv_state, offset + x.size(1) - k.size(-2),
                                  *context_kv, ssm_state=ssm_state, ttt_state=ttt_state)
                       if use_cache else None)
-        if self.attn.value_residual and self.attn.layer_index == 0:
-            return x, balance, z_loss, usage, next_cache, depth_loss, v_first
-        return x, balance, z_loss, usage, next_cache, depth_loss
+        return DecoderBlockOutput(x, balance, z_loss, usage, next_cache, depth_loss,
+                                  v_first, q_first, entropy)
 
 
 class QuantileForecastHead(nn.Module):
