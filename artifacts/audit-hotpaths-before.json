@@ -1,0 +1,62 @@
+{
+  "torch": "2.15.0+cu132",
+  "python": "3.14.10",
+  "threads": 6,
+  "batch_size": 8,
+  "text_length": 96,
+  "new_tokens": 64,
+  "devices": {
+    "cpu": {
+      "models": [
+        {
+          "variant": "small",
+          "train_step_ms": 327.3834669998905,
+          "decode_ms_per_token": 9.492919515594167
+        },
+        {
+          "variant": "small+recurrent",
+          "train_step_ms": 1017.4030380003387,
+          "decode_ms_per_token": 14.166560203136669
+        },
+        {
+          "variant": "small+temporal",
+          "train_step_ms": 326.9023059983738,
+          "decode_ms_per_token": 9.592507515662874
+        }
+      ],
+      "branches": {
+        "gated_deltanet_forward_backward_ms": 6.457259998569498,
+        "ttt_linear_forward_backward_ms": 53.75903100139112,
+        "episodic_memory_forward_backward_ms": 83.04804100043839
+      }
+    },
+    "cuda": {
+      "models": [
+        {
+          "variant": "small",
+          "train_step_ms": 65.18423200031975,
+          "train_peak_mib": 785.07080078125,
+          "decode_ms_per_token": 11.157382625015089
+        },
+        {
+          "variant": "small+recurrent",
+          "train_step_ms": 1087.2918480017688,
+          "train_peak_mib": 1112.818359375,
+          "decode_ms_per_token": 19.63390151558997
+        },
+        {
+          "variant": "small+temporal",
+          "train_step_ms": 80.49127499907627,
+          "train_peak_mib": 797.474609375,
+          "decode_ms_per_token": 11.423386374985967
+        }
+      ],
+      "branches": {
+        "gated_deltanet_forward_backward_ms": 3.0220440021366812,
+        "ttt_linear_forward_backward_ms": 108.5529839983792,
+        "episodic_memory_forward_backward_ms": 111.36869300025865
+      },
+      "gpu": "NVIDIA GeForce RTX 3060 Ti"
+    }
+  }
+}
