@@ -13,6 +13,7 @@ from .fsq import FiniteScalarQuantizer
 from .hyper_connections import ManifoldHyperConnection
 from .hyperbolic import poincare_exp0, poincare_pairwise_distance
 from .sparse_attention import CompressedBlockSparseAttention
+from .ragged import map_valid_rows
 from .spectral import SpectralTemporalMixer
 from .ssm import GatedDeltaNet
 from .temporal_precision import temporal_work_dtype
@@ -1026,11 +1027,10 @@ class TemporalEncoder(nn.Module):
         # Connexion temporelle directe : partir de la persistance puis apprendre
         # une correction multihorizon sur l'historique centré à la dernière observation.
         centered_last = torch.where(observed, (clean - anchor[:, None]) / scale, 0.0)
-        histories = []
-        for row in range(series.size(0)):
-            history = centered_last[row, valid[row]].transpose(0, 1).unsqueeze(0)
-            histories.append(F.adaptive_avg_pool1d(history, self.forecast_context).squeeze(0))
-        history = torch.stack(histories)
+        history = map_valid_rows(
+            centered_last, valid,
+            lambda rows: F.adaptive_avg_pool1d(rows.transpose(1, 2), self.forecast_context),
+        )
         correction = self.forecast_skip(history.to(self.forecast_skip.weight.dtype)).transpose(1, 2)
         baseline = anchor[:, None] + correction * scale
         return self.norm(x), valid, mean.squeeze(1), scale.squeeze(1), baseline
