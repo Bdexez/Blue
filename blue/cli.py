@@ -33,6 +33,11 @@ from .training import evaluate, load_checkpoint, save_checkpoint, train
 from .verifier import verify_architecture
 
 
+def _inference_workers(args):
+    """Processus de lecture des JSONL : sur GPU, décoder dans le processus principal le fait attendre."""
+    return 2 if torch.device(getattr(args, "device", "cpu")).type == "cuda" else 0
+
+
 def audit_series_calibration(data, dataset_sha256, references, *, output, subject="calibration"):
     """Comparer les historiques JSON exacts aux jeux d'ajustement fournis."""
     if not references:
@@ -194,7 +199,7 @@ def _run_embed(args, parser):
     if dataset.references_image(args.output):
         parser.error("Le fichier de vecteurs doit être distinct des images d'entrée")
     sampler = OrderedModalityBatchSampler(dataset, args.batch_size)
-    loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records,
+    loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records, num_workers=_inference_workers(args),
                         generator=torch.Generator().manual_seed(0))
     autocast = nullcontext() if args.amp == "none" else torch.autocast(
         torch.device(args.device).type, dtype=torch.bfloat16 if args.amp == "bf16" else torch.float16)
@@ -251,7 +256,7 @@ def _run_calibrate_series_set(args, parser):
     if args.probability_data:
         references["température"] = (args.probability_data, probability.dataset_sha256)
     audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output)
-    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records, num_workers=_inference_workers(args),
                         generator=torch.Generator().manual_seed(0))
     fitted = fit_series_set(model, classifier, loader, amp=args.amp, coverage=args.coverage,
                             method=args.method, scope=args.scope, checkpoint_sha256=file_sha256(args.checkpoint),
@@ -288,7 +293,7 @@ def _run_calibrate_series_gate_guard(args, parser):
     if args.gate_validation_data:
         references["validation porte"] = (args.gate_validation_data, gate.validation_sha256)
     audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="protection")
-    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records, num_workers=_inference_workers(args),
                         generator=torch.Generator().manual_seed(0))
     guard = fit_series_gate_guard(model, classifier, gate, loader, max_harm=args.max_harm, amp=args.amp,
                                   checkpoint_sha256=file_sha256(args.checkpoint),
@@ -320,7 +325,7 @@ def _run_refine_series_gate(args, parser):
             references["tête"] = (args.classifier_data, classifier.dataset_sha256)
         audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="ajustement")
     def loader(source):
-        return DataLoader(source, batch_size=args.batch_size, collate_fn=collate_records,
+        return DataLoader(source, batch_size=args.batch_size, collate_fn=collate_records, num_workers=_inference_workers(args),
                           generator=torch.Generator().manual_seed(0))
     gate = fit_series_gate(model, classifier, loader(dataset), loader(validation),
                            checkpoint_sha256=file_sha256(args.checkpoint),
@@ -351,7 +356,7 @@ def _run_calibrate_series_probability(args, parser):
         parser.error("La sortie doit être distincte des images d'entrée")
     references = {"tête": (args.classifier_data, classifier.dataset_sha256)} if args.classifier_data else {}
     audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output)
-    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records, num_workers=_inference_workers(args),
                         generator=torch.Generator().manual_seed(0))
     probability = fit_series_probability(model, classifier, loader, amp=args.amp,
                                          checkpoint_sha256=file_sha256(args.checkpoint),
@@ -373,7 +378,7 @@ def _run_refine_series_classifier(args, parser):
     dataset = JointDataset(args.data, model.config)
     if dataset.references_image(args.output):
         parser.error("La sortie doit être distincte des images d'entrée")
-    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records, num_workers=_inference_workers(args),
                         generator=torch.Generator().manual_seed(0))
     augmentation = SeriesAugmentation(missing_rate=args.missing_rate, mask_probability=args.mask_probability)
     classifier = fit_series_classifier(model, loader, ridge=args.ridge, scale_floor=args.scale_floor,
@@ -442,7 +447,7 @@ def _run_refine_forecast(args, parser):
     dataset = JointDataset(args.data, model.config)
     if any(dataset.references_image(output) for output in outputs):
         parser.error("Les sorties doivent être distinctes des images d'entrée")
-    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records, num_workers=_inference_workers(args),
                         generator=torch.Generator().manual_seed(0))
     report = fit_forecast_adapter(model, loader, ridge=args.ridge, amp=args.amp)
     report.update(parent_checkpoint=str(Path(args.checkpoint).resolve()),
@@ -504,10 +509,10 @@ def _run_evaluate_or_calibrate(args, parser):
         parser.error("Le fichier de sortie doit être distinct des images d'entrée")
     if args.command == "evaluate":
         sampler = OrderedModalityBatchSampler(dataset, args.batch_size)
-        loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records,
+        loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records, num_workers=_inference_workers(args),
                             generator=torch.Generator().manual_seed(0))
     else:
-        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records, num_workers=_inference_workers(args),
                             generator=torch.Generator().manual_seed(0))
     if args.command == "calibrate":
         calibration = fit_calibration(model, loader, coverage=args.coverage, amp=args.amp, scope=args.scope,
