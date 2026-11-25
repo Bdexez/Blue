@@ -1,4 +1,6 @@
 import argparse
+import os
+import sys
 from contextlib import nullcontext
 import json
 import math
@@ -1095,5 +1097,21 @@ def main(argv=None):
         print(content, end="")
 
 
+def cli_entry(argv=None):
+    """Point d'entrée en ligne de commande : erreurs d'utilisation sans trace Python.
+
+    ``main`` lève toujours ses exceptions (API et tests) ; ici, une entrée ou une
+    option invalide affiche un message court et quitte avec le code 2.
+    BLUE_TRACEBACK=1 conserve la trace complète.
+    """
+    try:
+        main(argv)
+    except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError, FloatingPointError) as exc:
+        if os.environ.get("BLUE_TRACEBACK"):
+            raise
+        print(f"blue : erreur : {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
 if __name__ == "__main__":
-    main()
+    cli_entry()
