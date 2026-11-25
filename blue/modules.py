@@ -962,7 +962,10 @@ class VisionEncoder(nn.Module):
         self.norm = RMSNorm(d, config.norm_eps)
 
     def forward(self, images):
-        x = F.silu(self.stem(images.to(self.stem.weight.dtype)))
+        # Format channels_last : convolutions oneDNN/cuDNN nettement plus rapides
+        # (rétropropagation des convolutions en profondeur en particulier).
+        x = images.to(self.stem.weight.dtype).contiguous(memory_format=torch.channels_last)
+        x = F.silu(self.stem(x))
         x = x + F.silu(self.local3(x)) + F.silu(self.local5(x))
         x = self.patch(x).flatten(2).transpose(1, 2) + self.position
         valid = torch.ones(x.shape[:2], dtype=torch.bool, device=x.device)
