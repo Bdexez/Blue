@@ -254,6 +254,10 @@ def train(args, config):
         value = getattr(args, name)
         if not math.isfinite(value) or value < 0 or (name in ("lr", "grad_clip") and value == 0):
             raise ValueError(f"Valeur invalide pour {name}")
+    if getattr(args, "workers", None) is None:
+        # Sur GPU, décoder le JSONL dans le processus principal laisse le GPU attendre
+        # (pas small : 79 -> 60 ms avec 2 processus) ; sur CPU, ils prendraient des cœurs au calcul.
+        args.workers = 2 if args.data and torch.device(args.device).type == "cuda" else 0
     if args.warmup < 0 or args.patience < 0 or args.workers < 0:
         raise ValueError("warmup, patience et workers doivent être >= 0")
     if not 0 <= args.modality_dropout < 1:
