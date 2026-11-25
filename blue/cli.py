@@ -228,6 +228,8 @@ def main(argv=None):
     predict.add_argument("--max-new-tokens", type=int, default=0, help="Générer aussi du texte si un prompt est présent")
     predict.add_argument("--device", default="cpu")
     predict.add_argument("--amp", choices=("none", "bf16", "fp16"), default="none")
+    predict.add_argument("--batch-size", type=int, default=1,
+                         help="Lignes consécutives de mêmes modalités traitées ensemble (défaut : 1)")
     predict.add_argument("--calibration", help="Calibration JSON ajustée sur ce checkpoint et ces modalités")
     predict.add_argument("--series-classifier", help="Tête de classification temporelle ajustée séparément")
     predict.add_argument("--series-probability", help="Calibration par température pour cette tête")
@@ -502,6 +504,8 @@ def main(argv=None):
                                    edt_n=args.edt_n)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
+        if args.batch_size < 1:
+            parser.error("batch-size doit être >= 1")
         if args.max_new_tokens < 0:
             parser.error("max-new-tokens doit être >= 0")
         if args.series_probability and not args.series_classifier:
@@ -549,65 +553,81 @@ def main(argv=None):
         autocast = nullcontext() if args.amp == "none" else torch.autocast(
             torch.device(args.device).type, dtype=torch.bfloat16 if args.amp == "bf16" else torch.float16)
         with prediction_stream(args.output) as stream, torch.inference_mode(), autocast:
-            for index in range(len(dataset)):
-                batch = {key: value.to(args.device) for key, value in collate_records([dataset[index]]).items()
+            # Lots de lignes consécutives de même signature ; l'ordre des résultats est conservé.
+            for indices in OrderedModalityBatchSampler(dataset, args.batch_size):
+                batch = {key: value.to(args.device)
+                         for key, value in collate_records([dataset[index] for index in indices]).items()
                          if key not in ("labels", "class_labels", "forecast_targets")}
                 if calibration is not None:
                     calibration.validate(model.config, batch)
                 output = model(**batch)
-                row = {
-                    "index": index,
-                    "class_id": output.classification_logits[0].argmax().item(),
-                    "class_probabilities": output.classification_logits[0].float().softmax(-1).tolist(),
-                    "quantiles": list(model.config.quantiles),
-                    "forecast": output.forecast[0].tolist(),
-                }
+                class_ids = output.classification_logits.argmax(-1).tolist()
+                class_probabilities = output.classification_logits.float().softmax(-1).tolist()
+                forecasts = output.forecast.tolist()
                 if series_classifier is not None:
-                    scores = series_classifier.scores(model, batch)[0]
-                    row["series_classifier_class_id"] = scores.argmax().item()
-                    row["series_classifier_scores"] = scores.tolist()
+                    scores = series_classifier.scores(model, batch)
+                    series_ids = scores.argmax(-1)
                     if series_gate is not None:
-                        chosen, used, advantage = series_gate.choose(batch, output.classification_logits, scores.unsqueeze(0))
+                        chosen, used, advantage = series_gate.choose(batch, output.classification_logits, scores)
                         if series_gate_guard is not None:
                             used = series_gate_guard.select(advantage)
-                            chosen = torch.where(used, scores.unsqueeze(0).argmax(-1),
-                                                 output.classification_logits.argmax(-1))
-                            row["series_gate_guard_max_harm"] = series_gate_guard.max_harm
-                            row["series_gate_guard_threshold"] = series_gate_guard.threshold
-                        row["series_gate_class_id"] = chosen[0].item()
-                        row["series_gate_selected"] = "series_classifier" if used[0].item() else "base"
-                        row["series_gate_advantage"] = advantage[0].item()
+                            chosen = torch.where(used, series_ids, output.classification_logits.argmax(-1))
                     if series_probability is not None:
-                        row["series_classifier_probabilities"] = series_probability.probabilities(scores.unsqueeze(0))[0].tolist()
-                        row["series_classifier_inverse_temperature"] = series_probability.inverse_temperature
+                        calibrated_probabilities = series_probability.probabilities(scores)
                     if series_set is not None:
-                        probs = (series_probability.probabilities(scores.unsqueeze(0)) if series_probability
-                                 else log_probabilities(scores.unsqueeze(0)).exp())
-                        mask = series_set.predict(probs, scores.argmax().reshape(1))[0]
-                        row["series_prediction_set"] = mask.nonzero().flatten().tolist()
-                        row["series_prediction_set_nominal_coverage"] = series_set.coverage
-                        row["series_prediction_set_method"] = series_set.method
-                        row["series_prediction_set_scope"] = series_set.scope
+                        probs = calibrated_probabilities if series_probability else log_probabilities(scores).exp()
+                        set_masks = series_set.predict(probs, series_ids)
                 if calibration is not None:
-                    row["calibrated_interval"] = calibration.interval(output.forecast)[0].tolist()
-                    row["calibrated_nominal_coverage"] = calibration.coverage
-                    row["calibrated_coverage_scope"] = calibration.scope
-                    row["calibrated_score_scale"] = calibration.score_scale
-                    if calibration.lower_tail_fraction is not None:
-                        row["calibrated_lower_tail_fraction"] = calibration.lower_tail_fraction
-                    if calibration.score_scale == "width":
-                        row["calibrated_scale_floor"] = calibration.scale_floor
-                if args.max_new_tokens and "input_ids" in batch:
-                    prompt = batch["input_ids"]
-                    if prompt[0, -1] == ByteTokenizer.eos_id:
-                        prompt = prompt[:, :-1]
-                    context = {key: value for key, value in batch.items()
-                               if key not in ("input_ids", "attention_mask")}
-                    generated = model.generate(prompt, max_new_tokens=args.max_new_tokens,
-                                               temperature=0, **context)
-                    row["generated_text"] = ByteTokenizer().decode(generated[0])
-                stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
-                count += 1
+                    intervals = calibration.interval(output.forecast).tolist()
+                for position, index in enumerate(indices):
+                    row = {
+                        "index": index,
+                        "class_id": class_ids[position],
+                        "class_probabilities": class_probabilities[position],
+                        "quantiles": list(model.config.quantiles),
+                        "forecast": forecasts[position],
+                    }
+                    if series_classifier is not None:
+                        row["series_classifier_class_id"] = series_ids[position].item()
+                        row["series_classifier_scores"] = scores[position].tolist()
+                        if series_gate is not None:
+                            if series_gate_guard is not None:
+                                row["series_gate_guard_max_harm"] = series_gate_guard.max_harm
+                                row["series_gate_guard_threshold"] = series_gate_guard.threshold
+                            row["series_gate_class_id"] = chosen[position].item()
+                            row["series_gate_selected"] = "series_classifier" if used[position].item() else "base"
+                            row["series_gate_advantage"] = advantage[position].item()
+                        if series_probability is not None:
+                            row["series_classifier_probabilities"] = calibrated_probabilities[position].tolist()
+                            row["series_classifier_inverse_temperature"] = series_probability.inverse_temperature
+                        if series_set is not None:
+                            row["series_prediction_set"] = set_masks[position].nonzero().flatten().tolist()
+                            row["series_prediction_set_nominal_coverage"] = series_set.coverage
+                            row["series_prediction_set_method"] = series_set.method
+                            row["series_prediction_set_scope"] = series_set.scope
+                    if calibration is not None:
+                        row["calibrated_interval"] = intervals[position]
+                        row["calibrated_nominal_coverage"] = calibration.coverage
+                        row["calibrated_coverage_scope"] = calibration.scope
+                        row["calibrated_score_scale"] = calibration.score_scale
+                        if calibration.lower_tail_fraction is not None:
+                            row["calibrated_lower_tail_fraction"] = calibration.lower_tail_fraction
+                        if calibration.score_scale == "width":
+                            row["calibrated_scale_floor"] = calibration.scale_floor
+                    if args.max_new_tokens and "input_ids" in batch:
+                        # Génération sur l'exemple seul : son prompt sans padding ni eos final.
+                        single = {key: value.to(args.device) for key, value in collate_records([dataset[index]]).items()
+                                  if key not in ("labels", "class_labels", "forecast_targets")}
+                        prompt = single["input_ids"]
+                        if prompt[0, -1] == ByteTokenizer.eos_id:
+                            prompt = prompt[:, :-1]
+                        context = {key: value for key, value in single.items()
+                                   if key not in ("input_ids", "attention_mask")}
+                        generated = model.generate(prompt, max_new_tokens=args.max_new_tokens,
+                                                   temperature=0, **context)
+                        row["generated_text"] = ByteTokenizer().decode(generated[0])
+                    stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+                    count += 1
         if args.output:
             print(f"{count} prédictions écrites dans {args.output}")
     elif args.command == "embed":
