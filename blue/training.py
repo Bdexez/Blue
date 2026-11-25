@@ -232,7 +232,8 @@ class DistributedTrainingModel(torch.nn.Module):
         output = self.model(**batch)
         loss = (output.loss if total_counts is None else
                 observed_objective(output, local_counts, total_counts, self.model.config,
-                                   world=world, accumulation=accumulation))
+                                   world=world, accumulation=accumulation,
+                                   weight_task=self.model._weight_task_loss))
         return (loss, {name: value.detach() for name, value in output.losses.items()},
                 output.expert_usage.detach(), output.routed_tokens.detach())
 
@@ -652,7 +653,8 @@ def train(args, config):
                     loss = batch_loss
                 else:
                     loss = observed_objective(result, counts, total_counts, config,
-                                              world=world, accumulation=args.accumulation)
+                                              world=world, accumulation=args.accumulation,
+                                              weight_task=model._weight_task_loss)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"Perte non finie à l'étape {step + 1}")
             scaler.scale(loss).backward()

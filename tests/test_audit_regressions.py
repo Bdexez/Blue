@@ -142,6 +142,38 @@ class MuonGroupTests(unittest.TestCase):
             self.assertIn(expected, adam)
 
 
+class ObservedObjectiveTests(unittest.TestCase):
+    CONFIGURATIONS = (
+        {}, {"prediction_steps": 4, "mtp_decay": 0.5}, {"adaptive_loss_weighting": True},
+        {"adaptive_loss_weighting": True, "prediction_steps": 3, "jepa_weight": 0.1},
+        {"flow_matching_dim": 4}, {"moe_entropy_weight": 0.1, "lm_z_loss_weight": 0.01, "mtp_kl_weight": 0.1},
+    )
+
+    def test_single_microbatch_reproduces_the_model_loss(self):
+        from blue.observed_objective import observed_objective, target_counts
+        for changes in self.CONFIGURATIONS:
+            with self.subTest(changes):
+                model = tiny(**changes).eval()
+                batch = synthetic_batch(model.config, batch_size=3)
+                if changes.get("flow_matching_dim"):
+                    batch["flow_targets"] = torch.randn(3, 4)
+                with torch.no_grad():
+                    output = model(**batch)
+                    counts = target_counts(batch, model.config.prediction_steps)
+                    observed = observed_objective(output, counts, counts, model.config, world=1, accumulation=1,
+                                                  weight_task=model._weight_task_loss)
+                torch.testing.assert_close(observed, output.loss, rtol=1e-6, atol=1e-6)
+
+    def test_uncertainty_weights_are_trained_with_observed_normalization(self):
+        from blue.observed_objective import observed_objective, target_counts
+        model = tiny(adaptive_loss_weighting=True)
+        batch = synthetic_batch(model.config, batch_size=3)
+        counts = target_counts(batch, model.config.prediction_steps)
+        observed_objective(model(**batch), counts, counts * 2, model.config, world=1, accumulation=2,
+                           weight_task=model._weight_task_loss).backward()
+        self.assertGreater(model.task_log_vars.grad.abs().sum().item(), 0)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
