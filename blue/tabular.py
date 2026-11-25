@@ -96,5 +96,5 @@ class TabularEncoder(nn.Module):
         tokens = tokens + self.col_embed.to(tokens.dtype)
         valid = torch.ones(tokens.shape[:2], device=tokens.device, dtype=torch.bool)
         for block in self.blocks:
-            tokens = block(tokens, valid)
+            tokens = block(tokens, valid, dense=True)
         return self.norm(tokens), valid

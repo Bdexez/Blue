@@ -58,6 +58,7 @@ class AudioEncoder(nn.Module):
         tokens = tokens * frame_valid.unsqueeze(-1)
         if self.spectral is not None:
             tokens = tokens + self.spectral(tokens, frame_valid)
+        dense = bool(frame_valid.all()) if self.blocks else None
         for block in self.blocks:
-            tokens = block(tokens, frame_valid)
+            tokens = block(tokens, frame_valid, dense=dense)
         return self.norm(tokens) * frame_valid.unsqueeze(-1), frame_valid
