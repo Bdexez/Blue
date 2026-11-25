@@ -113,6 +113,9 @@ class Blue(nn.Module):
 
     def __init__(self, config: BlueConfig):
         super().__init__()
+        # Revalider : une configuration modifiée par affectation après sa création
+        # (config.x = ...) n'est sinon jamais contrôlée.
+        config.__post_init__()
         self.config = config
         self._alignment_group = None
         self._alignment_world = None
