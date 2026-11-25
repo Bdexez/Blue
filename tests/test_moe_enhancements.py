@@ -10,7 +10,7 @@ import torch
 from blue import Blue, BlueConfig
 from blue.cli import main
 from blue.data import synthetic_batch
-from blue.training import load_checkpoint, save_checkpoint
+from blue.training import load_checkpoint
 
 
 class MoEEnhancementTests(unittest.TestCase):

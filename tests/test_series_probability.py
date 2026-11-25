@@ -16,7 +16,7 @@ from blue.cli import main
 from blue.data import synthetic_batch
 from blue.evaluation import evaluate
 from blue.probability_metrics import ProbabilityMetrics
-from blue.series_classifier import SeriesClassifier, fit_series_classifier
+from blue.series_classifier import fit_series_classifier
 from blue.series_probability import (SeriesProbabilityCalibration, fit_series_probability, log_probabilities)
 from blue.training import save_checkpoint
 

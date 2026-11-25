@@ -1,11 +1,8 @@
 import argparse
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 import json
 import math
-import os
 from pathlib import Path
-import sys
-import tempfile
 
 import torch
 from torch.utils.data import DataLoader
@@ -15,14 +12,11 @@ from .calibration import ForecastCalibration, file_sha256, fit_calibration
 from .card import generate_model_card
 from .cli_ops import get_config, inspect_config, prediction_stream, run_demo, run_export, same_file
 from .config import BlueConfig
-from .data import JointDataset, collate_records, synthetic_batch
+from .data import JointDataset, collate_records
 from .forecast_adapter import fit_forecast_adapter
 from .embedding_search import search_embeddings
-from .lora import merge_dora
-from .model import Blue
 from .modality_batch_sampler import OrderedModalityBatchSampler
 from .profiler import profile_architecture
-from .quantize import quantize_model_int4, quantize_model_int8
 from .retrieval_evaluation import evaluate_retrieval
 from .retrieval_relevance import write_class_relevance
 from .series_classifier import SeriesClassifier, fit_series_classifier
@@ -41,7 +35,7 @@ def audit_series_calibration(data, dataset_sha256, references, *, output, subjec
     """Comparer les historiques JSON exacts aux jeux d'ajustement fournis."""
     if not references:
         return
-    for name, (path, digest) in references.items():
+    for name, (_, digest) in references.items():
         if digest is None:
             raise ValueError(f"Empreinte du jeu {name} absente de l'artefact")
     paths = {subject: data, **{name: path for name, (path, _) in references.items()}}

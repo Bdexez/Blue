@@ -8,7 +8,6 @@ import sys
 import tempfile
 import unittest
 
-import torch
 
 from blue import Blue, BlueConfig
 from blue.calibration import ForecastCalibration

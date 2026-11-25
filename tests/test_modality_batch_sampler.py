@@ -1,6 +1,5 @@
 from array import array
 from collections import Counter
-from types import SimpleNamespace
 import json
 from pathlib import Path
 import tempfile

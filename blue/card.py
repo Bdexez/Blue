@@ -59,7 +59,7 @@ def _build_mermaid(config: BlueConfig, modalities: list[str]) -> list[str]:
         f'    TXT["Texte UTF-8{f" + Byte-NGrams ({_fmt_int(config.ngram_vocab_size)})" if config.ngram_vocab_size else ""}"]'
         f' --> DEC["{dec_label}"]'
     )
-    lines.append(f'    RES --> DEC')
+    lines.append('    RES --> DEC')
     if config.memory_slots > 0:
         lines.append(f'    DEC --> MEM["Mémoire épisodique ({config.memory_slots} emplacements)"]')
         head_src = "MEM"

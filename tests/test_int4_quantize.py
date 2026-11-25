@@ -7,7 +7,7 @@ import torch
 from blue import Blue, BlueConfig
 from blue.cli import main
 from blue.data import synthetic_batch
-from blue.quantize import Int4Linear, quantize_model_int4
+from blue.quantize import Int4Linear
 from blue.training import load_checkpoint, save_checkpoint
 
 

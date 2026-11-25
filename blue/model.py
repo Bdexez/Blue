@@ -415,13 +415,13 @@ class Blue(nn.Module):
                 raise ValueError("video doit contenir des nombres flottants finis")
         elif video_mask is not None:
             raise ValueError("video_mask nécessite video")
-        for mask, data, name, expected_shape in (
-            (attention_mask, input_ids, "attention_mask", None if input_ids is None else input_ids.shape[:2]),
-            (series_mask, series, "series_mask", None if series is None else series.shape[:2]),
-            (audio_mask, audio, "audio_mask", None if audio is None else (audio.size(0), audio.size(2))),
-            (graph_mask, graph_nodes, "graph_mask", None if graph_nodes is None else graph_nodes.shape[:2]),
-            (point_mask, points, "point_mask", None if points is None else points.shape[:2]),
-            (video_mask, video, "video_mask", None if video is None else (video.size(0), video.size(2))),
+        for mask, name, expected_shape in (
+            (attention_mask, "attention_mask", None if input_ids is None else input_ids.shape[:2]),
+            (series_mask, "series_mask", None if series is None else series.shape[:2]),
+            (audio_mask, "audio_mask", None if audio is None else (audio.size(0), audio.size(2))),
+            (graph_mask, "graph_mask", None if graph_nodes is None else graph_nodes.shape[:2]),
+            (point_mask, "point_mask", None if points is None else points.shape[:2]),
+            (video_mask, "video_mask", None if video is None else (video.size(0), video.size(2))),
         ):
             if mask is not None:
                 if mask.shape != expected_shape or mask.device != device:
