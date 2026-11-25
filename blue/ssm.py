@@ -52,25 +52,21 @@ class GatedDeltaNet(nn.Module):
                 self.d_skip.zero_()
 
     def _recurrence_sequential(self, q_f, k_f, v_f, decay_logits, beta_logits, valid, S):
-        b, t, _, _ = q_f.shape
+        b = q_f.size(0)
         alpha = torch.sigmoid(decay_logits.float())
         beta = torch.sigmoid(beta_logits.float())
         outputs = []
-        for step in range(t):
-            mask = valid[:, step].view(b, 1, 1, 1)
-            a_t = alpha[:, step].view(b, self.n_heads, 1, 1)
-            b_t = beta[:, step].view(b, self.n_heads, 1, 1)
-            k_t = k_f[:, step]
-            v_t = v_f[:, step]
-            q_t = q_f[:, step]
-            decayed = a_t * S
+        # unbind : un seul nœud arrière, au lieu d'un tenseur complet par pas indexé.
+        steps = zip(valid.unbind(1), alpha.unbind(1), beta.unbind(1), k_f.unbind(1), v_f.unbind(1),
+                    q_f.unbind(1), strict=True)
+        for valid_t, alpha_t, beta_t, k_t, v_t, q_t in steps:
+            decayed = alpha_t[:, :, None, None] * S
             v_pred = torch.einsum("bhkv,bhk->bhv", decayed, k_t)
-            delta = (v_t - v_pred) * b_t.squeeze(-1)
+            delta = (v_t - v_pred) * beta_t.unsqueeze(-1)
             S_next = decayed + torch.einsum("bhk,bhv->bhkv", k_t, delta)
-            S = torch.where(mask, S_next, S)
+            S = torch.where(valid_t.view(b, 1, 1, 1), S_next, S)
             o_t = torch.einsum("bhkv,bhk->bhv", S, q_t)
-            o_t = torch.where(valid[:, step].view(b, 1, 1), o_t, torch.zeros_like(o_t))
-            outputs.append(o_t)
+            outputs.append(torch.where(valid_t.view(b, 1, 1), o_t, torch.zeros_like(o_t)))
         return torch.stack(outputs, dim=1), S
 
     def _recurrence_chunkwise_wy(self, q_f, k_f, v_f, decay_logits, beta_logits, valid, S):
@@ -126,11 +122,13 @@ class GatedDeltaNet(nn.Module):
 
         states_in = []
         u_chunks = []
-        for idx in range(n_chunks):
+        # unbind : un seul nœud arrière, au lieu d'un tenseur complet par bloc indexé.
+        for u_in, w_in, g_in, k_in in zip(u_val.unbind(2), w_mat.unbind(2), exp_g_end.unbind(2),
+                                          k_exit.transpose(-1, -2).unbind(2), strict=True):
             states_in.append(S)
-            u_chunk = u_val[:, :, idx] - torch.matmul(w_mat[:, :, idx], S)
+            u_chunk = u_in - torch.matmul(w_in, S)
             u_chunks.append(u_chunk)
-            S = exp_g_end[:, :, idx] * S + torch.matmul(k_exit[:, :, idx].transpose(-1, -2), u_chunk)
+            S = g_in * S + torch.matmul(k_in, u_chunk)
 
         states_all = torch.stack(states_in, dim=2)  # [B, H, N, K, V]
         u_all = torch.stack(u_chunks, dim=2)  # [B, H, N, C, V]
