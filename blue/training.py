@@ -278,42 +278,28 @@ def train(args, config):
         del source
     else:
         model, payload, previous, start = Blue(config).to(device), {}, {}, 0
-    previous_policy = previous.get("modality_policy", "dropout")
-    args.modality_policy = args.modality_policy or previous_policy
-    if args.resume and args.modality_policy != previous_policy:
-        raise ValueError(f"Reprise : modality_policy diffère du checkpoint ({previous_policy!r})")
-    previous_monitor = previous.get("monitor", "loss")
-    args.monitor = getattr(args, "monitor", None) or previous_monitor
-    if args.resume and args.monitor != previous_monitor:
-        raise ValueError(f"Reprise : monitor diffère du checkpoint ({previous_monitor!r})")
-    previous_optimizer = previous.get("optimizer", "adamw")
-    args.optimizer = getattr(args, "optimizer", None) or previous_optimizer
-    if args.optimizer not in ("adamw", "muon"):
-        raise ValueError("optimizer doit être adamw ou muon")
-    if args.resume and args.optimizer != previous_optimizer:
-        raise ValueError(f"Reprise : optimizer diffère du checkpoint ({previous_optimizer!r})")
-    previous_schedule = previous.get("lr_schedule", "cosine")
-    args.lr_schedule = getattr(args, "lr_schedule", None) or previous_schedule
-    if args.lr_schedule not in ("cosine", "wsd"):
-        raise ValueError("lr_schedule doit être cosine ou wsd")
-    if args.resume and args.lr_schedule != previous_schedule:
-        raise ValueError(f"Reprise : lr_schedule diffère du checkpoint ({previous_schedule!r})")
-    previous_wsd_fraction = previous.get("wsd_decay_fraction", 0.2)
-    requested_wsd_fraction = getattr(args, "wsd_decay_fraction", None)
-    args.wsd_decay_fraction = (
-        previous_wsd_fraction if requested_wsd_fraction is None else float(requested_wsd_fraction)
-    )
-    if not math.isfinite(args.wsd_decay_fraction) or not 0.0 <= args.wsd_decay_fraction <= 1.0:
-        raise ValueError("wsd_decay_fraction doit être fini et appartenir à [0, 1]")
-    if args.resume and args.wsd_decay_fraction != previous_wsd_fraction:
-        raise ValueError(f"Reprise : wsd_decay_fraction diffère du checkpoint ({previous_wsd_fraction!r})")
-    previous_ema_decay = previous.get("ema_decay", 0.0)
-    requested_ema_decay = getattr(args, "ema_decay", None)
-    args.ema_decay = previous_ema_decay if requested_ema_decay is None else requested_ema_decay
-    if not math.isfinite(args.ema_decay) or not 0.0 <= args.ema_decay < 1.0:
-        raise ValueError("ema_decay doit être fini et appartenir à [0, 1[")
-    if args.resume and args.ema_decay != previous_ema_decay:
-        raise ValueError(f"Reprise : ema_decay diffère du checkpoint ({previous_ema_decay!r})")
+    def resumed_option(name, default, *, valid=None, invalid_message=None, convert=None):
+        """Option demandée, sinon celle du checkpoint ; une reprise refuse toute différence."""
+        saved = previous.get(name, default)
+        requested = getattr(args, name, None)
+        value = saved if requested is None else (convert(requested) if convert else requested)
+        if valid is not None and not valid(value):
+            raise ValueError(invalid_message)
+        if args.resume and value != saved:
+            raise ValueError(f"Reprise : {name} diffère du checkpoint ({saved!r})")
+        setattr(args, name, value)
+
+    resumed_option("modality_policy", "dropout")
+    resumed_option("monitor", "loss")
+    resumed_option("optimizer", "adamw", valid=lambda value: value in ("adamw", "muon"),
+                   invalid_message="optimizer doit être adamw ou muon")
+    resumed_option("lr_schedule", "cosine", valid=lambda value: value in ("cosine", "wsd"),
+                   invalid_message="lr_schedule doit être cosine ou wsd")
+    resumed_option("wsd_decay_fraction", 0.2, convert=float,
+                   valid=lambda value: math.isfinite(value) and 0.0 <= value <= 1.0,
+                   invalid_message="wsd_decay_fraction doit être fini et appartenir à [0, 1]")
+    resumed_option("ema_decay", 0.0, valid=lambda value: math.isfinite(value) and 0.0 <= value < 1.0,
+                   invalid_message="ema_decay doit être fini et appartenir à [0, 1[")
     previous_dora = previous.get("dora")
     req_dora_rank = getattr(args, "dora_rank", None)
     req_dora_alpha = getattr(args, "dora_alpha", None)
@@ -348,12 +334,8 @@ def train(args, config):
             raise ValueError("dora_alpha et dora_mode nécessitent --dora-rank")
         dora_spec = None
     maximize = args.monitor == "accuracy"
-    previous_normalization = previous.get("loss_normalization", "batch")
-    args.loss_normalization = getattr(args, "loss_normalization", None) or previous_normalization
-    if args.loss_normalization not in ("batch", "observed"):
-        raise ValueError("loss_normalization doit être batch ou observed")
-    if args.resume and args.loss_normalization != previous_normalization:
-        raise ValueError(f"Reprise : loss_normalization diffère du checkpoint ({previous_normalization!r})")
+    resumed_option("loss_normalization", "batch", valid=lambda value: value in ("batch", "observed"),
+                   invalid_message="loss_normalization doit être batch ou observed")
     previous_mixed = previous.get("mixed_modalities", False)
     requested_mixed = getattr(args, "mixed_modalities", None)
     if args.resume and requested_mixed is not None and requested_mixed != previous_mixed:
