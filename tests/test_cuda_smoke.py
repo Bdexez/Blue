@@ -62,7 +62,7 @@ class CudaSmokeTests(unittest.TestCase):
         from blue.modules import SparseMoE
         # Avec experts nuls : leurs créneaux formaient des lignes hors groupes, dont le
         # gradient d'entrée restait non initialisé et corrompait les gradients en amont.
-        for changes in ({}, {"moe_null_experts": 2}, {"kan_degree": 4, "moe_null_experts": 1}):
+        for changes in ({}, {"moe_null_experts": 2}):
             with self.subTest(changes):
                 torch.manual_seed(0)
                 model = Blue(replace(BlueConfig.preset("small"), **changes)).cuda()
@@ -81,6 +81,8 @@ class CudaSmokeTests(unittest.TestCase):
                     reference = model(**batch)
                     reference.loss.backward()
                 torch.testing.assert_close(output.loss, reference.loss, rtol=1e-5, atol=1e-5)
+                # Experts sans jeton : pas de gradient (None) dans les deux chemins, que l'optimiseur ignore.
+                self.assertEqual(set(grouped), {name for name, p in model.named_parameters() if p.grad is not None})
                 for name, p in model.named_parameters():
                     if p.grad is not None:  # Tous les paramètres, pas seulement les experts.
                         torch.testing.assert_close(grouped[name], p.grad, rtol=1e-3, atol=1e-6)

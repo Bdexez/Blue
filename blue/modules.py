@@ -814,7 +814,11 @@ class _GroupedLinear(torch.autograd.Function):
         weight_grads = [None] * len(weights)
         if any(ctx.needs_input_grad[2:]):
             per_group = torch._grouped_mm(grad.t(), x, offs=offsets)  # [E, sortie, entrée]
-            weight_grads = [per_group[index].to(weight.dtype) if ctx.needs_input_grad[2 + index] else None
+            # Comme la boucle par expert : un expert sans jeton n'a pas de gradient (None),
+            # que l'optimiseur ignore (ni inertie ni weight decay), au lieu d'un gradient nul.
+            sizes = torch.diff(offsets, prepend=offsets.new_zeros(1)).tolist()
+            weight_grads = [per_group[index].to(weight.dtype).clone()
+                            if ctx.needs_input_grad[2 + index] and sizes[index] else None
                             for index, weight in enumerate(weights)]
         return (grad_x, None, *weight_grads)
 
@@ -877,12 +881,11 @@ class SparseMoE(nn.Module):
         if not (tokens.is_cuda and tokens.size(0) >= 64 and hasattr(torch, "_grouped_mm")):
             return False
         hidden = self.experts[0].down.in_features
-        degree = self.experts[0].kan_degree if self.experts[0].kan_coeffs is not None else 0
+        # Experts KAN exclus : leurs coefficients recevraient un gradient nul au lieu de None
+        # pour les experts sans jeton, ce qui changerait le comportement de l'optimiseur.
         return (tokens.size(-1) % 8 == 0 and hidden % 8 == 0
-                and all(type(expert) is SwiGLU and type(expert.up_gate) is nn.Linear
-                        and type(expert.down) is nn.Linear
-                        and (expert.kan_coeffs is not None) == bool(degree)
-                        and (not degree or expert.kan_degree == degree)
+                and all(type(expert) is SwiGLU and expert.kan_coeffs is None
+                        and type(expert.up_gate) is nn.Linear and type(expert.down) is nn.Linear
                         for expert in self.experts))
 
     def _grouped_gemm_experts(self, tokens, mixed, order, slot_counts, weights, flat_selected):
