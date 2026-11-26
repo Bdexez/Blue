@@ -190,12 +190,31 @@ class BlueConfig:
             "max_video_frames", "video_layers",
             "n_latents", "resampler_layers",
             "num_classes", "forecast_horizon", "forecast_context", "prediction_steps",
-            "flow_matching_layers",
+            "flow_matching_layers", "ssm_chunk_size", "ssm_every", "ttt_every", "residual_streams",
+            "latent_reasoning_steps", "checkpoint_every",
         )
         for name in integers:
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} doit être un entier strictement positif")
+        non_negative_integers = (
+            "kv_lora_rank", "cross_kv_lora_rank", "attention_sinks", "ssm_state_dim",
+            "ttt_state_dim", "memory_slots", "moe_null_experts", "moe_shared_latent_dim",
+            "flow_matching_dim", "pointcloud_features", "tabular_cat_features", "register_latents",
+            "cross_modal_fusion_layers",
+        )
+        for name in non_negative_integers:
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} doit être un entier positif ou nul")
+        non_negative_reals = (
+            "logit_softcap", "attn_logit_softcap", "cross_logit_softcap", "layer_scale_init",
+            "ponder_kl_weight", "moe_entropy_weight", "moe_router_orthogonality_weight",
+            "router_bias_update_rate", "depth_budget_weight", "alignment_margin", "jepa_cov_weight",
+        )
+        for name in non_negative_reals:
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0:
+                raise ValueError(f"{name} doit être fini et positif ou nul")
         for field in fields(self):
             # Tout champ annoté bool doit l'être strictement (pas 0/1 ni chaîne JSON).
             if field.type in (bool, "bool") and type(getattr(self, field.name)) is not bool:
@@ -210,30 +229,16 @@ class BlueConfig:
             raise ValueError("differential_attention nécessite d_model / n_heads divisible par 4")
         if self.cross_differential_attention and (self.d_model // self.n_heads) % 4:
             raise ValueError("cross_differential_attention nécessite d_model / n_heads divisible par 4")
-        if type(self.kv_lora_rank) is not int or self.kv_lora_rank < 0:
-            raise ValueError("kv_lora_rank doit être un entier positif ou nul")
-        if type(self.cross_kv_lora_rank) is not int or self.cross_kv_lora_rank < 0:
-            raise ValueError("cross_kv_lora_rank doit être un entier positif ou nul")
         if self.kv_lora_rank > 0:
             head_dim = self.d_model // self.n_heads
             if head_dim % 4:
                 raise ValueError("kv_lora_rank nécessite d_model / n_heads divisible par 4")
             if self.differential_attention and head_dim % 8:
                 raise ValueError("kv_lora_rank + differential_attention nécessite d_model / n_heads divisible par 8")
-        if type(self.attention_sinks) is not int or self.attention_sinks < 0:
-            raise ValueError("attention_sinks doit être un entier positif ou nul")
-        if not math.isfinite(self.logit_softcap) or self.logit_softcap < 0:
-            raise ValueError("logit_softcap doit être fini et positif ou nul")
-        if not math.isfinite(self.attn_logit_softcap) or self.attn_logit_softcap < 0:
-            raise ValueError("attn_logit_softcap doit être fini et positif ou nul")
-        if not math.isfinite(self.cross_logit_softcap) or self.cross_logit_softcap < 0:
-            raise ValueError("cross_logit_softcap doit être fini et positif ou nul")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
             raise ValueError("nsa_block_size doit être 0 ou un entier >= 2")
         if type(self.nsa_top_k) is not int or self.nsa_top_k < 1:
             raise ValueError("nsa_top_k doit être un entier >= 1")
-        if type(self.ssm_state_dim) is not int or self.ssm_state_dim < 0:
-            raise ValueError("ssm_state_dim doit être un entier positif ou nul")
         if self.ssm_heads is not None:
             if type(self.ssm_heads) is not int or self.ssm_heads < 1:
                 raise ValueError("ssm_heads doit être un entier strictement positif")
@@ -241,12 +246,6 @@ class BlueConfig:
                 raise ValueError("ssm_heads nécessite ssm_state_dim > 0")
             if self.d_model % self.ssm_heads:
                 raise ValueError("d_model doit être divisible par ssm_heads")
-        if type(self.ssm_chunk_size) is not int or self.ssm_chunk_size < 1:
-            raise ValueError("ssm_chunk_size doit être un entier strictement positif")
-        if type(self.ssm_every) is not int or self.ssm_every < 1:
-            raise ValueError("ssm_every doit être un entier strictement positif")
-        if type(self.ttt_state_dim) is not int or self.ttt_state_dim < 0:
-            raise ValueError("ttt_state_dim doit être un entier positif ou nul")
         if self.ttt_heads is not None:
             if type(self.ttt_heads) is not int or self.ttt_heads < 1:
                 raise ValueError("ttt_heads doit être un entier strictement positif")
@@ -254,48 +253,24 @@ class BlueConfig:
                 raise ValueError("ttt_heads nécessite ttt_state_dim > 0")
         if not math.isfinite(self.ttt_base_lr) or self.ttt_base_lr <= 0:
             raise ValueError("ttt_base_lr doit être fini et strictement positif")
-        if type(self.ttt_every) is not int or self.ttt_every < 1:
-            raise ValueError("ttt_every doit être un entier strictement positif")
-        if type(self.residual_streams) is not int or self.residual_streams < 1:
-            raise ValueError("residual_streams doit être un entier strictement positif")
-        if not math.isfinite(self.layer_scale_init) or self.layer_scale_init < 0:
-            raise ValueError("layer_scale_init doit être fini et positif ou nul")
-        if type(self.latent_reasoning_steps) is not int or self.latent_reasoning_steps < 1:
-            raise ValueError("latent_reasoning_steps doit être un entier strictement positif")
         if self.latent_reasoning_adaptive and self.latent_reasoning_steps < 2:
             raise ValueError("latent_reasoning_adaptive nécessite latent_reasoning_steps >= 2")
         if not math.isfinite(self.ponder_prior) or not 0.0 < self.ponder_prior < 1.0:
             raise ValueError("ponder_prior doit être fini et strictement compris entre 0 et 1")
-        if not math.isfinite(self.ponder_kl_weight) or self.ponder_kl_weight < 0:
-            raise ValueError("ponder_kl_weight doit être fini et positif ou nul")
-        if type(self.memory_slots) is not int or self.memory_slots < 0:
-            raise ValueError("memory_slots doit être un entier positif ou nul")
         if self.d_model % 4 or self.n_heads % self.n_kv_heads:
             raise ValueError("d_model doit être divisible par 4 et n_heads par n_kv_heads")
         if self.top_k > self.n_experts:
             raise ValueError("top_k ne peut pas dépasser n_experts")
-        if type(self.moe_null_experts) is not int or self.moe_null_experts < 0:
-            raise ValueError("moe_null_experts doit être un entier positif ou nul")
-        if type(self.moe_shared_latent_dim) is not int or self.moe_shared_latent_dim < 0:
-            raise ValueError("moe_shared_latent_dim doit être un entier positif ou nul")
         if self.moe_router_geometry not in ("euclidean", "hyperbolic"):
             raise ValueError("moe_router_geometry doit être euclidean ou hyperbolic")
-        if not math.isfinite(self.moe_entropy_weight) or self.moe_entropy_weight < 0:
-            raise ValueError("moe_entropy_weight doit être fini et positif ou nul")
-        if not math.isfinite(self.moe_router_orthogonality_weight) or self.moe_router_orthogonality_weight < 0:
-            raise ValueError("moe_router_orthogonality_weight doit être fini et positif ou nul")
         if not math.isfinite(self.moe_routed_scaling_factor) or self.moe_routed_scaling_factor <= 0:
             raise ValueError("moe_routed_scaling_factor doit être fini et strictement positif")
         if self.top1_gate not in ("normalized", "probability"):
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):
             raise ValueError("top1_gate probability nécessite top_k=1 et au moins deux experts")
-        if not math.isfinite(self.router_bias_update_rate) or self.router_bias_update_rate < 0:
-            raise ValueError("router_bias_update_rate doit être fini et positif ou nul")
         if not math.isfinite(self.depth_routing_capacity) or not 0.0 < self.depth_routing_capacity <= 1.0:
             raise ValueError("depth_routing_capacity doit être fini et appartenir à ]0, 1]")
-        if not math.isfinite(self.depth_budget_weight) or self.depth_budget_weight < 0:
-            raise ValueError("depth_budget_weight doit être fini et positif ou nul")
         if self.image_size % self.patch_size:
             raise ValueError("image_size doit être divisible par patch_size")
         if self.vision_rope_2d:
@@ -343,8 +318,6 @@ class BlueConfig:
             raise ValueError("alignment_geometry doit être euclidean ou hyperbolic")
         if not math.isfinite(self.alignment_curvature) or self.alignment_curvature <= 0:
             raise ValueError("alignment_curvature doit être fini et > 0")
-        if not math.isfinite(self.alignment_margin) or self.alignment_margin < 0:
-            raise ValueError("alignment_margin doit être fini et positif ou nul")
         if not math.isfinite(self.label_smoothing) or not 0.0 <= self.label_smoothing < 1.0:
             raise ValueError("label_smoothing doit être fini et appartenir à [0, 1[")
         self.quantiles = tuple(self.quantiles)
@@ -363,28 +336,14 @@ class BlueConfig:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
         if not math.isfinite(self.mtp_decay) or not 0.0 < self.mtp_decay <= 1.0:
             raise ValueError("mtp_decay doit être fini et appartenir à ]0, 1]")
-        if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
-            raise ValueError("flow_matching_dim doit être un entier positif ou nul")
         if not math.isfinite(self.flow_cfg_dropout) or not 0.0 <= self.flow_cfg_dropout < 1.0:
             raise ValueError("flow_cfg_dropout doit être fini et appartenir à [0, 1[")
         if self.flow_time_schedule not in ("uniform", "logit_normal"):
             raise ValueError("flow_time_schedule doit être uniform ou logit_normal")
-        if not math.isfinite(self.jepa_cov_weight) or self.jepa_cov_weight < 0:
-            raise ValueError("jepa_cov_weight doit être fini et positif ou nul")
-        if type(self.checkpoint_every) is not int or self.checkpoint_every < 1:
-            raise ValueError("checkpoint_every doit être un entier strictement positif")
-        if type(self.pointcloud_features) is not int or self.pointcloud_features < 0:
-            raise ValueError("pointcloud_features doit être un entier positif ou nul")
-        if type(self.tabular_cat_features) is not int or self.tabular_cat_features < 0:
-            raise ValueError("tabular_cat_features doit être un entier positif ou nul")
         if type(self.tabular_cat_cardinality) is not int or self.tabular_cat_cardinality < 2:
             raise ValueError("tabular_cat_cardinality doit être un entier >= 2")
         if self.video_size % self.video_patch_size:
             raise ValueError("video_size doit être divisible par video_patch_size")
-        if type(self.register_latents) is not int or self.register_latents < 0:
-            raise ValueError("register_latents doit être un entier positif ou nul")
-        if type(self.cross_modal_fusion_layers) is not int or self.cross_modal_fusion_layers < 0:
-            raise ValueError("cross_modal_fusion_layers doit être un entier positif ou nul")
         self.latent_fsq_levels = tuple(self.latent_fsq_levels)
         if any(type(level) is not int or level < 2 for level in self.latent_fsq_levels):
             raise ValueError("latent_fsq_levels doit contenir des entiers >= 2")
