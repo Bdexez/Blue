@@ -18,9 +18,10 @@ def has_observed_targets(batch, *, prediction_steps=1):
     labels = batch.get("labels")
     if labels is not None:
         valid = batch.get("attention_mask", torch.ones_like(labels, dtype=torch.bool)).bool()
-        for distance in range(1, min(prediction_steps + 1, labels.size(1))):
-            if ((labels[:, distance:] != -100) & valid[:, distance:] & valid[:, :-distance]).any().item():
-                return True
+        observed = [((labels[:, distance:] != -100) & valid[:, distance:] & valid[:, :-distance]).any()
+                    for distance in range(1, min(prediction_steps + 1, labels.size(1)))]
+        if observed and torch.stack(observed).any().item():  # Une seule synchronisation.
+            return True
     classes = batch.get("class_labels")
     if classes is not None and (classes != -100).any().item():
         return True
