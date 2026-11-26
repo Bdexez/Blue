@@ -789,6 +789,36 @@ class GatedCausalConv(nn.Module):
         return self.out(F.silu(y) * torch.sigmoid(gate)), next_state
 
 
+class _GroupedLinear(torch.autograd.Function):
+    """y = x @ W_e^T par groupes de lignes, sans conserver les poids empilés pour l'arrière.
+
+    Empiler les poids des experts dans le graphe en garderait une copie complète
+    jusqu'à la passe arrière (environ 13 % de mémoire de pointe en plus sur le preset
+    small) ; ici seules les références aux poids sont sauvegardées, et l'empilement est
+    refait, temporairement, dans la passe arrière.
+    """
+
+    @staticmethod
+    def forward(ctx, x, offsets, *weights):
+        ctx.save_for_backward(x, offsets, *weights)
+        stacked = torch.stack([weight.to(x.dtype) for weight in weights])  # [E, sortie, entrée]
+        return torch._grouped_mm(x, stacked.transpose(1, 2), offs=offsets)
+
+    @staticmethod
+    def backward(ctx, grad):
+        x, offsets, *weights = ctx.saved_tensors
+        grad = grad.contiguous().to(x.dtype)
+        grad_x = None
+        if ctx.needs_input_grad[0]:
+            grad_x = torch._grouped_mm(grad, torch.stack([weight.to(x.dtype) for weight in weights]), offs=offsets)
+        weight_grads = [None] * len(weights)
+        if any(ctx.needs_input_grad[2:]):
+            per_group = torch._grouped_mm(grad.t(), x, offs=offsets)  # [E, sortie, entrée]
+            weight_grads = [per_group[index].to(weight.dtype) if ctx.needs_input_grad[2 + index] else None
+                            for index, weight in enumerate(weights)]
+        return (grad_x, None, *weight_grads)
+
+
 class SparseMoE(nn.Module):
     """Top-k sans abandon de tokens, experts partagés, experts nuls zéro-calcul, équilibrage et z-loss."""
 
@@ -871,9 +901,7 @@ class SparseMoE(nn.Module):
         if self.n_null:
             up_gate += [up_gate[0].new_zeros(up_gate[0].shape)] * self.n_null
             down += [down[0].new_zeros(down[0].shape)] * self.n_null
-        up_gate = torch.stack(up_gate).to(dtype).transpose(1, 2)
-        down = torch.stack(down).to(dtype).transpose(1, 2)
-        gate, up = torch._grouped_mm(tokens[rows].to(dtype), up_gate, offs=offsets).chunk(2, dim=-1)
+        gate, up = _GroupedLinear.apply(tokens[rows].to(dtype), offsets, *up_gate).chunk(2, dim=-1)
         activation = F.silu(gate)
         if self.experts[0].kan_coeffs is not None:
             # Même terme de Tchebychev que SwiGLU, avec les coefficients de l'expert de chaque ligne.
@@ -888,7 +916,7 @@ class SparseMoE(nn.Module):
                     previous, current = current, 2.0 * z * current - previous
                     chebyshev = chebyshev + current * per_row[:, index]
             activation = activation + chebyshev.to(activation.dtype)
-        outputs = torch._grouped_mm(activation * up, down, offs=offsets)
+        outputs = _GroupedLinear.apply(activation * up, offsets, *down)
         contributions = outputs * weights.reshape(-1)[order, None].to(outputs.dtype)
         if self.n_null:
             routed = (flat_selected[order] < self.n_experts).unsqueeze(-1)
