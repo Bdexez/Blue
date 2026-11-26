@@ -614,7 +614,8 @@ class GroupedQueryAttention(nn.Module):
                     dropout_p=dropout_p, enable_gqa=gqa, softcap=sc, forget_bias=forget_bias,
                 )
         if self.nsa is not None:
-            y = y + self.nsa(q_nsa_src, k_nsa_src, v_nsa_src, key_valid, offset=offset, start_pos=start_pos)
+            y = y + self.nsa(q_nsa_src, k_nsa_src, v_nsa_src, key_valid, offset=offset, start_pos=start_pos,
+                             shift=position_shift)
         if self.head_gate_proj is not None:
             h_conf = (2.0 * torch.sigmoid(self.head_gate_proj(x))).transpose(1, 2).unsqueeze(-1)
             y = y * h_conf.to(y.dtype)
