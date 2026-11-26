@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 import math
 from typing import NamedTuple
@@ -1266,43 +1267,22 @@ class Blue(nn.Module):
 
     @staticmethod
     def _reorder_cache(cache: ModelCache, beam_idx: torch.Tensor) -> ModelCache:
-        def _sel(t):
-            return None if t is None else t.index_select(0, beam_idx)
+        """Sélectionner les lignes ``beam_idx`` de chaque tenseur du cache.
 
-        layers = [
-            LayerCache(
-                key=_sel(layer.key),
-                value=_sel(layer.value),
-                valid=_sel(layer.valid),
-                conv_state=_sel(layer.conv_state),
-                start_pos=layer.start_pos,
-                context_key=_sel(layer.context_key),
-                context_value=_sel(layer.context_value),
-                ssm_state=_sel(layer.ssm_state),
-                ttt_state=_sel(layer.ttt_state),
-            )
-            for layer in cache.layers
-        ]
-        adapter_ctx = cache.forecast_adapter_context
-        if adapter_ctx is not None:
-            adapter_ctx = ForecastAdapterContext(
-                features=_sel(adapter_ctx.features),
-                missing_gate=_sel(adapter_ctx.missing_gate),
-                scale=_sel(adapter_ctx.scale),
-            )
-        return ModelCache(
-            layers=layers,
-            latents=_sel(cache.latents),
-            offset=cache.offset,
-            series_mean=_sel(cache.series_mean),
-            series_scale=_sel(cache.series_scale),
-            forecast_baseline=_sel(cache.forecast_baseline),
-            forecast_adapter_context=adapter_ctx,
-            episodic_memory=_sel(cache.episodic_memory),
-            ngram_tail=_sel(cache.ngram_tail),
-            ngram_tail_valid=_sel(cache.ngram_tail_valid),
-            dense=cache.dense,
-        )
+        Le parcours générique des champs (couches, contexte de l'adaptateur...)
+        évite qu'un champ ajouté à l'une des structures soit oublié ici.
+        """
+        def select(value):
+            if isinstance(value, torch.Tensor):
+                return value.index_select(0, beam_idx)
+            if isinstance(value, list):
+                return [select(element) for element in value]
+            if dataclasses.is_dataclass(value):
+                return dataclasses.replace(value, **{field.name: select(getattr(value, field.name))
+                                                     for field in dataclasses.fields(value)})
+            return value  # Positions, indicateurs : identiques pour toutes les lignes.
+
+        return select(cache)
 
     @torch.inference_mode()
     def generate(self, input_ids, *, max_new_tokens=64, temperature=0.8, top_k=40,

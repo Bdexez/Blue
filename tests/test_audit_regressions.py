@@ -69,6 +69,19 @@ class DecodingTests(unittest.TestCase):
             if positions.numel():
                 self.assertTrue((row[positions[0].item():] == eos).all())
 
+    def test_beam_search_reorders_every_cache_field(self):
+        # Le contexte de l'adaptateur de prévision faisait échouer le réordonnancement.
+        model = tiny(forecast_adapter_context=8, memory_slots=2, ngram_vocab_size=32, ssm_state_dim=4).eval()
+        series = torch.randn(1, 20, model.config.series_features, generator=torch.Generator().manual_seed(3))
+        result = model.generate(self.ids[:1], max_new_tokens=4, beam_width=3, eos_id=None, series=series)
+        self.assertEqual(result.shape, (1, 12))
+        prefix = model(self.ids[:1].expand(2, -1), series=series.expand(2, -1, -1), use_cache=True).cache
+        swapped = Blue._reorder_cache(prefix, torch.tensor([1, 0]))
+        self.assertEqual(swapped.offset, prefix.offset)
+        self.assertTrue(torch.equal(swapped.forecast_adapter_context.history,
+                                    prefix.forecast_adapter_context.history.flip(0)))
+        self.assertTrue(torch.equal(swapped.layers[0].key, prefix.layers[0].key.flip(0)))
+
     def test_beam_may_be_wider_than_the_vocabulary(self):
         wide = self.model.config.vocab_size + 40
         result = self.model.generate(self.ids[:1], max_new_tokens=3, beam_width=wide, eos_id=None)
