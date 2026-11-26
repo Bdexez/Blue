@@ -362,6 +362,17 @@ class LossWeightTableTests(unittest.TestCase):
             self.assertTrue(hasattr(config, attribute), attribute)
 
 
+class VerifierInvariantTests(unittest.TestCase):
+    def test_verify_checks_text_padding_and_gradient_checkpointing(self):
+        from blue.verifier import verify_architecture
+        config = replace(BlueConfig.preset("tiny"), qk_residual=True, ssm_state_dim=4, dropout=0.1)
+        report = verify_architecture(config)
+        self.assertTrue(report["passed"])
+        for name in ("text_padding_passed", "gradient_checkpointing_passed"):
+            self.assertIs(report["checks"][name], True)
+        self.assertFalse(config.gradient_checkpointing)  # L'option basculée est restaurée.
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):

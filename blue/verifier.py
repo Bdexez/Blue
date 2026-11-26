@@ -47,6 +47,20 @@ def verify_architecture(config: BlueConfig, *, seed: int = 0, device: str = "cpu
     checks["series_padding_max_abs_diff"] = round(series_pad_diff, 8)
     checks["series_padding_passed"] = series_pad_diff <= 1e-4
 
+    # 3 bis. Invariance au padding texte à droite (positions valides, classification, prévision).
+    pad = torch.zeros(2, 3, dtype=torch.long, device=dev)
+    if ids.size(1) + 3 <= config.max_seq_len:
+        padded = torch.cat((ids, pad), dim=1)
+        mask = torch.cat((torch.ones_like(ids, dtype=torch.bool), pad.bool()), dim=1)
+        with torch.no_grad():
+            o_t = model(ids, series=series)
+            o_tp = model(padded, attention_mask=mask, series=series)
+        text_pad_diff = max((o_t.logits - o_tp.logits[:, :ids.size(1)]).abs().max().item(),
+                            (o_t.classification_logits - o_tp.classification_logits).abs().max().item(),
+                            (o_t.forecast - o_tp.forecast).abs().max().item())
+        checks["text_padding_max_abs_diff"] = round(text_pad_diff, 8)
+        checks["text_padding_passed"] = text_pad_diff <= 1e-4
+
     min_inc = (o_s.forecast[..., 1:] - o_s.forecast[..., :-1]).min().item()
     checks["quantile_min_increment"] = round(min_inc, 8)
     checks["quantile_monotonic_passed"] = min_inc >= -1e-7
@@ -93,6 +107,29 @@ def verify_architecture(config: BlueConfig, *, seed: int = 0, device: str = "cpu
     checks["loss_finite"] = loss_finite
     checks["gradients_finite"] = grads_finite
     checks["parameters_with_gradient"] = len(grads_with_val)
+
+    # 7. Le recalcul par gradient checkpointing reproduit exactement perte et gradients.
+    # Même modèle, option basculée sur place : aucune copie des poids, seules des
+    # empreintes (somme et norme par paramètre) des gradients sont conservées.
+    def gradient_fingerprint():
+        torch.manual_seed(seed + 2)
+        model.zero_grad(set_to_none=True)
+        run = model(**batch)
+        run.loss.backward()
+        return run.loss.item(), {name: (p.grad.double().sum().item(), p.grad.double().norm().item())
+                                 for name, p in model.named_parameters() if p.grad is not None}
+
+    original = config.gradient_checkpointing
+    loss_a, fingerprint_a = gradient_fingerprint()
+    model.config.gradient_checkpointing = not original
+    try:
+        loss_b, fingerprint_b = gradient_fingerprint()
+    finally:
+        model.config.gradient_checkpointing = original
+    checkpoint_diff = max([abs(loss_a - loss_b)] + [
+        abs(x - y) for name in fingerprint_a for x, y in zip(fingerprint_a[name], fingerprint_b.get(name, (float("nan"),) * 2))])
+    checks["gradient_checkpointing_max_abs_diff"] = round(checkpoint_diff, 10)
+    checks["gradient_checkpointing_passed"] = set(fingerprint_a) == set(fingerprint_b) and checkpoint_diff <= 1e-6
 
     passed = all(v for k, v in checks.items() if k.endswith("_passed") or k.endswith("_finite"))
     return {"passed": passed, "checks": checks}
