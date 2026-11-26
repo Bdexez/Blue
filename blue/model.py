@@ -483,18 +483,10 @@ class Blue(nn.Module):
         return batch
 
     def _project_alignment(self, index: int, value: torch.Tensor) -> torch.Tensor:
-        if index == 3:
-            proj = self.audio_alignment
-        elif index == 4:
-            proj = self.graph_alignment
-        elif index == 5:
-            proj = self.pointcloud_alignment
-        elif index == 6:
-            proj = self.tabular_alignment
-        elif index == 7:
-            proj = self.video_alignment
-        else:
-            proj = self.alignment[index]
+        # Indices 0, 1, 2 : image, série, texte ; puis audio, graphe, nuage 3D, tabulaire, vidéo.
+        proj = (self.alignment[index] if index < 3 else
+                (self.audio_alignment, self.graph_alignment, self.pointcloud_alignment,
+                 self.tabular_alignment, self.video_alignment)[index - 3])
         projected = proj(value).float()
         if self.config.alignment_geometry == "hyperbolic":
             return poincare_exp0(projected, self.config.alignment_curvature)
