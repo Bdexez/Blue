@@ -9,6 +9,8 @@ Cet audit a relu les modules du modèle, de l'entraînement, du décodage, de l'
 | L'entropie du routeur et les requêtes de la première couche étaient stockées sur les modules (`last_router_entropy`, `last_q_first`) | Le graphe autograd restait vivant après la passe, et `copy.deepcopy(model)` échouait après un pas d'entraînement | Valeurs renvoyées explicitement par `DecoderBlockOutput` ; aucun tenseur du graphe n'est conservé |
 | Beam search en lot | Pour B > 1, `beam_width` était ignoré en silence au profit de l'échantillonnage | Recherche par ligne, résultats complétés par `eos_id` |
 | Beam plus large que le vocabulaire, ou `eos_id=None` | `IndexError` | Premier pas borné à `vocab_size`, suivi de fin de faisceau corrigé |
+| Beam search avec `forecast_adapter_context > 0` et une série | `AttributeError` : champs inexistants dans le réordonnancement du cache | Parcours générique des champs du cache |
+| Série 1D de longueur `series_features` dans un JSONL | Diffusée en pas identiques, sans erreur | Formes vérifiées à la lecture, avec fichier et ligne |
 | Guidage (`context_guidance_scale`) ou Mirostat combinés à beam, Jacobi ou spéculatif | Option ignorée en silence | `ValueError` explicite |
 | `attention_mask=None` passé à `generate` | `TypeError` | Les entrées `None` sont ignorées |
 | Échelles INT4 en FP16 | Échelle nulle (0/0) pour des groupes de poids très petits ou nuls | Bornées aux valeurs FP16 représentables |
