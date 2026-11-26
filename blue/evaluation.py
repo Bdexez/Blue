@@ -14,6 +14,182 @@ from .series_probability import log_probabilities
 from .streaming_rmse import StreamingRMSE
 
 
+class ForecastMetrics:
+    """Accumulateurs des métriques de prévision : erreurs, quantiles, intervalles bruts et calibrés."""
+
+    def __init__(self, config):
+        self.config = config
+        self.forecast_count = 0
+        self.complete_forecasts = self.raw_joint_covered = self.calibrated_joint_covered = 0
+        self.absolute = self.covered = self.width = 0.0
+        self.rmse = StreamingRMSE()
+        self.horizon_error = torch.zeros(self.config.forecast_horizon, dtype=torch.float64)
+        self.horizon_count = torch.zeros_like(self.horizon_error)
+        self.feature_count = torch.zeros(self.config.series_features, dtype=torch.float64)
+        self.feature_error = torch.zeros_like(self.feature_count)
+        self.cell_count = torch.zeros(self.config.forecast_horizon, self.config.series_features, dtype=torch.float64)
+        self.cell_error = torch.zeros_like(self.cell_count)
+        self.feature_width = torch.zeros_like(self.feature_count)
+        self.calibrated_feature_width = torch.zeros_like(self.feature_count)
+        self.feature_covered = torch.zeros_like(self.feature_count)
+        self.calibrated_feature_covered = torch.zeros_like(self.feature_count)
+        self.feature_below = torch.zeros_like(self.feature_count)
+        self.feature_above = torch.zeros_like(self.feature_count)
+        self.calibrated_feature_below = torch.zeros_like(self.feature_count)
+        self.calibrated_feature_above = torch.zeros_like(self.feature_count)
+        self.cell_covered = torch.zeros_like(self.cell_count)
+        self.calibrated_cell_covered = torch.zeros_like(self.cell_count)
+        self.quantile_hits = torch.zeros(len(self.config.quantiles), dtype=torch.float64)
+        self.quantile_pinball = torch.zeros_like(self.quantile_hits)
+        self.feature_quantile_hits = torch.zeros(self.config.series_features, len(self.config.quantiles), dtype=torch.float64)
+        self.feature_quantile_pinball = torch.zeros_like(self.feature_quantile_hits)
+        self.interval_covered = torch.zeros_like(self.horizon_error)
+        self.interval_width = torch.zeros_like(self.horizon_error)
+        self.calibrated_covered = torch.zeros_like(self.horizon_error)
+        self.calibrated_width = torch.zeros_like(self.horizon_error)
+        self.calibrated_score = 0.0
+        self.raw_score = 0.0
+
+    def by_horizon(self, values):
+        return [total.item() / count.item() if count else None
+                for total, count in zip(values, self.horizon_count)]
+
+    def by_feature(self, values):
+        return [total.item() / count.item() if count else None
+                for total, count in zip(values, self.feature_count)]
+
+    def by_cell(self, values):
+        return [[total.item() / count.item() if count else None for total, count in zip(row, counts)]
+                for row, counts in zip(values, self.cell_count)]
+
+    def by_feature_quantile(self, values):
+        return [[total.item() / count.item() if count else None for total in row]
+                for row, count in zip(values, self.feature_count)]
+
+    def update(self, target, forecast, calibration=None):
+        """Ajouter un lot de prévisions ; renvoie le nombre de cibles observées."""
+        observed = torch.isfinite(target)
+        count = observed.sum().item()
+        self.forecast_count += count
+        target = target.double()
+        predictions = forecast.double()
+        median = predictions[..., self.config.quantiles.index(0.5)]
+        error = torch.where(observed, median - target, 0)
+        self.absolute += error.abs().sum().item()
+        self.rmse.update(error)
+        self.horizon_error += error.abs().sum((0, 2)).cpu()
+        self.horizon_count += observed.sum((0, 2)).cpu()
+        self.feature_count += observed.sum((0, 1)).cpu()
+        self.feature_error += error.abs().sum((0, 1)).cpu()
+        self.cell_count += observed.sum(0).cpu()
+        self.cell_error += error.abs().sum(0).cpu()
+        levels = predictions.new_tensor(self.config.quantiles)
+        residual = torch.where(observed.unsqueeze(-1), target.unsqueeze(-1) - predictions, 0)
+        hits = (target.unsqueeze(-1) <= predictions) & observed.unsqueeze(-1)
+        pinball = torch.maximum(levels * residual, (levels - 1) * residual)
+        self.quantile_hits += hits.sum((0, 1, 2)).cpu()
+        self.quantile_pinball += pinball.sum((0, 1, 2)).cpu()
+        self.feature_quantile_hits += hits.sum((0, 1)).cpu()
+        self.feature_quantile_pinball += pinball.sum((0, 1)).cpu()
+        if len(self.config.quantiles) > 1:
+            lower, upper = predictions[..., 0], predictions[..., -1]
+            complete = observed.flatten(1).all(-1)
+            self.complete_forecasts += complete.sum().item()
+            inside = (target >= lower) & (target <= upper)
+            self.raw_joint_covered += (inside.flatten(1).all(-1) & complete).sum().item()
+            self.covered += ((target >= lower) & (target <= upper) & observed).sum().item()
+            self.width += torch.where(observed, upper - lower, 0).double().sum().item()
+            self.interval_covered += ((target >= lower) & (target <= upper) & observed).sum((0, 2)).cpu()
+            self.feature_covered += (inside & observed).sum((0, 1)).cpu()
+            self.cell_covered += (inside & observed).sum(0).cpu()
+            self.feature_below += ((target < lower) & observed).sum((0, 1)).cpu()
+            self.feature_above += ((target > upper) & observed).sum((0, 1)).cpu()
+            self.interval_width += torch.where(observed, upper - lower, 0).double().sum((0, 2)).cpu()
+            self.feature_width += torch.where(observed, upper - lower, 0).sum((0, 1)).cpu()
+            alpha = 1 - (self.config.quantiles[-1] - self.config.quantiles[0])
+            score = upper - lower + 2 / alpha * (
+                (lower - target).clamp_min(0) + (target - upper).clamp_min(0))
+            self.raw_score += torch.where(observed, score, 0).double().sum().item()
+            if calibration is not None:
+                interval = calibration.interval(forecast)
+                low, high = interval.double().unbind(-1)
+                inside = (target >= low) & (target <= high)
+                self.calibrated_joint_covered += (inside.flatten(1).all(-1) & complete).sum().item()
+                self.calibrated_covered += ((target >= low) & (target <= high) & observed).sum((0, 2)).cpu()
+                self.calibrated_feature_covered += (inside & observed).sum((0, 1)).cpu()
+                self.calibrated_cell_covered += (inside & observed).sum(0).cpu()
+                self.calibrated_feature_below += ((target < low) & observed).sum((0, 1)).cpu()
+                self.calibrated_feature_above += ((target > high) & observed).sum((0, 1)).cpu()
+                self.calibrated_width += torch.where(observed, high - low, 0).double().sum((0, 2)).cpu()
+                self.calibrated_feature_width += torch.where(observed, high - low, 0).sum((0, 1)).cpu()
+                if calibration.scope == "marginal":
+                    alpha = 1 - calibration.coverage
+                    if calibration.lower_tail_fraction in (None, 0.5):
+                        score = high - low + 2 / alpha * (
+                            (low - target).clamp_min(0) + (target - high).clamp_min(0))
+                    else:
+                        fraction = calibration.lower_tail_fraction
+                        score = (high - low + (low - target).clamp_min(0) / (alpha * fraction)
+                                 + (target - high).clamp_min(0) / (alpha * (1 - fraction)))
+                    self.calibrated_score += torch.where(observed, score, 0).double().sum().item()
+        return count
+
+    def report(self, result, calibration=None):
+        """Écrire les métriques agrégées dans ``result``."""
+        result["forecast_observations"] = self.forecast_count
+        result["forecast_observations_by_horizon"] = self.horizon_count.long().tolist()
+        result["forecast_observations_by_feature"] = self.feature_count.long().tolist()
+        result["forecast_observations_by_horizon_feature"] = self.cell_count.long().tolist()
+        result["forecast_mae"] = self.absolute / self.forecast_count if self.forecast_count else None
+        result["forecast_rmse"] = self.rmse.result(self.forecast_count)
+        result["forecast_mae_by_horizon"] = self.by_horizon(self.horizon_error)
+        result["forecast_mae_by_feature"] = self.by_feature(self.feature_error)
+        result["forecast_mae_by_horizon_feature"] = self.by_cell(self.cell_error)
+        result["forecast_quantile_levels"] = list(self.config.quantiles)
+        result["forecast_quantile_coverage"] = [value.item() / self.forecast_count if self.forecast_count else None
+                                                for value in self.quantile_hits]
+        result["forecast_pinball_by_quantile"] = [value.item() / self.forecast_count if self.forecast_count else None
+                                                  for value in self.quantile_pinball]
+        result["forecast_quantile_coverage_by_feature"] = self.by_feature_quantile(self.feature_quantile_hits)
+        result["forecast_pinball_by_feature_quantile"] = self.by_feature_quantile(self.feature_quantile_pinball)
+        if len(self.config.quantiles) > 1:
+            result["forecast_complete_examples"] = self.complete_forecasts
+            result["forecast_joint_interval_coverage"] = (
+                self.raw_joint_covered / self.complete_forecasts if self.complete_forecasts else None)
+            result["forecast_interval_coverage"] = self.covered / self.forecast_count if self.forecast_count else None
+            result["forecast_interval_width"] = self.width / self.forecast_count if self.forecast_count else None
+            result["forecast_nominal_coverage"] = self.config.quantiles[-1] - self.config.quantiles[0]
+            result["forecast_interval_score"] = self.raw_score / self.forecast_count if self.forecast_count else None
+            result["forecast_interval_coverage_by_horizon"] = self.by_horizon(self.interval_covered)
+            result["forecast_interval_coverage_by_feature"] = self.by_feature(self.feature_covered)
+            result["forecast_interval_coverage_by_horizon_feature"] = self.by_cell(self.cell_covered)
+            result["forecast_interval_below_by_feature"] = self.by_feature(self.feature_below)
+            result["forecast_interval_above_by_feature"] = self.by_feature(self.feature_above)
+            result["forecast_interval_width_by_horizon"] = self.by_horizon(self.interval_width)
+            result["forecast_interval_width_by_feature"] = self.by_feature(self.feature_width)
+            if calibration is not None:
+                result["calibrated_interval_coverage"] = self.calibrated_covered.sum().item() / self.forecast_count if self.forecast_count else None
+                result["calibrated_interval_width"] = self.calibrated_width.sum().item() / self.forecast_count if self.forecast_count else None
+                result["calibrated_interval_score"] = (
+                    self.calibrated_score / self.forecast_count if self.forecast_count and calibration.scope == "marginal" else None)
+                result["calibrated_nominal_coverage"] = calibration.coverage
+                result["calibrated_coverage_scope"] = calibration.scope
+                result["calibrated_score_scale"] = calibration.score_scale
+                if calibration.lower_tail_fraction is not None:
+                    result["calibrated_lower_tail_fraction"] = calibration.lower_tail_fraction
+                if calibration.score_scale == "width":
+                    result["calibrated_scale_floor"] = calibration.scale_floor
+                result["calibrated_joint_interval_coverage"] = (
+                    self.calibrated_joint_covered / self.complete_forecasts if self.complete_forecasts else None)
+                result["calibrated_interval_coverage_by_horizon"] = self.by_horizon(self.calibrated_covered)
+                result["calibrated_interval_coverage_by_feature"] = self.by_feature(self.calibrated_feature_covered)
+                result["calibrated_interval_coverage_by_horizon_feature"] = self.by_cell(self.calibrated_cell_covered)
+                result["calibrated_interval_below_by_feature"] = self.by_feature(self.calibrated_feature_below)
+                result["calibrated_interval_above_by_feature"] = self.by_feature(self.calibrated_feature_above)
+                result["calibrated_interval_width_by_horizon"] = self.by_horizon(self.calibrated_width)
+                result["calibrated_interval_width_by_feature"] = self.by_feature(self.calibrated_feature_width)
+
+
 def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=None, series_probability=None, series_set=None, iid_intervals=False, series_gate=None, series_gate_guard=None):
     if amp not in ("none", "bf16", "fp16"):
         raise ValueError("amp doit être none, bf16 ou fp16")
@@ -43,7 +219,7 @@ def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=
     totals, counts = {}, {}
     auxiliary_totals, auxiliary_counts = {}, {}
     expert_totals, expert_tokens = None, 0
-    correct = class_count = forecast_count = 0
+    correct = class_count = 0
     series_class_correct = series_class_count = 0
     series_class_confusion = Counter() if series_classifier is not None else None
     probability_raw = ProbabilityMetrics() if series_probability is not None else None
@@ -55,35 +231,7 @@ def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=
     set_labeled_singletons = set_correct_singletons = 0
     set_class_counts = torch.zeros(model.config.num_classes, dtype=torch.long)
     set_class_covered = torch.zeros_like(set_class_counts)
-    complete_forecasts = raw_joint_covered = calibrated_joint_covered = 0
-    absolute = covered = width = 0.0
-    rmse = StreamingRMSE()
-    horizon_error = torch.zeros(model.config.forecast_horizon, dtype=torch.float64)
-    horizon_count = torch.zeros_like(horizon_error)
-    feature_count = torch.zeros(model.config.series_features, dtype=torch.float64)
-    feature_error = torch.zeros_like(feature_count)
-    cell_count = torch.zeros(model.config.forecast_horizon, model.config.series_features, dtype=torch.float64)
-    cell_error = torch.zeros_like(cell_count)
-    feature_width = torch.zeros_like(feature_count)
-    calibrated_feature_width = torch.zeros_like(feature_count)
-    feature_covered = torch.zeros_like(feature_count)
-    calibrated_feature_covered = torch.zeros_like(feature_count)
-    feature_below = torch.zeros_like(feature_count)
-    feature_above = torch.zeros_like(feature_count)
-    calibrated_feature_below = torch.zeros_like(feature_count)
-    calibrated_feature_above = torch.zeros_like(feature_count)
-    cell_covered = torch.zeros_like(cell_count)
-    calibrated_cell_covered = torch.zeros_like(cell_count)
-    quantile_hits = torch.zeros(len(model.config.quantiles), dtype=torch.float64)
-    quantile_pinball = torch.zeros_like(quantile_hits)
-    feature_quantile_hits = torch.zeros(model.config.series_features, len(model.config.quantiles), dtype=torch.float64)
-    feature_quantile_pinball = torch.zeros_like(feature_quantile_hits)
-    interval_covered = torch.zeros_like(horizon_error)
-    interval_width = torch.zeros_like(horizon_error)
-    calibrated_covered = torch.zeros_like(horizon_error)
-    calibrated_width = torch.zeros_like(horizon_error)
-    calibrated_score = 0.0
-    raw_score = 0.0
+    forecasts = ForecastMetrics(model.config)
     multi_token_count = 0
     autocast = (lambda: nullcontext()) if amp == "none" else (
         lambda: torch.autocast(device.type, dtype=torch.bfloat16 if amp == "bf16" else torch.float16)
@@ -92,22 +240,6 @@ def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=
     def accumulate(name, value, weight):
         totals[name] = totals.get(name, 0.0) + float(value) * weight
         counts[name] = counts.get(name, 0) + weight
-
-    def by_horizon(values):
-        return [total.item() / count.item() if count else None
-                for total, count in zip(values, horizon_count)]
-
-    def by_feature(values):
-        return [total.item() / count.item() if count else None
-                for total, count in zip(values, feature_count)]
-
-    def by_cell(values):
-        return [[total.item() / count.item() if count else None for total, count in zip(row, counts)]
-                for row, counts in zip(values, cell_count)]
-
-    def by_feature_quantile(values):
-        return [[total.item() / count.item() if count else None for total in row]
-                for row, count in zip(values, feature_count)]
 
     try:
         with torch.inference_mode():
@@ -197,71 +329,7 @@ def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=
                             probability_calibrated.update(series_probability.log_probabilities(series_scores[observed]),
                                                           labels[observed])
                 if "forecast_targets" in batch:
-                    target = batch["forecast_targets"]
-                    observed = torch.isfinite(target)
-                    weights["forecast"] = observed.sum().item()
-                    forecast_count += weights["forecast"]
-                    target = target.double()
-                    predictions = output.forecast.double()
-                    median = predictions[..., model.config.quantiles.index(0.5)]
-                    error = torch.where(observed, median - target, 0)
-                    absolute += error.abs().sum().item()
-                    rmse.update(error)
-                    horizon_error += error.abs().sum((0, 2)).cpu()
-                    horizon_count += observed.sum((0, 2)).cpu()
-                    feature_count += observed.sum((0, 1)).cpu()
-                    feature_error += error.abs().sum((0, 1)).cpu()
-                    cell_count += observed.sum(0).cpu()
-                    cell_error += error.abs().sum(0).cpu()
-                    levels = predictions.new_tensor(model.config.quantiles)
-                    residual = torch.where(observed.unsqueeze(-1), target.unsqueeze(-1) - predictions, 0)
-                    hits = (target.unsqueeze(-1) <= predictions) & observed.unsqueeze(-1)
-                    pinball = torch.maximum(levels * residual, (levels - 1) * residual)
-                    quantile_hits += hits.sum((0, 1, 2)).cpu()
-                    quantile_pinball += pinball.sum((0, 1, 2)).cpu()
-                    feature_quantile_hits += hits.sum((0, 1)).cpu()
-                    feature_quantile_pinball += pinball.sum((0, 1)).cpu()
-                    if len(model.config.quantiles) > 1:
-                        lower, upper = predictions[..., 0], predictions[..., -1]
-                        complete = observed.flatten(1).all(-1)
-                        complete_forecasts += complete.sum().item()
-                        inside = (target >= lower) & (target <= upper)
-                        raw_joint_covered += (inside.flatten(1).all(-1) & complete).sum().item()
-                        covered += ((target >= lower) & (target <= upper) & observed).sum().item()
-                        width += torch.where(observed, upper - lower, 0).double().sum().item()
-                        interval_covered += ((target >= lower) & (target <= upper) & observed).sum((0, 2)).cpu()
-                        feature_covered += (inside & observed).sum((0, 1)).cpu()
-                        cell_covered += (inside & observed).sum(0).cpu()
-                        feature_below += ((target < lower) & observed).sum((0, 1)).cpu()
-                        feature_above += ((target > upper) & observed).sum((0, 1)).cpu()
-                        interval_width += torch.where(observed, upper - lower, 0).double().sum((0, 2)).cpu()
-                        feature_width += torch.where(observed, upper - lower, 0).sum((0, 1)).cpu()
-                        alpha = 1 - (model.config.quantiles[-1] - model.config.quantiles[0])
-                        score = upper - lower + 2 / alpha * (
-                            (lower - target).clamp_min(0) + (target - upper).clamp_min(0))
-                        raw_score += torch.where(observed, score, 0).double().sum().item()
-                        if calibration is not None:
-                            interval = calibration.interval(output.forecast)
-                            low, high = interval.double().unbind(-1)
-                            inside = (target >= low) & (target <= high)
-                            calibrated_joint_covered += (inside.flatten(1).all(-1) & complete).sum().item()
-                            calibrated_covered += ((target >= low) & (target <= high) & observed).sum((0, 2)).cpu()
-                            calibrated_feature_covered += (inside & observed).sum((0, 1)).cpu()
-                            calibrated_cell_covered += (inside & observed).sum(0).cpu()
-                            calibrated_feature_below += ((target < low) & observed).sum((0, 1)).cpu()
-                            calibrated_feature_above += ((target > high) & observed).sum((0, 1)).cpu()
-                            calibrated_width += torch.where(observed, high - low, 0).double().sum((0, 2)).cpu()
-                            calibrated_feature_width += torch.where(observed, high - low, 0).sum((0, 1)).cpu()
-                            if calibration.scope == "marginal":
-                                alpha = 1 - calibration.coverage
-                                if calibration.lower_tail_fraction in (None, 0.5):
-                                    score = high - low + 2 / alpha * (
-                                        (low - target).clamp_min(0) + (target - high).clamp_min(0))
-                                else:
-                                    fraction = calibration.lower_tail_fraction
-                                    score = (high - low + (low - target).clamp_min(0) / (alpha * fraction)
-                                             + (target - high).clamp_min(0) / (alpha * (1 - fraction)))
-                                calibrated_score += torch.where(observed, score, 0).double().sum().item()
+                    weights["forecast"] = forecasts.update(batch["forecast_targets"], output.forecast, calibration)
                 if output.loss is not None:
                     accumulate("loss", output.loss.item(), n)
                 for name, value in output.losses.items():
@@ -357,58 +425,7 @@ def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=
                     if result.get(name) is not None)
                 if any(result.get(name) is not None for name in supervised) else None)
         if "forecast" in counts:
-            result["forecast_observations"] = forecast_count
-            result["forecast_observations_by_horizon"] = horizon_count.long().tolist()
-            result["forecast_observations_by_feature"] = feature_count.long().tolist()
-            result["forecast_observations_by_horizon_feature"] = cell_count.long().tolist()
-            result["forecast_mae"] = absolute / forecast_count if forecast_count else None
-            result["forecast_rmse"] = rmse.result(forecast_count)
-            result["forecast_mae_by_horizon"] = by_horizon(horizon_error)
-            result["forecast_mae_by_feature"] = by_feature(feature_error)
-            result["forecast_mae_by_horizon_feature"] = by_cell(cell_error)
-            result["forecast_quantile_levels"] = list(model.config.quantiles)
-            result["forecast_quantile_coverage"] = [value.item() / forecast_count if forecast_count else None
-                                                    for value in quantile_hits]
-            result["forecast_pinball_by_quantile"] = [value.item() / forecast_count if forecast_count else None
-                                                      for value in quantile_pinball]
-            result["forecast_quantile_coverage_by_feature"] = by_feature_quantile(feature_quantile_hits)
-            result["forecast_pinball_by_feature_quantile"] = by_feature_quantile(feature_quantile_pinball)
-            if len(model.config.quantiles) > 1:
-                result["forecast_complete_examples"] = complete_forecasts
-                result["forecast_joint_interval_coverage"] = (
-                    raw_joint_covered / complete_forecasts if complete_forecasts else None)
-                result["forecast_interval_coverage"] = covered / forecast_count if forecast_count else None
-                result["forecast_interval_width"] = width / forecast_count if forecast_count else None
-                result["forecast_nominal_coverage"] = model.config.quantiles[-1] - model.config.quantiles[0]
-                result["forecast_interval_score"] = raw_score / forecast_count if forecast_count else None
-                result["forecast_interval_coverage_by_horizon"] = by_horizon(interval_covered)
-                result["forecast_interval_coverage_by_feature"] = by_feature(feature_covered)
-                result["forecast_interval_coverage_by_horizon_feature"] = by_cell(cell_covered)
-                result["forecast_interval_below_by_feature"] = by_feature(feature_below)
-                result["forecast_interval_above_by_feature"] = by_feature(feature_above)
-                result["forecast_interval_width_by_horizon"] = by_horizon(interval_width)
-                result["forecast_interval_width_by_feature"] = by_feature(feature_width)
-                if calibration is not None:
-                    result["calibrated_interval_coverage"] = calibrated_covered.sum().item() / forecast_count if forecast_count else None
-                    result["calibrated_interval_width"] = calibrated_width.sum().item() / forecast_count if forecast_count else None
-                    result["calibrated_interval_score"] = (
-                        calibrated_score / forecast_count if forecast_count and calibration.scope == "marginal" else None)
-                    result["calibrated_nominal_coverage"] = calibration.coverage
-                    result["calibrated_coverage_scope"] = calibration.scope
-                    result["calibrated_score_scale"] = calibration.score_scale
-                    if calibration.lower_tail_fraction is not None:
-                        result["calibrated_lower_tail_fraction"] = calibration.lower_tail_fraction
-                    if calibration.score_scale == "width":
-                        result["calibrated_scale_floor"] = calibration.scale_floor
-                    result["calibrated_joint_interval_coverage"] = (
-                        calibrated_joint_covered / complete_forecasts if complete_forecasts else None)
-                    result["calibrated_interval_coverage_by_horizon"] = by_horizon(calibrated_covered)
-                    result["calibrated_interval_coverage_by_feature"] = by_feature(calibrated_feature_covered)
-                    result["calibrated_interval_coverage_by_horizon_feature"] = by_cell(calibrated_cell_covered)
-                    result["calibrated_interval_below_by_feature"] = by_feature(calibrated_feature_below)
-                    result["calibrated_interval_above_by_feature"] = by_feature(calibrated_feature_above)
-                    result["calibrated_interval_width_by_horizon"] = by_horizon(calibrated_width)
-                    result["calibrated_interval_width_by_feature"] = by_feature(calibrated_feature_width)
+            forecasts.report(result, calibration)
         return result
     finally:
         model.train(was_training)
