@@ -26,12 +26,16 @@ class ModelEMA:
         self.updates += 1
         effective_decay = min(self.decay, (1.0 + self.updates) / (10.0 + self.updates))
         params = dict(model.named_parameters())
+        shadows, targets = [], []
         for name, shadow in self.shadow.items():
             target = params[name].detach()
             if shadow.device != target.device:
                 shadow = shadow.to(target.device)
                 self.shadow[name] = shadow
-            shadow.lerp_(target, 1.0 - effective_decay)
+            shadows.append(shadow)
+            targets.append(target)
+        # Une seule opération multi-tenseurs, mêmes valeurs qu'un lerp_ par paramètre.
+        torch._foreach_lerp_(shadows, targets, 1.0 - effective_decay)
 
     @contextmanager
     def apply_to(self, model: torch.nn.Module):
