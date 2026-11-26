@@ -85,6 +85,28 @@ class CudaSmokeTests(unittest.TestCase):
                     if p.grad is not None:  # Tous les paramètres, pas seulement les experts.
                         torch.testing.assert_close(grouped[name], p.grad, rtol=1e-3, atol=1e-6)
 
+    def test_grouped_expert_matmuls_do_not_increase_peak_memory(self):
+        from unittest import mock
+        from blue.modules import SparseMoE
+        torch.manual_seed(0)
+        model = Blue(replace(BlueConfig.preset("small"), hidden_dim=1536, n_experts=16)).cuda()
+        batch = synthetic_batch(model.config, batch_size=8, device="cuda")
+
+        def peak():
+            model.zero_grad(set_to_none=True)
+            model(**batch).loss.backward()  # Échauffement : caches d'allocation.
+            model.zero_grad(set_to_none=True)
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+            model(**batch).loss.backward()
+            torch.cuda.synchronize()
+            return torch.cuda.max_memory_allocated()
+
+        with mock.patch.object(SparseMoE, "_grouped_gemm_ready", return_value=False):
+            loop = peak()
+        # Garder les poids empilés jusqu'à l'arrière coûtait environ +30 % ici.
+        self.assertLess(peak(), loop * 1.05)
+
     def test_verifier_passes_on_gpu(self):
         from blue.verifier import verify_architecture
         report = verify_architecture(replace(BlueConfig.preset("tiny"), **CONFIGURATIONS["recurrent"]), device="cuda")
