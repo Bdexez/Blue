@@ -110,6 +110,16 @@ Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélé
 
 Les poids des checkpoints restent compatibles. Seul l'état de l'optimiseur d'un entraînement Muon antérieur ne correspond plus à la nouvelle répartition des groupes : la reprise s'arrête alors avec un message explicite, et `--init-from` repart des mêmes poids avec un optimiseur neuf. `SparseMoE.forward` renvoie un cinquième élément (entropie du routeur) et `DecoderBlock.forward` un `NamedTuple` ; `last_null_fraction` reste lisible comme avant.
 
+## Pistes restantes
+
+Mesures faites sur le preset `small` (RTX 3060 Ti, Ryzen 6 cœurs) ; chaque piste est classée par gain attendu et risque.
+
+- **Décodage GPU par CUDA graphs.** Le décodage (7.7 ms par token) est limité par le lancement de centaines de petits noyaux ; seule une capture en CUDA graph le réduirait nettement. Elle impose un cache KV de taille fixe, des positions et un indicateur de validité sous forme de tenseurs, et la suppression des synchronisations de l'aiguillage MoE : refonte importante du cache, non entreprise.
+- **Projection de Sinkhorn des hyper-connexions** (preset `hyper`, 30 % du décodage) : une version fusionnée exige `torch.compile` ; la variante exponentielle, plus rapide, change les résultats pour des logits de grande amplitude.
+- **MoE** (39 % d'un pas d'entraînement GPU) : calcul groupé et calcul dense tous deux plus lents que l'aiguillage actuel ; un noyau d'experts groupés dédié (grouped GEMM) serait la prochaine étape.
+- **Déquantification INT4 à chaque appel** : seule une multiplication matricielle sur poids 4 bits (noyau dédié) rendrait l'INT4 plus rapide que le FP32 sur CPU.
+- Gains mesurés inférieurs à 3 %, non retenus : têtes de classification et de prévision pendant le décodage (2 %), génération des lots synthétiques (au plus 3 %), mémoire épinglée pour les transferts (0 %).
+
 ## Reproduire
 
 ```bash
