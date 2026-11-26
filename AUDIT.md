@@ -98,6 +98,9 @@ Les poids des checkpoints restent compatibles. Seul l'état de l'optimiseur d'un
 ## Reproduire
 
 ```bash
+.venv/bin/python tools/golden_outputs.py record --output runs/golden-before.pt   # avant une modification
+.venv/bin/python tools/golden_outputs.py record --output runs/golden-after.pt    # après
+.venv/bin/python tools/golden_outputs.py compare runs/golden-before.pt runs/golden-after.pt --tolerance 1e-5
 .venv/bin/python tools/benchmark_hotpaths.py --device cpu --device cuda --output runs/hotpaths.json
 .venv/bin/python -m pytest -n 8 tests          # ou : python -m unittest discover -s tests
 ruff check blue tools tests
