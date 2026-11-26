@@ -7,6 +7,7 @@ import math
 import torch
 
 from .binomial import wilson_interval
+from .observed_objective import LOSS_WEIGHTS
 from .routing_metrics import summarize_expert_usage
 from .probability_metrics import ProbabilityMetrics
 from .series_probability import log_probabilities
@@ -351,19 +352,8 @@ def evaluate(model, batches, amp="none", *, calibration=None, series_classifier=
             # Chaque tâche est d'abord agrégée selon son nombre de cibles ; les
             # termes auxiliaires conservent leur agrégation par lot existante.
             supervised = ("text", "classification", "forecast", "multi_token")
-            terms = (("text", "text_weight"), ("classification", "classification_weight"),
-                     ("forecast", "forecast_weight"), ("multi_token", "mtp_weight"),
-                     ("balance", "balance_weight"), ("router_z", "router_z_weight"),
-                     ("depth_budget", "depth_budget_weight"), ("ponder_kl", "ponder_kl_weight"),
-                     ("latent_diversity", "latent_diversity_weight"),
-                     ("router_entropy", "moe_entropy_weight"),
-                     ("router_orthogonality", "moe_router_orthogonality_weight"),
-                     ("mtp_kl", "mtp_kl_weight"), ("lm_z", "lm_z_loss_weight"),
-                     ("forecast_smoothness", "forecast_smoothness_weight"),
-                     ("flow", "flow_matching_weight"), ("jepa", "jepa_weight"),
-                     ("alignment", "alignment_weight"))
             result["observed_loss"] = (
-                sum(getattr(model.config, weight) * result[name] for name, weight in terms
+                sum(getattr(model.config, weight) * result[name] for name, weight in LOSS_WEIGHTS.items()
                     if result.get(name) is not None)
                 if any(result.get(name) is not None for name in supervised) else None)
         if "forecast" in counts:

@@ -346,6 +346,22 @@ class ObservedValidationLossTests(unittest.TestCase):
         self.assertAlmostEqual(report["observed_loss"], report["loss"], places=4)
 
 
+class LossWeightTableTests(unittest.TestCase):
+    def test_every_emitted_loss_has_a_configured_weight(self):
+        from blue.observed_objective import LOSS_WEIGHTS
+        model = tiny(moe_entropy_weight=0.1, moe_router_orthogonality_weight=0.1, lm_z_loss_weight=0.1,
+                     mtp_kl_weight=0.1, prediction_steps=3, forecast_smoothness_weight=0.1,
+                     latent_diversity_weight=0.1, depth_routing_capacity=0.5, latent_reasoning_steps=2,
+                     latent_reasoning_adaptive=True, flow_matching_dim=4, jepa_weight=0.1)
+        batch = synthetic_batch(model.config, batch_size=3)
+        batch["flow_targets"] = torch.randn(3, 4)
+        emitted = set(model(**batch).losses)
+        self.assertFalse(emitted - set(LOSS_WEIGHTS), "perte sans poids dans LOSS_WEIGHTS")
+        config = model.config
+        for attribute in LOSS_WEIGHTS.values():
+            self.assertTrue(hasattr(config, attribute), attribute)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
