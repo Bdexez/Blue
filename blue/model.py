@@ -338,7 +338,7 @@ class Blue(nn.Module):
         if input_ids is not None:
             if input_ids.ndim != 2 or input_ids.dtype != torch.long or input_ids.size(1) < 1:
                 raise ValueError("input_ids doit être un tenseur long non vide [B, T]")
-            if (input_ids < 0).any() or (input_ids >= c.vocab_size).any():
+            if ((input_ids < 0) | (input_ids >= c.vocab_size)).any():
                 raise ValueError("Identifiant de token hors vocabulaire")
             offset = 0 if cache is None else cache.offset
             if input_ids.size(1) + offset > c.max_seq_len:
