@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import math
+from typing import NamedTuple
 
 import torch
 from torch import nn
@@ -55,6 +56,20 @@ class BlueOutput:
     auxiliary_text_losses: dict[int, tuple[torch.Tensor, torch.Tensor]] | None = None
     routed_tokens: torch.Tensor | None = None
     last_hidden: torch.Tensor | None = None
+
+
+class EncodedInput(NamedTuple):
+    """Jetons d'une modalité d'entrée, leur validité et leur résumé pour l'alignement."""
+
+    name: str
+    alignment_index: int
+    tokens: torch.Tensor
+    valid: torch.Tensor
+    pooled: torch.Tensor
+
+
+def _masked_mean(tokens: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    return (tokens * valid.unsqueeze(-1)).sum(1) / valid.sum(1, keepdim=True).clamp_min(1)
 
 
 def masked_cross_entropy(logits, labels, label_smoothing: float = 0.0):
@@ -510,44 +525,13 @@ class Blue(nn.Module):
             valid = (torch.ones_like(input_ids, dtype=torch.bool)
                      if attention_mask is None else attention_mask.bool())
             representations['text'] = (2, self._isolated_text_representation(input_ids, valid))
-        if images is not None:
-            tokens, _ = self.vision(images)
-            representations['image'] = (0, tokens.mean(1))
-        if series is not None:
-            valid = (torch.ones(series.shape[:2], device=series.device, dtype=torch.bool)
-                     if series_mask is None else series_mask.bool())
-            tokens, mask, *_ = self.temporal(series, valid)
-            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
-            representations['series'] = (1, pooled)
-        if audio is not None:
-            valid = (torch.ones((audio.size(0), audio.size(2)), device=audio.device, dtype=torch.bool)
-                     if audio_mask is None else audio_mask.bool())
-            tokens, mask = self.audio(audio, valid)
-            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
-            representations['audio'] = (3, pooled)
-        if graph_nodes is not None:
-            valid = (torch.ones(graph_nodes.shape[:2], device=graph_nodes.device, dtype=torch.bool)
-                     if graph_mask is None else graph_mask.bool())
-            edges = self._default_graph_edges(graph_nodes) if graph_edges is None else graph_edges
-            tokens, mask = self.graph(graph_nodes, edges, valid)
-            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
-            representations['graph'] = (4, pooled)
-        if points is not None:
-            valid = (torch.ones(points.shape[:2], device=points.device, dtype=torch.bool)
-                     if point_mask is None else point_mask.bool())
-            tokens, mask = self.pointcloud(points, valid, point_features)
-            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
-            representations['pointcloud'] = (5, pooled)
-        if tabular_num is not None:
-            tokens, mask = self.tabular(tabular_num, tabular_cat)
-            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
-            representations['tabular'] = (6, pooled)
-        if video is not None:
-            valid = (torch.ones((video.size(0), video.size(2)), device=video.device, dtype=torch.bool)
-                     if video_mask is None else video_mask.bool())
-            tokens, mask = self.video(video, valid)
-            pooled = (tokens * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
-            representations['video'] = (7, pooled)
+        encoded, _ = self._encode_inputs(
+            images=images, series=series, audio=audio, graph_nodes=graph_nodes, graph_edges=graph_edges,
+            points=points, point_features=point_features, tabular_num=tabular_num, tabular_cat=tabular_cat,
+            video=video, series_mask=series_mask, audio_mask=audio_mask, graph_mask=graph_mask,
+            point_mask=point_mask, video_mask=video_mask)
+        for item in encoded:
+            representations[item.name] = (item.alignment_index, item.pooled)
         result = {}
         for name, (index, value) in representations.items():
             vector = self._project_alignment(index, value)
@@ -555,6 +539,53 @@ class Blue(nn.Module):
                 raise FloatingPointError("Les représentations contrastives doivent être finies")
             result[name] = vector
         return result
+
+    def _encode_inputs(self, *, images=None, series=None, audio=None, graph_nodes=None, graph_edges=None,
+                       points=None, point_features=None, tabular_num=None, tabular_cat=None, video=None,
+                       series_mask=None, audio_mask=None, graph_mask=None, point_mask=None, video_mask=None):
+        """Encoder les modalités non textuelles fournies, dans l'ordre du contexte multimodal.
+
+        Renvoie les ``EncodedInput`` et, pour les séries, ``(valid, mean, scale, baseline)``
+        de l'encodeur temporel (sinon ``None``).
+        """
+        def all_valid(data, length_dim=1):
+            return torch.ones((data.size(0), data.size(length_dim)), device=data.device, dtype=torch.bool)
+
+        encoded, temporal = [], None
+        if images is not None:
+            tokens, valid = self.vision(images)
+            encoded.append(EncodedInput("image", 0, tokens, valid, tokens.mean(1)))
+        if series is not None:
+            mask = all_valid(series) if series_mask is None else series_mask.bool()
+            tokens, valid, mean, scale, baseline = self.temporal(series, mask)
+            temporal = valid, mean, scale, baseline
+            encoded.append(EncodedInput("series", 1, tokens, valid, _masked_mean(tokens, valid)))
+        if audio is not None:
+            mask = all_valid(audio, 2) if audio_mask is None else audio_mask.bool()
+            tokens, valid = self.audio(audio, mask)
+            encoded.append(EncodedInput("audio", 3, tokens, valid, _masked_mean(tokens, valid)))
+        if graph_nodes is not None:
+            mask = all_valid(graph_nodes) if graph_mask is None else graph_mask.bool()
+            edges = self._default_graph_edges(graph_nodes) if graph_edges is None else graph_edges
+            tokens, valid = self.graph(graph_nodes, edges, mask)
+            encoded.append(EncodedInput("graph", 4, tokens, valid, _masked_mean(tokens, valid)))
+        if points is not None:
+            mask = all_valid(points) if point_mask is None else point_mask.bool()
+            tokens, valid = self.pointcloud(points, mask, point_features)
+            encoded.append(EncodedInput("pointcloud", 5, tokens, valid, _masked_mean(tokens, valid)))
+        if tabular_num is not None:
+            tokens, valid = self.tabular(tabular_num, tabular_cat)
+            encoded.append(EncodedInput("tabular", 6, tokens, valid, _masked_mean(tokens, valid)))
+        if video is not None:
+            mask = all_valid(video, 2) if video_mask is None else video_mask.bool()
+            tokens, valid = self.video(video, mask)
+            encoded.append(EncodedInput("video", 7, tokens, valid, _masked_mean(tokens, valid)))
+        return encoded, temporal
+
+    def _modality_embedding(self, name: str) -> torch.Tensor:
+        return {"image": self.modality[0], "series": self.modality[1], "audio": self.audio_modality,
+                "graph": self.graph_modality, "pointcloud": self.pointcloud_modality,
+                "tabular": self.tabular_modality, "video": self.video_modality}[name]
 
     def _expand_streams(self, x: torch.Tensor) -> torch.Tensor:
         if self.config.residual_streams == 1:
@@ -750,66 +781,19 @@ class Blue(nn.Module):
         mean = scale = baseline = None
         adapter_context = None
         if cache is None:
-            if images is not None:
-                image_tokens, image_valid = self.vision(images)
-                contexts.append(image_tokens + self.modality[0])
-                masks.append(image_valid)
-                align_vectors.append((0, image_tokens.mean(1)))
-            if series is not None:
-                series_mask = (torch.ones(series.shape[:2], device=series.device, dtype=torch.bool)
-                               if series_mask is None else series_mask.bool())
-                series_tokens, temporal_valid, mean, scale, baseline = self.temporal(series, series_mask)
+            encoded, temporal = self._encode_inputs(
+                images=images, series=series, audio=audio, graph_nodes=graph_nodes, graph_edges=graph_edges,
+                points=points, point_features=point_features, tabular_num=tabular_num, tabular_cat=tabular_cat,
+                video=video, series_mask=series_mask, audio_mask=audio_mask, graph_mask=graph_mask,
+                point_mask=point_mask, video_mask=video_mask)
+            for item in encoded:
+                contexts.append(item.tokens + self._modality_embedding(item.name))
+                masks.append(item.valid)
+                align_vectors.append((item.alignment_index, item.pooled))
+            if temporal is not None:
+                temporal_valid, mean, scale, baseline = temporal
                 if self.forecast_adapter is not None:
                     adapter_context = self.forecast_adapter.prepare(series, temporal_valid, mean, scale)
-                contexts.append(series_tokens + self.modality[1])
-                masks.append(temporal_valid)
-                pooled_series = (series_tokens * temporal_valid.unsqueeze(-1)).sum(1)
-                pooled_series = pooled_series / temporal_valid.sum(1, keepdim=True).clamp_min(1)
-                align_vectors.append((1, pooled_series))
-            if audio is not None:
-                audio_mask = (torch.ones((audio.size(0), audio.size(2)), device=audio.device, dtype=torch.bool)
-                              if audio_mask is None else audio_mask.bool())
-                audio_tokens, audio_valid = self.audio(audio, audio_mask)
-                contexts.append(audio_tokens + self.audio_modality)
-                masks.append(audio_valid)
-                pooled_audio = (audio_tokens * audio_valid.unsqueeze(-1)).sum(1)
-                pooled_audio = pooled_audio / audio_valid.sum(1, keepdim=True).clamp_min(1)
-                align_vectors.append((3, pooled_audio))
-            if graph_nodes is not None:
-                graph_valid = (torch.ones(graph_nodes.shape[:2], device=graph_nodes.device, dtype=torch.bool)
-                               if graph_mask is None else graph_mask.bool())
-                edges = self._default_graph_edges(graph_nodes) if graph_edges is None else graph_edges
-                graph_tokens, graph_valid = self.graph(graph_nodes, edges, graph_valid)
-                contexts.append(graph_tokens + self.graph_modality)
-                masks.append(graph_valid)
-                pooled_graph = (graph_tokens * graph_valid.unsqueeze(-1)).sum(1)
-                pooled_graph = pooled_graph / graph_valid.sum(1, keepdim=True).clamp_min(1)
-                align_vectors.append((4, pooled_graph))
-            if points is not None:
-                point_valid = (torch.ones(points.shape[:2], device=points.device, dtype=torch.bool)
-                               if point_mask is None else point_mask.bool())
-                point_tokens, point_valid = self.pointcloud(points, point_valid, point_features)
-                contexts.append(point_tokens + self.pointcloud_modality)
-                masks.append(point_valid)
-                pooled_pc = (point_tokens * point_valid.unsqueeze(-1)).sum(1)
-                pooled_pc = pooled_pc / point_valid.sum(1, keepdim=True).clamp_min(1)
-                align_vectors.append((5, pooled_pc))
-            if tabular_num is not None:
-                tab_tokens, tab_valid = self.tabular(tabular_num, tabular_cat)
-                contexts.append(tab_tokens + self.tabular_modality)
-                masks.append(tab_valid)
-                pooled_tab = (tab_tokens * tab_valid.unsqueeze(-1)).sum(1)
-                pooled_tab = pooled_tab / tab_valid.sum(1, keepdim=True).clamp_min(1)
-                align_vectors.append((6, pooled_tab))
-            if video is not None:
-                vid_frames_valid = (torch.ones((video.size(0), video.size(2)), device=video.device, dtype=torch.bool)
-                                    if video_mask is None else video_mask.bool())
-                vid_tokens, vid_valid = self.video(video, vid_frames_valid)
-                contexts.append(vid_tokens + self.video_modality)
-                masks.append(vid_valid)
-                pooled_vid = (vid_tokens * vid_valid.unsqueeze(-1)).sum(1)
-                pooled_vid = pooled_vid / vid_valid.sum(1, keepdim=True).clamp_min(1)
-                align_vectors.append((7, pooled_vid))
             latents = self.resampler(contexts, masks, batch)
         else:
             latents, mean, scale = cache.latents, cache.series_mean, cache.series_scale
