@@ -56,6 +56,7 @@ Mesures de `tools/benchmark_hotpaths.py`, médianes après échauffement : prese
 | Pas d'entraînement GPU `small` sur JSONL réel (images en ligne), `--workers` non précisé | 79.3 ms (0 processus) | 59.8 ms (2 processus par défaut sur GPU) | ×1.33 |
 | Même entraînement sur 3 époques : processus de lecture persistants | 71.9 ms en moyenne (pics de 836 ms à chaque époque) | 61.9 ms (pics de 117 ms) | ×1.16 |
 | 60 pas GPU avec 6 validations sur un JSONL séparé : chargeur de validation persistant | 12.4 s | 9.5 s | ×1.31 |
+| `train --preset small --device cuda --steps 100` (défauts : validation et sauvegarde tous les 25 pas), durée totale | 13.3 s | 11.2 s | ×1.19 |
 
 Origine des gains :
 

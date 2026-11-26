@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import random
+import shutil
 import tempfile
 import time
 import warnings
@@ -105,6 +106,33 @@ def save_checkpoint(path, model, *, optimizer=None, scaler=None, step=0, trainer
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def publish_copy(source, target):
+    """Publier atomiquement ``source`` sous le nom ``target`` (lien physique, sinon copie).
+
+    Une sauvegarde ultérieure de ``target`` le remplace par un nouveau fichier
+    (os.replace), sans modifier ``source``.
+    """
+    source, target = Path(source), Path(target)
+    temporary = target.with_name(f"{target.name}.{os.getpid()}.link.tmp")
+    try:
+        temporary.unlink(missing_ok=True)
+        try:
+            os.link(source, temporary)
+        except OSError:
+            shutil.copyfile(source, temporary)
+            with temporary.open("rb+") as stream:
+                os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if hasattr(os, "O_DIRECTORY"):
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def load_checkpoint(path, device="cpu", *, mmap=True, overrides=None):
@@ -744,10 +772,16 @@ def train(args, config):
                     save_checkpoint(output_dir / "best.pt", model, optimizer=optimizer, scaler=scaler,
                                     step=last_step, trainer=trainer, rank_rng=rank_rng, ema=ema)
         if last_step % args.save_every == 0 or last_step == end_step or stopped_early:
-            rank_rng = collect_rng_states(device, world, rank)
-            if rank == 0:
-                save_checkpoint(output_dir / "latest.pt", model, optimizer=optimizer, scaler=scaler,
-                                step=last_step, trainer=trainer, rank_rng=rank_rng, ema=ema)
+            if validation_event and improved:
+                # Même état qu'à l'instant : publier best.pt sous le nom latest.pt sans le réécrire.
+                # (improved est diffusé à tous les rangs : aucune collective n'est sautée d'un seul côté.)
+                if rank == 0:
+                    publish_copy(output_dir / "best.pt", output_dir / "latest.pt")
+            else:
+                rank_rng = collect_rng_states(device, world, rank)
+                if rank == 0:
+                    save_checkpoint(output_dir / "latest.pt", model, optimizer=optimizer, scaler=scaler,
+                                    step=last_step, trainer=trainer, rank_rng=rank_rng, ema=ema)
         if stopped_early:
             break
     if rank == 0:
