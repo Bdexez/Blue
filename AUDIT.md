@@ -13,6 +13,7 @@ Cet audit a relu les modules du modèle, de l'entraînement, du décodage, de l'
 | Série 1D de longueur `series_features` dans un JSONL | Diffusée en pas identiques, sans erreur | Formes vérifiées à la lecture, avec fichier et ligne |
 | `audit-splits` et signatures de calibration | Ignoraient audio, graphe, nuage 3D, tabulaire et vidéo : faux doublons, jeux tabulaires refusés, calibration acceptée pour une autre combinaison de modalités | Liste unique des modalités d'entrée |
 | `generate` en ligne de commande | Échantillonnage non reproductible | Option `--seed` |
+| `BlueConfig` modifiée après création (`config.x = ...`) | Jamais revalidée : `n_heads=5`, `top_k=99`, quantiles sans médiane ou booléen remplacé par 1 étaient acceptés puis échouaient plus loin | `Blue` revalide la configuration à la construction |
 | `blue export --output` identique au `--checkpoint` | Accepté sans transformation : le checkpoint d'entraînement était remplacé par un export d'inférence (optimiseur, états aléatoires et poids d'origine perdus avec `--use-ema`) | Refusé dans tous les cas |
 | Erreurs d'utilisation en ligne de commande | Trace Python complète pour une option ou un fichier invalide | Message `blue : erreur : …` et code 2 (`BLUE_TRACEBACK=1` garde la trace) |
 | Checkpoints | Renommage atomique sans `fsync` : après une coupure de courant, `latest.pt` pouvait être vide ou tronqué | Fichier puis répertoire synchronisés avant publication |

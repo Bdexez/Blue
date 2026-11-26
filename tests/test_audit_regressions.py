@@ -470,6 +470,19 @@ class AutomaticResumeTests(unittest.TestCase):
             self.assertTrue(torch.equal(value, resumed["model"][name]), name)
 
 
+class MutatedConfigurationTests(unittest.TestCase):
+    def test_model_revalidates_a_configuration_changed_after_creation(self):
+        for name, value in (("n_heads", 5), ("top_k", 99), ("quantiles", (0.1, 0.9)), ("differential_attention", 1)):
+            with self.subTest(name):
+                config = BlueConfig.preset("tiny")
+                setattr(config, name, value)
+                with self.assertRaises(ValueError):
+                    Blue(config)
+        config = BlueConfig.preset("tiny")
+        config.flow_matching_dim = 8  # Modification valide, comme dans l'exemple du README.
+        self.assertIsNotNone(Blue(config).flow_head)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
