@@ -76,6 +76,7 @@ Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélé
 - Couverture des tests (`pytest --cov=blue`) : 93 % des lignes du paquet ; l'alignement distribué, exécuté dans des sous-processus DDP, n'est pas compté par cette mesure.
 - Aller-retour sauvegarde/chargement de checkpoint sur 12 combinaisons de fonctionnalités : sorties et générations identiques au bit près. Invariance à la composition du lot et au padding à droite sur l'ensemble des fonctionnalités : écart ≤ 3e-7. Gradient checkpointing : pertes et gradients identiques au bit près sur 10 configurations.
 - Génération incrémentale avec cache contre calcul complet, sur 45 combinaisons aléatoires de fonctionnalités : écart maximal de 6e-7.
+- Entraînement GPU réel (`train --preset small --device cuda`, 60 pas) en FP32, bf16 et FP16 : perte 8.15 → 0.937 / 0.934 / 0.942, perte de validation 0.949 / 0.947 / 0.955. En FP16, `GradScaler` saute deux pas au démarrage (débordements détectés puis échelle réduite), puis l'apprentissage se poursuit : le chemin FP16 sur GPU, non exécuté lors des rapports précédents, est ainsi vérifié.
 - A/B Muon (3 seeds, 150 pas, données synthétiques) : perte de validation inchangée à la précision du bruit (0.8291 contre 0.8295, 0.8382 contre 0.8374, 0.7700 contre 0.7707). La correction repose sur la définition de Muon, pas sur un gain mesuré sur ces données faciles.
 
 ## Maintenance
