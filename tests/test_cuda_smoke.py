@@ -62,10 +62,14 @@ class CudaSmokeTests(unittest.TestCase):
         from blue.modules import SparseMoE
         # Avec experts nuls : leurs créneaux formaient des lignes hors groupes, dont le
         # gradient d'entrée restait non initialisé et corrompait les gradients en amont.
-        for changes in ({}, {"moe_null_experts": 2}):
+        for changes in ({}, {"moe_null_experts": 2}, {"kan_degree": 4, "moe_null_experts": 1}):
             with self.subTest(changes):
                 torch.manual_seed(0)
                 model = Blue(replace(BlueConfig.preset("small"), **changes)).cuda()
+                with torch.no_grad():  # Coefficients KAN non nuls, sinon le terme ajouté est invisible.
+                    for module in model.modules():
+                        if getattr(module, "kan_coeffs", None) is not None:
+                            module.kan_coeffs.normal_(0.0, 0.1)
                 batch = synthetic_batch(model.config, batch_size=8, device="cuda")
                 self.assertTrue(model.blocks[0].moe._grouped_gemm_ready(
                     torch.zeros(64, model.config.d_model, device="cuda")))
