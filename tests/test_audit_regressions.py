@@ -336,6 +336,16 @@ class ExtraModalityCoverageTests(unittest.TestCase):
         self.assertEqual(modality_signature({"input_ids": 0, "video": 0, "images": 0}), ("input_ids", "images", "video"))
 
 
+class ObservedValidationLossTests(unittest.TestCase):
+    def test_observed_loss_includes_every_weighted_term(self):
+        from blue.evaluation import evaluate
+        model = tiny(moe_entropy_weight=0.5, lm_z_loss_weight=0.1, mtp_kl_weight=0.5,
+                     forecast_smoothness_weight=0.5, moe_router_orthogonality_weight=0.5)
+        report = evaluate(model, [synthetic_batch(model.config, batch_size=4)])
+        # Un seul lot : la moyenne par cible et la moyenne par lot coïncident.
+        self.assertAlmostEqual(report["observed_loss"], report["loss"], places=4)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
