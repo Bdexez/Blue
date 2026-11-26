@@ -20,7 +20,7 @@ from .config import BlueConfig
 from .augmentation import SeriesAffineAugmentation, SeriesAugmentation
 from .data import JointDataset, collate_records, synthetic_batch
 from .model import Blue
-from .modalities import MODALITIES, balanced_modalities, has_observed_targets, keep_modalities
+from .modalities import INPUT_MODALITIES, balanced_modalities, has_observed_targets, keep_modalities
 from .modality_batch_sampler import ModalityBatchSampler
 from .observed_objective import observed_objective, target_counts
 from .routing_metrics import summarize_expert_usage
@@ -198,8 +198,7 @@ def learning_rate(step, total_steps, peak, warmup, *, schedule="cosine", wsd_dec
 
 def drop_modalities(batch, probability, *, prediction_steps=1):
     """Apprendre aussi avec des modalités absentes, sans supprimer toutes les entrées."""
-    extras = tuple(m for m in ("audio", "graph_nodes", "points", "tabular_num", "video") if m in batch)
-    names = [name for name in (*MODALITIES, *extras) if name in batch]
+    names = [name for name in INPUT_MODALITIES if name in batch]
     kept = [name for name in names if random.random() >= probability]
     if not kept:
         kept = [random.choice(names)]
@@ -601,7 +600,7 @@ def train(args, config):
             # de connaître ces unités est encore présent dans les entrées.
             original_series = batch.get("series")
             batch = augment_affine(batch, index=index, seed=args.seed + 2000000)
-            signature = "+".join(name for name in MODALITIES if name in batch)
+            signature = "+".join(name for name in INPUT_MODALITIES if name in batch)
             modality_batches[signature] = modality_batches.get(signature, 0) + 1
             if rank == 0 and "series" in batch:
                 series = batch["series"]

@@ -315,6 +315,27 @@ class RecordShapeTests(unittest.TestCase):
                         dataset[1]
 
 
+class ExtraModalityCoverageTests(unittest.TestCase):
+    def test_split_audit_compares_and_accepts_every_input_modality(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from blue.split_audit import audit_splits
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.jsonl").write_text(json.dumps({"text": "x", "audio": [[0.1, 0.2]]}) + "\n")
+            (root / "b.jsonl").write_text(json.dumps({"text": "x", "audio": [[0.9, 0.8]]}) + "\n")
+            (root / "c.jsonl").write_text(json.dumps({"tabular_num": [1, 2]}) + "\n")
+            report = audit_splits({"train": root / "a.jsonl", "test": root / "b.jsonl"})
+            self.assertEqual(report["pairs"][0]["shared_unique_records"], 0)  # Audio différent : pas un doublon.
+            audit_splits({"train": root / "c.jsonl", "test": root / "a.jsonl"})  # Jeu tabulaire seul accepté.
+
+    def test_calibration_signature_includes_extra_modalities(self):
+        from blue.calibration import modality_signature
+        self.assertEqual(modality_signature({"series": 0, "audio": 0}), ("series", "audio"))
+        self.assertEqual(modality_signature({"input_ids": 0, "video": 0, "images": 0}), ("input_ids", "images", "video"))
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
