@@ -52,6 +52,7 @@ Mesures de `tools/benchmark_hotpaths.py`, médianes après échauffement : prese
 | Décodage, `small` | 9.38 ms/token | 8.79 ms/token | ×1.07 |
 | Recherche exacte, 3 000 vecteurs contre eux-mêmes | 23.1 s | 0.69 s | ×33 |
 | `predict`, 512 lignes texte + série (`--batch-size 32`) | 8.1 s | 1.5 s | ×5.4 |
+| Pas d'entraînement `small` par défaut (`--threads` non précisé, Ryzen 6 cœurs) | 436 ms (4 threads imposés) | 303 ms (choix de PyTorch : 6) | ×1.44 |
 
 Origine des gains :
 
