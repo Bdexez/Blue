@@ -54,6 +54,7 @@ Mesures de `tools/benchmark_hotpaths.py`, médianes après échauffement : prese
 | `predict`, 512 lignes texte + série (`--batch-size 32`) | 8.1 s | 1.5 s | ×5.4 |
 | Pas d'entraînement `small` par défaut (`--threads` non précisé, Ryzen 6 cœurs) | 436 ms (4 threads imposés) | 303 ms (choix de PyTorch : 6) | ×1.44 |
 | Pas d'entraînement GPU `small` sur JSONL réel (images en ligne), `--workers` non précisé | 79.3 ms (0 processus) | 59.8 ms (2 processus par défaut sur GPU) | ×1.33 |
+| Même entraînement sur 3 époques : processus de lecture persistants | 71.9 ms en moyenne (pics de 836 ms à chaque époque) | 61.9 ms (pics de 117 ms) | ×1.16 |
 
 Origine des gains :
 

@@ -524,11 +524,12 @@ def train(args, config):
                                            shared_across_ranks=args.shared_modality_batches,
                                            shared_interval=args.shared_modality_batch_interval)
             loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records,
-                                num_workers=args.workers, generator=torch.Generator().manual_seed(args.seed))
+                                num_workers=args.workers, persistent_workers=args.workers > 0,
+                                generator=torch.Generator().manual_seed(args.seed))
         else:
             sampler = DistributedSampler(dataset, num_replicas=world, rank=rank, seed=args.seed, shuffle=args.shuffle)
             loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
-                                sampler=sampler, num_workers=args.workers,
+                                sampler=sampler, num_workers=args.workers, persistent_workers=args.workers > 0,
                                 generator=torch.Generator().manual_seed(args.seed))
         epoch, skip = divmod(start * args.accumulation, len(loader))
         sampler.set_epoch(epoch)
