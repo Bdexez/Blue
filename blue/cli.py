@@ -461,6 +461,138 @@ def _run_refine_forecast(args, parser):
     print(content, end="")
 
 
+def _run_evaluate_or_calibrate(args, parser):
+    if args.batch_size < 1:
+        parser.error("batch-size doit être > 0")
+    sources = [args.data, args.checkpoint]
+    if args.command == "evaluate" and args.calibration:
+        sources.append(args.calibration)
+    if args.command == "evaluate" and args.series_classifier:
+        sources.append(args.series_classifier)
+    if args.command == "evaluate" and args.series_probability:
+        if not args.series_classifier:
+            parser.error("series-probability nécessite series-classifier")
+        sources.append(args.series_probability)
+    if args.command == "evaluate" and args.series_set:
+        if not args.series_classifier:
+            parser.error("series-set nécessite series-classifier")
+        sources.append(args.series_set)
+    if args.command == "evaluate" and args.series_gate:
+        if not args.series_classifier:
+            parser.error("series-gate nécessite series-classifier")
+        sources.append(args.series_gate)
+    if args.command == "evaluate" and args.series_gate_guard:
+        if not args.series_gate:
+            parser.error("series-gate-guard nécessite series-gate")
+        sources.append(args.series_gate_guard)
+    if args.command == "evaluate":
+        for option, artifact, name in ((args.classifier_data, args.series_classifier, "classifier-data"),
+                                       (args.probability_data, args.series_probability, "probability-data"),
+                                       (args.set_data, args.series_set, "set-data"),
+                                       (args.gate_data, args.series_gate, "gate-data"),
+                                       (args.gate_validation_data, args.series_gate, "gate-validation-data"),
+                                       (args.guard_data, args.series_gate_guard, "guard-data")):
+            if option and not artifact:
+                parser.error(f"{name} nécessite l'artefact correspondant")
+            if option:
+                sources.append(option)
+    if args.output and any(same_file(args.output, path) for path in sources):
+        parser.error("Le fichier de sortie doit être distinct des fichiers d'entrée")
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    dataset = JointDataset(args.data, model.config, allow_mixed=args.command == "evaluate")
+    if dataset.references_image(args.output):
+        parser.error("Le fichier de sortie doit être distinct des images d'entrée")
+    if args.command == "evaluate":
+        sampler = OrderedModalityBatchSampler(dataset, args.batch_size)
+        loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records,
+                            generator=torch.Generator().manual_seed(0))
+    else:
+        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+                            generator=torch.Generator().manual_seed(0))
+    if args.command == "calibrate":
+        calibration = fit_calibration(model, loader, coverage=args.coverage, amp=args.amp, scope=args.scope,
+                                      score_scale=args.score_scale, scale_floor=args.scale_floor,
+                                      lower_tail_fraction=args.lower_tail_fraction,
+                                      checkpoint_sha256=file_sha256(args.checkpoint),
+                                      dataset_sha256=dataset.fingerprint,
+                                      dataset_images_sha256=dataset.image_fingerprint,
+                                      dataset_images_recorded=True)
+        content = json.dumps(calibration.to_dict(), indent=2, allow_nan=False) + "\n"
+        with prediction_stream(args.output) as stream:
+            stream.write(content)
+        print(json.dumps(dict(calibration=args.output, coverage=calibration.coverage,
+                              scope=calibration.scope, score_scale=calibration.score_scale,
+                              lower_tail_fraction=calibration.lower_tail_fraction,
+                              examples=len(dataset), modalities=calibration.modalities)))
+        return
+    calibration = ForecastCalibration.load(args.calibration) if args.calibration else None
+    series_classifier = SeriesClassifier.load(args.series_classifier) if args.series_classifier else None
+    series_probability = SeriesProbabilityCalibration.load(args.series_probability) if args.series_probability else None
+    if calibration is not None:
+        calibration.validate_checkpoint(args.checkpoint)
+    if series_classifier is not None:
+        series_classifier.validate_checkpoint(args.checkpoint)
+    if series_probability is not None:
+        series_probability.validate_files(args.checkpoint, args.series_classifier)
+    series_set = SeriesPredictionSet.load(args.series_set) if args.series_set else None
+    if series_set is not None:
+        series_set.validate_files(args.checkpoint, args.series_classifier, args.series_probability)
+    series_gate = SeriesGate.load(args.series_gate) if args.series_gate else None
+    if series_gate is not None:
+        series_gate.validate_files(args.checkpoint, args.series_classifier)
+    series_gate_guard = SeriesGateGuard.load(args.series_gate_guard) if args.series_gate_guard else None
+    if series_gate_guard is not None:
+        series_gate_guard.validate_files(args.checkpoint, args.series_classifier, args.series_gate)
+    references = {}
+    if args.classifier_data:
+        references["tête"] = (args.classifier_data, series_classifier.dataset_sha256)
+    if args.probability_data:
+        references["température"] = (args.probability_data, series_probability.dataset_sha256)
+    if args.set_data:
+        references["ensemble"] = (args.set_data, series_set.dataset_sha256)
+    if args.gate_data:
+        references["porte"] = (args.gate_data, series_gate.dataset_sha256)
+    if args.gate_validation_data:
+        references["validation porte"] = (args.gate_validation_data, series_gate.validation_sha256)
+    if args.guard_data:
+        references["protection"] = (args.guard_data, series_gate_guard.dataset_sha256)
+    audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="test")
+    report = evaluate(model, loader, args.amp, calibration=calibration, series_classifier=series_classifier,
+                      series_probability=series_probability, series_set=series_set, iid_intervals=args.iid_intervals,
+                      series_gate=series_gate, series_gate_guard=series_gate_guard)
+    if references:
+        report["series_audited_sources"] = list(references)
+    if calibration is not None:
+        identical = (dataset.fingerprint == calibration.dataset_sha256
+                     if calibration.dataset_sha256 is not None else None)
+        report["calibration_jsonl_identical"] = identical
+        # Des fichiers différents peuvent néanmoins partager des exemples.
+        report["calibration_data_reused"] = True if identical else None
+        report["calibration_external_images_match"] = (
+            dataset.image_fingerprint == calibration.dataset_images_sha256
+            if calibration.dataset_images_recorded else None)
+    if series_classifier is not None:
+        report["series_classifier_data_reused"] = (
+            True if dataset.fingerprint == series_classifier.dataset_sha256 else None)
+    if series_probability is not None:
+        report["series_probability_data_reused"] = (
+            True if dataset.fingerprint == series_probability.dataset_sha256 else None)
+    if series_set is not None:
+        report["series_prediction_set_data_reused"] = (
+            True if dataset.fingerprint == series_set.dataset_sha256 else None)
+    if series_gate is not None:
+        report["series_gate_data_reused"] = (
+            True if dataset.fingerprint in (series_gate.dataset_sha256, series_gate.validation_sha256) else None)
+    if series_gate_guard is not None:
+        report["series_gate_guard_data_reused"] = (
+            True if dataset.fingerprint == series_gate_guard.dataset_sha256 else None)
+    content = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    if args.output:
+        with prediction_stream(args.output) as stream:
+            stream.write(content)
+    print(content, end="")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="BLUE — réseau multimodal à experts")
     parser.add_argument("--threads", type=int, default=4, help="Threads CPU (défaut : 4)")
@@ -966,135 +1098,7 @@ def main(argv=None):
     elif args.command == "refine-forecast":
         _run_refine_forecast(args, parser)
     elif args.command in ("evaluate", "calibrate"):
-        if args.batch_size < 1:
-            parser.error("batch-size doit être > 0")
-        sources = [args.data, args.checkpoint]
-        if args.command == "evaluate" and args.calibration:
-            sources.append(args.calibration)
-        if args.command == "evaluate" and args.series_classifier:
-            sources.append(args.series_classifier)
-        if args.command == "evaluate" and args.series_probability:
-            if not args.series_classifier:
-                parser.error("series-probability nécessite series-classifier")
-            sources.append(args.series_probability)
-        if args.command == "evaluate" and args.series_set:
-            if not args.series_classifier:
-                parser.error("series-set nécessite series-classifier")
-            sources.append(args.series_set)
-        if args.command == "evaluate" and args.series_gate:
-            if not args.series_classifier:
-                parser.error("series-gate nécessite series-classifier")
-            sources.append(args.series_gate)
-        if args.command == "evaluate" and args.series_gate_guard:
-            if not args.series_gate:
-                parser.error("series-gate-guard nécessite series-gate")
-            sources.append(args.series_gate_guard)
-        if args.command == "evaluate":
-            for option, artifact, name in ((args.classifier_data, args.series_classifier, "classifier-data"),
-                                           (args.probability_data, args.series_probability, "probability-data"),
-                                           (args.set_data, args.series_set, "set-data"),
-                                           (args.gate_data, args.series_gate, "gate-data"),
-                                           (args.gate_validation_data, args.series_gate, "gate-validation-data"),
-                                           (args.guard_data, args.series_gate_guard, "guard-data")):
-                if option and not artifact:
-                    parser.error(f"{name} nécessite l'artefact correspondant")
-                if option:
-                    sources.append(option)
-        if args.output and any(same_file(args.output, path) for path in sources):
-            parser.error("Le fichier de sortie doit être distinct des fichiers d'entrée")
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        dataset = JointDataset(args.data, model.config, allow_mixed=args.command == "evaluate")
-        if dataset.references_image(args.output):
-            parser.error("Le fichier de sortie doit être distinct des images d'entrée")
-        if args.command == "evaluate":
-            sampler = OrderedModalityBatchSampler(dataset, args.batch_size)
-            loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records,
-                                generator=torch.Generator().manual_seed(0))
-        else:
-            loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
-                                generator=torch.Generator().manual_seed(0))
-        if args.command == "calibrate":
-            calibration = fit_calibration(model, loader, coverage=args.coverage, amp=args.amp, scope=args.scope,
-                                          score_scale=args.score_scale, scale_floor=args.scale_floor,
-                                          lower_tail_fraction=args.lower_tail_fraction,
-                                          checkpoint_sha256=file_sha256(args.checkpoint),
-                                          dataset_sha256=dataset.fingerprint,
-                                          dataset_images_sha256=dataset.image_fingerprint,
-                                          dataset_images_recorded=True)
-            content = json.dumps(calibration.to_dict(), indent=2, allow_nan=False) + "\n"
-            with prediction_stream(args.output) as stream:
-                stream.write(content)
-            print(json.dumps(dict(calibration=args.output, coverage=calibration.coverage,
-                                  scope=calibration.scope, score_scale=calibration.score_scale,
-                                  lower_tail_fraction=calibration.lower_tail_fraction,
-                                  examples=len(dataset), modalities=calibration.modalities)))
-            return
-        calibration = ForecastCalibration.load(args.calibration) if args.calibration else None
-        series_classifier = SeriesClassifier.load(args.series_classifier) if args.series_classifier else None
-        series_probability = SeriesProbabilityCalibration.load(args.series_probability) if args.series_probability else None
-        if calibration is not None:
-            calibration.validate_checkpoint(args.checkpoint)
-        if series_classifier is not None:
-            series_classifier.validate_checkpoint(args.checkpoint)
-        if series_probability is not None:
-            series_probability.validate_files(args.checkpoint, args.series_classifier)
-        series_set = SeriesPredictionSet.load(args.series_set) if args.series_set else None
-        if series_set is not None:
-            series_set.validate_files(args.checkpoint, args.series_classifier, args.series_probability)
-        series_gate = SeriesGate.load(args.series_gate) if args.series_gate else None
-        if series_gate is not None:
-            series_gate.validate_files(args.checkpoint, args.series_classifier)
-        series_gate_guard = SeriesGateGuard.load(args.series_gate_guard) if args.series_gate_guard else None
-        if series_gate_guard is not None:
-            series_gate_guard.validate_files(args.checkpoint, args.series_classifier, args.series_gate)
-        references = {}
-        if args.classifier_data:
-            references["tête"] = (args.classifier_data, series_classifier.dataset_sha256)
-        if args.probability_data:
-            references["température"] = (args.probability_data, series_probability.dataset_sha256)
-        if args.set_data:
-            references["ensemble"] = (args.set_data, series_set.dataset_sha256)
-        if args.gate_data:
-            references["porte"] = (args.gate_data, series_gate.dataset_sha256)
-        if args.gate_validation_data:
-            references["validation porte"] = (args.gate_validation_data, series_gate.validation_sha256)
-        if args.guard_data:
-            references["protection"] = (args.guard_data, series_gate_guard.dataset_sha256)
-        audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="test")
-        report = evaluate(model, loader, args.amp, calibration=calibration, series_classifier=series_classifier,
-                          series_probability=series_probability, series_set=series_set, iid_intervals=args.iid_intervals,
-                          series_gate=series_gate, series_gate_guard=series_gate_guard)
-        if references:
-            report["series_audited_sources"] = list(references)
-        if calibration is not None:
-            identical = (dataset.fingerprint == calibration.dataset_sha256
-                         if calibration.dataset_sha256 is not None else None)
-            report["calibration_jsonl_identical"] = identical
-            # Des fichiers différents peuvent néanmoins partager des exemples.
-            report["calibration_data_reused"] = True if identical else None
-            report["calibration_external_images_match"] = (
-                dataset.image_fingerprint == calibration.dataset_images_sha256
-                if calibration.dataset_images_recorded else None)
-        if series_classifier is not None:
-            report["series_classifier_data_reused"] = (
-                True if dataset.fingerprint == series_classifier.dataset_sha256 else None)
-        if series_probability is not None:
-            report["series_probability_data_reused"] = (
-                True if dataset.fingerprint == series_probability.dataset_sha256 else None)
-        if series_set is not None:
-            report["series_prediction_set_data_reused"] = (
-                True if dataset.fingerprint == series_set.dataset_sha256 else None)
-        if series_gate is not None:
-            report["series_gate_data_reused"] = (
-                True if dataset.fingerprint in (series_gate.dataset_sha256, series_gate.validation_sha256) else None)
-        if series_gate_guard is not None:
-            report["series_gate_guard_data_reused"] = (
-                True if dataset.fingerprint == series_gate_guard.dataset_sha256 else None)
-        content = json.dumps(report, indent=2, allow_nan=False) + "\n"
-        if args.output:
-            with prediction_stream(args.output) as stream:
-                stream.write(content)
-        print(content, end="")
+        _run_evaluate_or_calibrate(args, parser)
 
 
 def cli_entry(argv=None):
