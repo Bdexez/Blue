@@ -552,10 +552,12 @@ def train(args, config):
         elif args.mixed_modalities:
             validation_sampler = ModalityBatchSampler(validation, args.batch_size, shuffle=False)
             val = DataLoader(validation, batch_sampler=validation_sampler, collate_fn=collate_records,
-                             num_workers=args.workers, generator=torch.Generator().manual_seed(args.seed + 1))
+                             num_workers=args.workers, persistent_workers=args.workers > 0,
+                             generator=torch.Generator().manual_seed(args.seed + 1))
         else:
             val = DataLoader(validation, batch_size=args.batch_size, collate_fn=collate_records,
-                             num_workers=args.workers, generator=torch.Generator().manual_seed(args.seed + 1))
+                             num_workers=args.workers, persistent_workers=args.workers > 0,
+                             generator=torch.Generator().manual_seed(args.seed + 1))
     autocast = (lambda: nullcontext()) if args.amp == "none" else (
         lambda: torch.autocast(device.type, dtype=torch.bfloat16 if args.amp == "bf16" else torch.float16)
     )
