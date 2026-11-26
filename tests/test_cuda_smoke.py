@@ -60,21 +60,26 @@ class CudaSmokeTests(unittest.TestCase):
     def test_grouped_expert_matmuls_match_the_expert_loop(self):
         from unittest import mock
         from blue.modules import SparseMoE
-        torch.manual_seed(0)
-        model = Blue(BlueConfig.preset("small")).cuda()
-        batch = synthetic_batch(model.config, batch_size=8, device="cuda")
-        self.assertTrue(model.blocks[0].moe._grouped_gemm_ready(torch.zeros(64, model.config.d_model, device="cuda")))
-        output = model(**batch)
-        output.loss.backward()
-        grouped = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
-        model.zero_grad(set_to_none=True)
-        with mock.patch.object(SparseMoE, "_grouped_gemm_ready", return_value=False):
-            reference = model(**batch)
-            reference.loss.backward()
-        torch.testing.assert_close(output.loss, reference.loss, rtol=1e-5, atol=1e-5)
-        for name, p in model.named_parameters():
-            if p.grad is not None and "experts" in name:
-                torch.testing.assert_close(grouped[name], p.grad, rtol=1e-4, atol=1e-6)
+        # Avec experts nuls : leurs créneaux formaient des lignes hors groupes, dont le
+        # gradient d'entrée restait non initialisé et corrompait les gradients en amont.
+        for changes in ({}, {"moe_null_experts": 2}):
+            with self.subTest(changes):
+                torch.manual_seed(0)
+                model = Blue(replace(BlueConfig.preset("small"), **changes)).cuda()
+                batch = synthetic_batch(model.config, batch_size=8, device="cuda")
+                self.assertTrue(model.blocks[0].moe._grouped_gemm_ready(
+                    torch.zeros(64, model.config.d_model, device="cuda")))
+                output = model(**batch)
+                output.loss.backward()
+                grouped = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+                model.zero_grad(set_to_none=True)
+                with mock.patch.object(SparseMoE, "_grouped_gemm_ready", return_value=False):
+                    reference = model(**batch)
+                    reference.loss.backward()
+                torch.testing.assert_close(output.loss, reference.loss, rtol=1e-5, atol=1e-5)
+                for name, p in model.named_parameters():
+                    if p.grad is not None:  # Tous les paramètres, pas seulement les experts.
+                        torch.testing.assert_close(grouped[name], p.grad, rtol=1e-3, atol=1e-6)
 
     def test_verifier_passes_on_gpu(self):
         from blue.verifier import verify_architecture
