@@ -69,6 +69,8 @@ L'option globale `--matmul-precision high` active TF32 pour les produits matrici
 
 Les experts routés du MoE représentent environ 39 % d'un pas d'entraînement GPU du preset `small` (50.9 ms, contre 31.2 ms si l'on ne garde que l'expert partagé). Un calcul groupé de tous les experts (deux `bmm` sur des groupes complétés jusqu'à l'expert le plus chargé) s'est révélé plus lent (55.5 ms sur GPU, 536 ms contre 320 ms sur CPU) : l'empilement des poids et le remplissage coûtent davantage que les lancements économisés. Calculer au contraire chaque expert sur tous les jetons, sans aiguillage ni synchronisation, est aussi plus lent (63.5 contre 50.6 ms sur GPU, 558 contre 318 ms sur CPU). L'aiguillage actuel reste le meilleur compromis mesuré ; aucun de ces deux essais n'a été conservé.
 
+Inférence quantifiée sur CPU (preset `small`, 6 threads, décodage glouton) : FP32 9.07 ms par token pour 212 Mio, INT8 7.71 ms pour 63 Mio, INT4 13.09 ms pour 41 Mio. L'INT8 est à la fois plus compact et plus rapide (moins de mémoire lue) ; l'INT4 gagne encore en taille mais paie le dépaquetage de ses demi-octets à chaque appel (une variante vectorisée du dépaquetage, exacte, s'est montrée plus lente et n'a pas été conservée).
+
 Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélérait un pas isolé de 51.5 à 41.5 ms, mais n'apportait rien dans la boucle d'entraînement réelle (61.7 contre 59.5 ms) : les formes changent d'un lot à l'autre (abandon de modalités, validation) et les recompilations annulent le gain. L'option n'a donc pas été conservée.
 
 ## Vérifications
