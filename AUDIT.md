@@ -87,6 +87,7 @@ Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélé
 
 ## Maintenance
 
+- Option globale `--deterministic` : deux entraînements GPU identiques divergeaient (392 tenseurs, jusqu'à 6e-6, à cause des additions atomiques) ; avec l'option, deux exécutions et une reprise sur GPU sont identiques au bit près (preset `small` : environ 63 ms par pas au lieu de 60).
 - `train --resume auto` reprend depuis `OUTPUT/latest.pt` s'il existe et démarre sinon un nouvel entraînement : une tâche interrompue se relance avec la même commande (reprise identique au bit près, testée).
 - `metrics.jsonl` indique la durée de chaque pas (`step_seconds`) ; l'EMA des poids se met à jour en une opération multi-tenseurs (2.3 → 1.6 ms sur GPU pour `small`, résultat identique).
 

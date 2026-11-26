@@ -41,6 +41,22 @@ class CudaSmokeTests(unittest.TestCase):
                 self.assertTrue(torch.isfinite(mixed))
                 mixed.backward()
 
+    def test_deterministic_mode_reproduces_gpu_training_bit_for_bit(self):
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            for run in ("first", "second"):
+                subprocess.run([sys.executable, "-m", "blue", "--threads", "1", "--deterministic", "train",
+                                "--preset", "tiny", "--device", "cuda", "--steps", "4", "--batch-size", "4",
+                                "--eval-every", "4", "--save-every", "4", "--output", str(Path(directory) / run)],
+                               check=True, capture_output=True)
+            first, second = (torch.load(Path(directory) / run / "latest.pt", weights_only=True)["model"]
+                             for run in ("first", "second"))
+        for name, value in first.items():
+            self.assertTrue(torch.equal(value, second[name]), name)
+
     def test_cached_generation_matches_cpu(self):
         torch.manual_seed(0)
         model = Blue(replace(BlueConfig.preset("tiny"), **CONFIGURATIONS["recurrent"])).eval()
