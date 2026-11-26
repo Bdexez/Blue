@@ -337,7 +337,7 @@ with torch.inference_mode():
 - [Conformal forecast calibration](CALIBRATION.md) · [Short-history refinement](FORECAST_REFINEMENT.md) · [Temporal robustness](ROBUSTNESS.md)
 - [Temporal statistics](TEMPORAL_STATISTICS.md) · [Standardized series classification](SERIES_CLASSIFICATION.md) · [Affine robustness](AFFINE_ROBUSTNESS.md)
 - [Numerical precision & stable RMSNorm](NUMERICAL_PRECISION.md) · [Probabilistic Top-1 routing](TOP1_ROUTING.md)
-- [Code audit: fixes and performance](AUDIT.md) · Hot-path benchmark: [`tools/benchmark_hotpaths.py`](tools/benchmark_hotpaths.py)
+- [Contributing: tests, golden outputs, benchmarks](CONTRIBUTING.md) · [Code audit: fixes and performance](AUDIT.md) · Hot-path benchmark: [`tools/benchmark_hotpaths.py`](tools/benchmark_hotpaths.py)
 - Continuous integration: [GitHub Actions CI Python 3.11 & 3.14](.github/workflows/tests.yml) · Benchmarks: [`tools/benchmark_architectures.py`](tools/benchmark_architectures.py)
 
 ---
