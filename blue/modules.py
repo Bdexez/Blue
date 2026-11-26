@@ -841,14 +841,10 @@ class SparseMoE(nn.Module):
                 self.routed_log_scale.zero_()
 
     def _grouped_gemm_ready(self, tokens) -> bool:
-        """Multiplications groupées natives (CUDA) : experts SwiGLU standards, sans experts nuls.
-
-        Les experts nuls exigeraient de connaître le nombre de créneaux routés,
-        c'est-à-dire une synchronisation ; ce cas garde la boucle par expert.
-        """
+        """Multiplications groupées natives (CUDA) pour des experts SwiGLU standards."""
         # En dessous d'environ 64 jetons (décodage), empiler les poids des experts coûte plus
         # que la boucle sur les quelques experts choisis.
-        if not (tokens.is_cuda and tokens.size(0) >= 64 and self.n_null == 0 and hasattr(torch, "_grouped_mm")):
+        if not (tokens.is_cuda and tokens.size(0) >= 64 and hasattr(torch, "_grouped_mm")):
             return False
         hidden = self.experts[0].down.in_features
         return (tokens.size(-1) % 8 == 0 and hidden % 8 == 0
@@ -856,16 +852,30 @@ class SparseMoE(nn.Module):
                         and type(expert.up_gate) is nn.Linear and type(expert.down) is nn.Linear
                         for expert in self.experts))
 
-    def _grouped_gemm_experts(self, tokens, mixed, order, slot_counts, weights):
-        """Tous les experts en deux multiplications groupées, sans synchronisation de l'hôte."""
+    def _grouped_gemm_experts(self, tokens, mixed, order, slot_counts, weights, flat_selected):
+        """Tous les experts en deux multiplications groupées, sans synchronisation de l'hôte.
+
+        Chaque ligne doit appartenir à un groupe : _grouped_mm ne calcule pas les lignes
+        hors groupes, y compris leur gradient d'entrée, laissé non initialisé. Les experts
+        nuls forment donc des groupes à poids nuls (constants), et leurs contributions sont
+        écartées, comme dans la boucle qui ne les calcule pas.
+        """
         rows = order // self.top_k  # Créneaux triés par expert (tri stable).
-        offsets = slot_counts[:self.n_experts].cumsum(0).to(torch.int32)
+        offsets = slot_counts.cumsum(0).to(torch.int32)  # Experts réels puis nuls : toutes les lignes.
         dtype = (torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else tokens.dtype)
-        up_gate = torch.stack([expert.up_gate.weight for expert in self.experts]).to(dtype).transpose(1, 2)
-        down = torch.stack([expert.down.weight for expert in self.experts]).to(dtype).transpose(1, 2)
+        up_gate = [expert.up_gate.weight for expert in self.experts]
+        down = [expert.down.weight for expert in self.experts]
+        if self.n_null:
+            up_gate += [up_gate[0].new_zeros(up_gate[0].shape)] * self.n_null
+            down += [down[0].new_zeros(down[0].shape)] * self.n_null
+        up_gate = torch.stack(up_gate).to(dtype).transpose(1, 2)
+        down = torch.stack(down).to(dtype).transpose(1, 2)
         gate, up = torch._grouped_mm(tokens[rows].to(dtype), up_gate, offs=offsets).chunk(2, dim=-1)
         outputs = torch._grouped_mm(F.silu(gate) * up, down, offs=offsets)
         contributions = outputs * weights.reshape(-1)[order, None].to(outputs.dtype)
+        if self.n_null:
+            routed = (flat_selected[order] < self.n_experts).unsqueeze(-1)
+            contributions = torch.where(routed, contributions, torch.zeros_like(contributions))
         return mixed.index_add(0, rows, contributions.to(mixed.dtype))
 
     def _finish(self, x, flat, indices, mixed, slot_counts, flat_selected, probs, scores, entropy):
@@ -949,7 +959,7 @@ class SparseMoE(nn.Module):
         order = flat_selected.argsort(stable=True)
         flat_weights = weights.reshape(-1)
         if self._grouped_gemm_ready(tokens):
-            mixed = self._grouped_gemm_experts(tokens, mixed, order, slot_counts, weights)
+            mixed = self._grouped_gemm_experts(tokens, mixed, order, slot_counts, weights, flat_selected)
             return self._finish(x, flat, indices, mixed, slot_counts, flat_selected, probs, scores, entropy)
         rows_all, contributions = [], []
         start = 0
