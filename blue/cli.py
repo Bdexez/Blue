@@ -225,6 +225,240 @@ def _run_embed(args, parser):
         print(f"{count} vecteurs écrits dans {args.output}")
 
 
+def _run_calibrate_series_set(args, parser):
+    if args.batch_size < 1:
+        parser.error("batch-size doit être > 0")
+    if args.probability_data and not args.series_probability:
+        parser.error("probability-data nécessite series-probability")
+    sources = (args.data, args.checkpoint, args.series_classifier, args.series_probability,
+               args.classifier_data, args.probability_data)
+    if any(same_file(args.output, source) for source in sources if source):
+        parser.error("La sortie doit être distincte des fichiers d'entrée")
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    classifier = SeriesClassifier.load(args.series_classifier)
+    classifier.validate_checkpoint(args.checkpoint)
+    probability = SeriesProbabilityCalibration.load(args.series_probability) if args.series_probability else None
+    if probability is not None:
+        probability.validate_files(args.checkpoint, args.series_classifier)
+    dataset = JointDataset(args.data, model.config)
+    if dataset.references_image(args.output):
+        parser.error("La sortie doit être distincte des images d'entrée")
+    references = {}
+    if args.classifier_data:
+        references["tête"] = (args.classifier_data, classifier.dataset_sha256)
+    if args.probability_data:
+        references["température"] = (args.probability_data, probability.dataset_sha256)
+    audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output)
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+                        generator=torch.Generator().manual_seed(0))
+    fitted = fit_series_set(model, classifier, loader, amp=args.amp, coverage=args.coverage,
+                            method=args.method, scope=args.scope, checkpoint_sha256=file_sha256(args.checkpoint),
+                            classifier_sha256=file_sha256(args.series_classifier), probability=probability,
+                            probability_sha256=file_sha256(args.series_probability) if probability else None,
+                            dataset_sha256=dataset.fingerprint)
+    fitted.validate_files(args.checkpoint, args.series_classifier, args.series_probability)
+    with prediction_stream(args.output) as stream:
+        stream.write(json.dumps(fitted.to_dict(), indent=2, allow_nan=False) + "\n")
+    print(json.dumps(dict(output=args.output, examples=fitted.examples, threshold=fitted.threshold,
+                          scope=fitted.scope, class_thresholds=fitted.class_thresholds)))
+
+
+def _run_calibrate_series_gate_guard(args, parser):
+    if args.batch_size < 1:
+        parser.error("batch-size doit être > 0")
+    sources = (args.data, args.checkpoint, args.series_classifier, args.series_gate,
+               args.classifier_data, args.gate_data, args.gate_validation_data)
+    if any(same_file(args.output, path) for path in sources if path):
+        parser.error("La sortie doit être distincte des fichiers d'entrée")
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    classifier = SeriesClassifier.load(args.series_classifier)
+    classifier.validate_checkpoint(args.checkpoint)
+    gate = SeriesGate.load(args.series_gate)
+    gate.validate_files(args.checkpoint, args.series_classifier)
+    dataset = JointDataset(args.data, model.config)
+    if dataset.references_image(args.output):
+        parser.error("La sortie doit être distincte des images d'entrée")
+    references = {}
+    if args.classifier_data:
+        references["tête"] = (args.classifier_data, classifier.dataset_sha256)
+    if args.gate_data:
+        references["porte"] = (args.gate_data, gate.dataset_sha256)
+    if args.gate_validation_data:
+        references["validation porte"] = (args.gate_validation_data, gate.validation_sha256)
+    audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="protection")
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+                        generator=torch.Generator().manual_seed(0))
+    guard = fit_series_gate_guard(model, classifier, gate, loader, max_harm=args.max_harm, amp=args.amp,
+                                  checkpoint_sha256=file_sha256(args.checkpoint),
+                                  classifier_sha256=file_sha256(args.series_classifier),
+                                  gate_sha256=file_sha256(args.series_gate), dataset_sha256=dataset.fingerprint,
+                                  feature_batch_size=args.batch_size)
+    guard.validate_files(args.checkpoint, args.series_classifier, args.series_gate)
+    with prediction_stream(args.output) as stream:
+        stream.write(json.dumps(guard.to_dict(), indent=2, allow_nan=False) + "\n")
+    print(json.dumps(dict(output=args.output, examples=guard.examples, threshold=guard.threshold,
+                          unguarded_harms=guard.unguarded_harms, guarded_harms=guard.guarded_harms)))
+
+
+def _run_refine_series_gate(args, parser):
+    if args.batch_size < 1:
+        parser.error("batch-size doit être > 0")
+    sources = (args.data, args.validation_data, args.checkpoint, args.series_classifier, args.classifier_data)
+    if any(same_file(args.output, path) for path in sources if path):
+        parser.error("La sortie doit être distincte des fichiers d'entrée")
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    classifier = SeriesClassifier.load(args.series_classifier)
+    classifier.validate_checkpoint(args.checkpoint)
+    dataset, validation = JointDataset(args.data, model.config), JointDataset(args.validation_data, model.config)
+    if dataset.references_image(args.output) or validation.references_image(args.output):
+        parser.error("La sortie doit être distincte des images d'entrée")
+    if args.audit_series or args.classifier_data:
+        references = {"validation": (args.validation_data, validation.fingerprint)}
+        if args.classifier_data:
+            references["tête"] = (args.classifier_data, classifier.dataset_sha256)
+        audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="ajustement")
+    def loader(source):
+        return DataLoader(source, batch_size=args.batch_size, collate_fn=collate_records,
+                          generator=torch.Generator().manual_seed(0))
+    gate = fit_series_gate(model, classifier, loader(dataset), loader(validation),
+                           checkpoint_sha256=file_sha256(args.checkpoint),
+                           classifier_sha256=file_sha256(args.series_classifier),
+                           dataset_sha256=dataset.fingerprint, validation_sha256=validation.fingerprint,
+                           amp=args.amp, threshold=args.threshold, epochs=args.epochs,
+                           batch_size=args.fit_batch_size, learning_rate=args.learning_rate, seed=args.seed,
+                           feature_batch_size=args.batch_size)
+    gate.validate_files(args.checkpoint, args.series_classifier)
+    with prediction_stream(args.output) as stream:
+        stream.write(json.dumps(gate.to_dict(), indent=2, allow_nan=False) + "\n")
+    print(json.dumps(dict(output=args.output, train_examples=gate.train_examples,
+                          validation_examples=gate.validation_examples, validation_gain=gate.validation_gain,
+                          best_epoch=gate.best_epoch)))
+
+
+def _run_calibrate_series_probability(args, parser):
+    if args.batch_size < 1:
+        parser.error("batch-size doit être > 0")
+    sources = (args.data, args.checkpoint, args.series_classifier, args.classifier_data)
+    if any(same_file(args.output, source) for source in sources if source):
+        parser.error("La sortie doit être distincte des fichiers d'entrée")
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    classifier = SeriesClassifier.load(args.series_classifier)
+    classifier.validate_checkpoint(args.checkpoint)
+    dataset = JointDataset(args.data, model.config)
+    if dataset.references_image(args.output):
+        parser.error("La sortie doit être distincte des images d'entrée")
+    references = {"tête": (args.classifier_data, classifier.dataset_sha256)} if args.classifier_data else {}
+    audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output)
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+                        generator=torch.Generator().manual_seed(0))
+    probability = fit_series_probability(model, classifier, loader, amp=args.amp,
+                                         checkpoint_sha256=file_sha256(args.checkpoint),
+                                         classifier_sha256=file_sha256(args.series_classifier),
+                                         dataset_sha256=dataset.fingerprint)
+    probability.validate_files(args.checkpoint, args.series_classifier)
+    with prediction_stream(args.output) as stream:
+        stream.write(json.dumps(probability.to_dict(), indent=2, allow_nan=False) + "\n")
+    print(json.dumps(dict(output=args.output, examples=probability.examples,
+                          inverse_temperature=probability.inverse_temperature)))
+
+
+def _run_refine_series_classifier(args, parser):
+    if args.batch_size < 1 or args.augmentation_seed < 0:
+        parser.error("batch-size doit être > 0 et augmentation-seed >= 0")
+    if any(same_file(args.output, source) for source in (args.data, args.checkpoint)):
+        parser.error("La sortie doit être distincte des fichiers d'entrée")
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    dataset = JointDataset(args.data, model.config)
+    if dataset.references_image(args.output):
+        parser.error("La sortie doit être distincte des images d'entrée")
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+                        generator=torch.Generator().manual_seed(0))
+    augmentation = SeriesAugmentation(missing_rate=args.missing_rate, mask_probability=args.mask_probability)
+    classifier = fit_series_classifier(model, loader, ridge=args.ridge, scale_floor=args.scale_floor,
+                                       amp=args.amp, shape_context=args.shape_context,
+                                       augmentation=augmentation if args.missing_rate else None,
+                                       augmentation_seed=args.augmentation_seed,
+                                       augmentation_batch_size=args.batch_size if args.missing_rate else None,
+                                       checkpoint_sha256=file_sha256(args.checkpoint),
+                                       dataset_sha256=dataset.fingerprint)
+    classifier.validate_checkpoint(args.checkpoint)
+    with prediction_stream(args.output) as stream:
+        stream.write(json.dumps(classifier.to_dict(), indent=2, allow_nan=False) + "\n")
+    print(json.dumps(dict(output=args.output, class_counts=classifier.class_counts,
+                          checkpoint_sha256=classifier.checkpoint_sha256)))
+
+
+def _run_generate(args, parser):
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    if args.seed is not None:
+        torch.manual_seed(args.seed)  # Graine aussi les générateurs CUDA.
+    tokens = torch.tensor([ByteTokenizer().encode(args.prompt, eos=False)], device=args.device)
+    generated = model.generate(tokens, max_new_tokens=args.max_new_tokens,
+                               temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+                               min_p=args.min_p, typical_p=args.typical_p,
+                               reasoning_steps=args.reasoning_steps, speculative=args.speculative,
+                               jacobi=args.jacobi, jacobi_window=args.jacobi_window,
+                               beam_width=args.beam_width, length_penalty=args.length_penalty,
+                               repetition_penalty=args.repetition_penalty,
+                               presence_penalty=args.presence_penalty,
+                               frequency_penalty=args.frequency_penalty,
+                               no_repeat_ngram_size=args.no_repeat_ngram_size,
+                               context_guidance_scale=args.context_guidance_scale,
+                               mirostat_tau=args.mirostat_tau,
+                               mirostat_eta=args.mirostat_eta,
+                               eta_cutoff=args.eta_cutoff,
+                               tfs_z=args.tfs_z,
+                               top_a=args.top_a,
+                               edt_theta=args.edt_theta,
+                               edt_n=args.edt_n)
+    print(ByteTokenizer().decode(generated[0]))
+
+
+def _run_refine_forecast(args, parser):
+    if args.batch_size < 1 or args.context < 1 or not math.isfinite(args.ridge) or args.ridge <= 0:
+        parser.error("batch-size, context et ridge doivent être strictement positifs ; ridge doit être fini")
+    inputs = (args.checkpoint, args.data)
+    outputs = [path for path in (args.output, args.report) if path]
+    if any(same_file(output, source) for output in outputs for source in inputs) or (
+            len(outputs) == 2 and same_file(*outputs)):
+        parser.error("Les sorties doivent être distinctes entre elles et des fichiers d'entrée")
+    overrides = {"forecast_adapter_context": args.context}
+    if args.relative_features is not None:
+        overrides["forecast_adapter_relative"] = args.relative_features
+    if args.missing_gate is not None:
+        overrides["forecast_adapter_missing_gate"] = args.missing_gate
+    if args.separate_missing is not None:
+        overrides["forecast_adapter_separate_missing"] = args.separate_missing
+    if args.separate_missing is True and args.missing_gate is None:
+        overrides["forecast_adapter_missing_gate"] = True
+    if args.missing_gate is False and args.separate_missing is None:
+        overrides["forecast_adapter_separate_missing"] = False
+    model, payload = load_checkpoint(args.checkpoint, args.device, overrides=overrides)
+    step = payload["step"]
+    seed = payload.get("trainer", {}).get("seed", 42)
+    del payload
+    dataset = JointDataset(args.data, model.config)
+    if any(dataset.references_image(output) for output in outputs):
+        parser.error("Les sorties doivent être distinctes des images d'entrée")
+    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
+                        generator=torch.Generator().manual_seed(0))
+    report = fit_forecast_adapter(model, loader, ridge=args.ridge, amp=args.amp)
+    report.update(parent_checkpoint=str(Path(args.checkpoint).resolve()),
+                  parent_sha256=file_sha256(args.checkpoint), parent_step=step,
+                  dataset_sha256=dataset.fingerprint, data=str(Path(args.data).resolve()),
+                  output=str(Path(args.output).resolve()), batch_size=args.batch_size,
+                  device=str(next(model.parameters()).device), torch_version=str(torch.__version__))
+    # Le compteur d'optimisation du parent n'est pas un nombre d'étapes ridge.
+    # Ne pas transmettre ses anciens scores de validation au nouveau modèle.
+    content = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    save_checkpoint(args.output, model, step=step,
+                    trainer=dict(seed=seed, inference_only=True, forecast_adapter_fit=report))
+    if args.report:
+        with prediction_stream(args.report) as stream:
+            stream.write(content)
+    print(content, end="")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="BLUE — réseau multimodal à experts")
     parser.add_argument("--threads", type=int, default=4, help="Threads CPU (défaut : 4)")
@@ -661,29 +895,7 @@ def main(argv=None):
     elif args.command == "demo":
         run_demo(args, load_checkpoint_fn=load_checkpoint)
     elif args.command == "generate":
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        if args.seed is not None:
-            torch.manual_seed(args.seed)  # Graine aussi les générateurs CUDA.
-        tokens = torch.tensor([ByteTokenizer().encode(args.prompt, eos=False)], device=args.device)
-        generated = model.generate(tokens, max_new_tokens=args.max_new_tokens,
-                                   temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
-                                   min_p=args.min_p, typical_p=args.typical_p,
-                                   reasoning_steps=args.reasoning_steps, speculative=args.speculative,
-                                   jacobi=args.jacobi, jacobi_window=args.jacobi_window,
-                                   beam_width=args.beam_width, length_penalty=args.length_penalty,
-                                   repetition_penalty=args.repetition_penalty,
-                                   presence_penalty=args.presence_penalty,
-                                   frequency_penalty=args.frequency_penalty,
-                                   no_repeat_ngram_size=args.no_repeat_ngram_size,
-                                   context_guidance_scale=args.context_guidance_scale,
-                                   mirostat_tau=args.mirostat_tau,
-                                   mirostat_eta=args.mirostat_eta,
-                                   eta_cutoff=args.eta_cutoff,
-                                   tfs_z=args.tfs_z,
-                                   top_a=args.top_a,
-                                   edt_theta=args.edt_theta,
-                                   edt_n=args.edt_n)
-        print(ByteTokenizer().decode(generated[0]))
+        _run_generate(args, parser)
     elif args.command == "predict":
         _run_predict(args, parser)
     elif args.command == "embed":
@@ -740,201 +952,17 @@ def main(argv=None):
         run_export(args, parser, load_checkpoint_fn=load_checkpoint,
                    save_checkpoint_fn=save_checkpoint, file_sha256_fn=file_sha256)
     elif args.command == "refine-series-classifier":
-        if args.batch_size < 1 or args.augmentation_seed < 0:
-            parser.error("batch-size doit être > 0 et augmentation-seed >= 0")
-        if any(same_file(args.output, source) for source in (args.data, args.checkpoint)):
-            parser.error("La sortie doit être distincte des fichiers d'entrée")
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        dataset = JointDataset(args.data, model.config)
-        if dataset.references_image(args.output):
-            parser.error("La sortie doit être distincte des images d'entrée")
-        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
-                            generator=torch.Generator().manual_seed(0))
-        augmentation = SeriesAugmentation(missing_rate=args.missing_rate, mask_probability=args.mask_probability)
-        classifier = fit_series_classifier(model, loader, ridge=args.ridge, scale_floor=args.scale_floor,
-                                           amp=args.amp, shape_context=args.shape_context,
-                                           augmentation=augmentation if args.missing_rate else None,
-                                           augmentation_seed=args.augmentation_seed,
-                                           augmentation_batch_size=args.batch_size if args.missing_rate else None,
-                                           checkpoint_sha256=file_sha256(args.checkpoint),
-                                           dataset_sha256=dataset.fingerprint)
-        classifier.validate_checkpoint(args.checkpoint)
-        with prediction_stream(args.output) as stream:
-            stream.write(json.dumps(classifier.to_dict(), indent=2, allow_nan=False) + "\n")
-        print(json.dumps(dict(output=args.output, class_counts=classifier.class_counts,
-                              checkpoint_sha256=classifier.checkpoint_sha256)))
+        _run_refine_series_classifier(args, parser)
     elif args.command == "calibrate-series-gate-guard":
-        if args.batch_size < 1:
-            parser.error("batch-size doit être > 0")
-        sources = (args.data, args.checkpoint, args.series_classifier, args.series_gate,
-                   args.classifier_data, args.gate_data, args.gate_validation_data)
-        if any(same_file(args.output, path) for path in sources if path):
-            parser.error("La sortie doit être distincte des fichiers d'entrée")
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        classifier = SeriesClassifier.load(args.series_classifier)
-        classifier.validate_checkpoint(args.checkpoint)
-        gate = SeriesGate.load(args.series_gate)
-        gate.validate_files(args.checkpoint, args.series_classifier)
-        dataset = JointDataset(args.data, model.config)
-        if dataset.references_image(args.output):
-            parser.error("La sortie doit être distincte des images d'entrée")
-        references = {}
-        if args.classifier_data:
-            references["tête"] = (args.classifier_data, classifier.dataset_sha256)
-        if args.gate_data:
-            references["porte"] = (args.gate_data, gate.dataset_sha256)
-        if args.gate_validation_data:
-            references["validation porte"] = (args.gate_validation_data, gate.validation_sha256)
-        audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="protection")
-        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
-                            generator=torch.Generator().manual_seed(0))
-        guard = fit_series_gate_guard(model, classifier, gate, loader, max_harm=args.max_harm, amp=args.amp,
-                                      checkpoint_sha256=file_sha256(args.checkpoint),
-                                      classifier_sha256=file_sha256(args.series_classifier),
-                                      gate_sha256=file_sha256(args.series_gate), dataset_sha256=dataset.fingerprint,
-                                      feature_batch_size=args.batch_size)
-        guard.validate_files(args.checkpoint, args.series_classifier, args.series_gate)
-        with prediction_stream(args.output) as stream:
-            stream.write(json.dumps(guard.to_dict(), indent=2, allow_nan=False) + "\n")
-        print(json.dumps(dict(output=args.output, examples=guard.examples, threshold=guard.threshold,
-                              unguarded_harms=guard.unguarded_harms, guarded_harms=guard.guarded_harms)))
+        _run_calibrate_series_gate_guard(args, parser)
     elif args.command == "refine-series-gate":
-        if args.batch_size < 1:
-            parser.error("batch-size doit être > 0")
-        sources = (args.data, args.validation_data, args.checkpoint, args.series_classifier, args.classifier_data)
-        if any(same_file(args.output, path) for path in sources if path):
-            parser.error("La sortie doit être distincte des fichiers d'entrée")
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        classifier = SeriesClassifier.load(args.series_classifier)
-        classifier.validate_checkpoint(args.checkpoint)
-        dataset, validation = JointDataset(args.data, model.config), JointDataset(args.validation_data, model.config)
-        if dataset.references_image(args.output) or validation.references_image(args.output):
-            parser.error("La sortie doit être distincte des images d'entrée")
-        if args.audit_series or args.classifier_data:
-            references = {"validation": (args.validation_data, validation.fingerprint)}
-            if args.classifier_data:
-                references["tête"] = (args.classifier_data, classifier.dataset_sha256)
-            audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output, subject="ajustement")
-        def loader(source):
-            return DataLoader(source, batch_size=args.batch_size, collate_fn=collate_records,
-                              generator=torch.Generator().manual_seed(0))
-        gate = fit_series_gate(model, classifier, loader(dataset), loader(validation),
-                               checkpoint_sha256=file_sha256(args.checkpoint),
-                               classifier_sha256=file_sha256(args.series_classifier),
-                               dataset_sha256=dataset.fingerprint, validation_sha256=validation.fingerprint,
-                               amp=args.amp, threshold=args.threshold, epochs=args.epochs,
-                               batch_size=args.fit_batch_size, learning_rate=args.learning_rate, seed=args.seed,
-                               feature_batch_size=args.batch_size)
-        gate.validate_files(args.checkpoint, args.series_classifier)
-        with prediction_stream(args.output) as stream:
-            stream.write(json.dumps(gate.to_dict(), indent=2, allow_nan=False) + "\n")
-        print(json.dumps(dict(output=args.output, train_examples=gate.train_examples,
-                              validation_examples=gate.validation_examples, validation_gain=gate.validation_gain,
-                              best_epoch=gate.best_epoch)))
+        _run_refine_series_gate(args, parser)
     elif args.command == "calibrate-series-set":
-        if args.batch_size < 1:
-            parser.error("batch-size doit être > 0")
-        if args.probability_data and not args.series_probability:
-            parser.error("probability-data nécessite series-probability")
-        sources = (args.data, args.checkpoint, args.series_classifier, args.series_probability,
-                   args.classifier_data, args.probability_data)
-        if any(same_file(args.output, source) for source in sources if source):
-            parser.error("La sortie doit être distincte des fichiers d'entrée")
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        classifier = SeriesClassifier.load(args.series_classifier)
-        classifier.validate_checkpoint(args.checkpoint)
-        probability = SeriesProbabilityCalibration.load(args.series_probability) if args.series_probability else None
-        if probability is not None:
-            probability.validate_files(args.checkpoint, args.series_classifier)
-        dataset = JointDataset(args.data, model.config)
-        if dataset.references_image(args.output):
-            parser.error("La sortie doit être distincte des images d'entrée")
-        references = {}
-        if args.classifier_data:
-            references["tête"] = (args.classifier_data, classifier.dataset_sha256)
-        if args.probability_data:
-            references["température"] = (args.probability_data, probability.dataset_sha256)
-        audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output)
-        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
-                            generator=torch.Generator().manual_seed(0))
-        fitted = fit_series_set(model, classifier, loader, amp=args.amp, coverage=args.coverage,
-                                method=args.method, scope=args.scope, checkpoint_sha256=file_sha256(args.checkpoint),
-                                classifier_sha256=file_sha256(args.series_classifier), probability=probability,
-                                probability_sha256=file_sha256(args.series_probability) if probability else None,
-                                dataset_sha256=dataset.fingerprint)
-        fitted.validate_files(args.checkpoint, args.series_classifier, args.series_probability)
-        with prediction_stream(args.output) as stream:
-            stream.write(json.dumps(fitted.to_dict(), indent=2, allow_nan=False) + "\n")
-        print(json.dumps(dict(output=args.output, examples=fitted.examples, threshold=fitted.threshold,
-                              scope=fitted.scope, class_thresholds=fitted.class_thresholds)))
+        _run_calibrate_series_set(args, parser)
     elif args.command == "calibrate-series-probability":
-        if args.batch_size < 1:
-            parser.error("batch-size doit être > 0")
-        sources = (args.data, args.checkpoint, args.series_classifier, args.classifier_data)
-        if any(same_file(args.output, source) for source in sources if source):
-            parser.error("La sortie doit être distincte des fichiers d'entrée")
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        classifier = SeriesClassifier.load(args.series_classifier)
-        classifier.validate_checkpoint(args.checkpoint)
-        dataset = JointDataset(args.data, model.config)
-        if dataset.references_image(args.output):
-            parser.error("La sortie doit être distincte des images d'entrée")
-        references = {"tête": (args.classifier_data, classifier.dataset_sha256)} if args.classifier_data else {}
-        audit_series_calibration(args.data, dataset.fingerprint, references, output=args.output)
-        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
-                            generator=torch.Generator().manual_seed(0))
-        probability = fit_series_probability(model, classifier, loader, amp=args.amp,
-                                             checkpoint_sha256=file_sha256(args.checkpoint),
-                                             classifier_sha256=file_sha256(args.series_classifier),
-                                             dataset_sha256=dataset.fingerprint)
-        probability.validate_files(args.checkpoint, args.series_classifier)
-        with prediction_stream(args.output) as stream:
-            stream.write(json.dumps(probability.to_dict(), indent=2, allow_nan=False) + "\n")
-        print(json.dumps(dict(output=args.output, examples=probability.examples,
-                              inverse_temperature=probability.inverse_temperature)))
+        _run_calibrate_series_probability(args, parser)
     elif args.command == "refine-forecast":
-        if args.batch_size < 1 or args.context < 1 or not math.isfinite(args.ridge) or args.ridge <= 0:
-            parser.error("batch-size, context et ridge doivent être strictement positifs ; ridge doit être fini")
-        inputs = (args.checkpoint, args.data)
-        outputs = [path for path in (args.output, args.report) if path]
-        if any(same_file(output, source) for output in outputs for source in inputs) or (
-                len(outputs) == 2 and same_file(*outputs)):
-            parser.error("Les sorties doivent être distinctes entre elles et des fichiers d'entrée")
-        overrides = {"forecast_adapter_context": args.context}
-        if args.relative_features is not None:
-            overrides["forecast_adapter_relative"] = args.relative_features
-        if args.missing_gate is not None:
-            overrides["forecast_adapter_missing_gate"] = args.missing_gate
-        if args.separate_missing is not None:
-            overrides["forecast_adapter_separate_missing"] = args.separate_missing
-        if args.separate_missing is True and args.missing_gate is None:
-            overrides["forecast_adapter_missing_gate"] = True
-        if args.missing_gate is False and args.separate_missing is None:
-            overrides["forecast_adapter_separate_missing"] = False
-        model, payload = load_checkpoint(args.checkpoint, args.device, overrides=overrides)
-        step = payload["step"]
-        seed = payload.get("trainer", {}).get("seed", 42)
-        del payload
-        dataset = JointDataset(args.data, model.config)
-        if any(dataset.references_image(output) for output in outputs):
-            parser.error("Les sorties doivent être distinctes des images d'entrée")
-        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_records,
-                            generator=torch.Generator().manual_seed(0))
-        report = fit_forecast_adapter(model, loader, ridge=args.ridge, amp=args.amp)
-        report.update(parent_checkpoint=str(Path(args.checkpoint).resolve()),
-                      parent_sha256=file_sha256(args.checkpoint), parent_step=step,
-                      dataset_sha256=dataset.fingerprint, data=str(Path(args.data).resolve()),
-                      output=str(Path(args.output).resolve()), batch_size=args.batch_size,
-                      device=str(next(model.parameters()).device), torch_version=str(torch.__version__))
-        # Le compteur d'optimisation du parent n'est pas un nombre d'étapes ridge.
-        # Ne pas transmettre ses anciens scores de validation au nouveau modèle.
-        content = json.dumps(report, indent=2, allow_nan=False) + "\n"
-        save_checkpoint(args.output, model, step=step,
-                        trainer=dict(seed=seed, inference_only=True, forecast_adapter_fit=report))
-        if args.report:
-            with prediction_stream(args.report) as stream:
-                stream.write(content)
-        print(content, end="")
+        _run_refine_forecast(args, parser)
     elif args.command in ("evaluate", "calibrate"):
         if args.batch_size < 1:
             parser.error("batch-size doit être > 0")
