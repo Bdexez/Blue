@@ -276,6 +276,32 @@ class GenerateSeedTests(unittest.TestCase):
         self.assertNotEqual(texts[0], texts[2])
 
 
+class RecordShapeTests(unittest.TestCase):
+    def test_malformed_arrays_are_rejected_with_their_line(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from blue.data import JointDataset
+        config = replace(BlueConfig.preset("tiny"), pointcloud_enabled=True, video_enabled=True)
+        features = config.series_features
+        cases = {
+            "series": {"series": list(range(features))},  # 1D : était diffusée en pas identiques.
+            "future": {"series": [[0.0] * features] * 4, "future": [1.0, 2.0]},
+            "points": {"points": [[1.0, 2.0]]},
+            "video": {"video": [[[1.0]]]},
+            "image": {"image": [[1.0]]},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data.jsonl"
+            for field, record in cases.items():
+                with self.subTest(field):
+                    path.write_text('{"text": "ok"}\n' + json.dumps(record) + "\n", encoding="utf-8")
+                    dataset = JointDataset(path, config, allow_mixed=True)
+                    dataset[0]
+                    with self.assertRaisesRegex(ValueError, rf"data.jsonl:2: {field} doit avoir la forme"):
+                        dataset[1]
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):

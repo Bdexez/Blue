@@ -199,7 +199,42 @@ class JointDataset(Dataset):
             item["class_labels"] = torch.tensor(record["class_label"], dtype=torch.long)
         if "future" in record:
             item["forecast_targets"] = numeric_tensor(record["future"])
+        if self.config is not None:
+            self._check_shapes(item)
         return item
+
+    def _check_shapes(self, item):
+        """Refuser à la lecture, avec la ligne fautive, les tableaux de forme incompatible.
+
+        Sans ce contrôle, une série 1D dont la longueur égale ``series_features``
+        serait diffusée silencieusement en plusieurs pas identiques par le collage.
+        """
+        c = self.config
+        expected = {
+            "images": ((c.image_channels, c.image_size, c.image_size), "[canaux, image_size, image_size]"),
+            "series": ((None, c.series_features), "[T, series_features]"),
+            "forecast_targets": ((c.forecast_horizon, c.series_features), "[forecast_horizon, series_features]"),
+            "audio": ((c.audio_channels, None), "[audio_channels, L]"),
+            "graph_nodes": ((None, c.graph_node_features), "[N, graph_node_features]"),
+            "points": ((None, 3), "[P, 3]"),
+            "point_features": ((None, c.pointcloud_features), "[P, pointcloud_features]"),
+            "tabular_num": ((c.tabular_num_features,), "[tabular_num_features]"),
+            "tabular_cat": ((c.tabular_cat_features,), "[tabular_cat_features]"),
+            "video": ((c.video_channels, None, c.video_size, c.video_size), "[video_channels, F, video_size, video_size]"),
+        }
+        for name, (shape, text) in expected.items():
+            value = item.get(name)
+            if value is None:
+                continue
+            if value.ndim != len(shape) or any(size is not None and value.size(axis) != size
+                                               for axis, size in enumerate(shape)) or not value.numel():
+                field = {"images": "image", "forecast_targets": "future"}.get(name, name)
+                raise ValueError(f"{field} doit avoir la forme {text}, reçu {list(value.shape)}")
+        nodes, edges = item.get("graph_nodes"), item.get("graph_edges")
+        if edges is not None and edges.shape != (nodes.size(0), nodes.size(0), c.graph_edge_features):
+            raise ValueError(f"graph_edges doit avoir la forme [N, N, graph_edge_features], reçu {list(edges.shape)}")
+        if "point_features" in item and item["point_features"].size(0) != item["points"].size(0):
+            raise ValueError("point_features doit avoir autant de lignes que points")
 
 
 def collate_records(items):
