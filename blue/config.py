@@ -196,26 +196,20 @@ class BlueConfig:
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} doit être un entier strictement positif")
+        for field in fields(self):
+            # Tout champ annoté bool doit l'être strictement (pas 0/1 ni chaîne JSON).
+            if field.type in (bool, "bool") and type(getattr(self, field.name)) is not bool:
+                raise ValueError(f"{field.name} doit être booléen")
         if self.vocab_size < 260:
             raise ValueError("vocab_size doit être >= 260 pour le tokenizer UTF-8")
         if type(self.ngram_vocab_size) is not int or (self.ngram_vocab_size != 0 and self.ngram_vocab_size < 16):
             raise ValueError("ngram_vocab_size doit être 0 ou un entier >= 16")
         if self.d_model % self.n_heads or (self.d_model // self.n_heads) % 2:
             raise ValueError("d_model / n_heads doit être un entier pair (RoPE)")
-        if type(self.differential_attention) is not bool:
-            raise ValueError("differential_attention doit être booléen")
         if self.differential_attention and (self.d_model // self.n_heads) % 4:
             raise ValueError("differential_attention nécessite d_model / n_heads divisible par 4")
-        if type(self.cross_differential_attention) is not bool:
-            raise ValueError("cross_differential_attention doit être booléen")
-        if type(self.cross_qk_temperature) is not bool:
-            raise ValueError("cross_qk_temperature doit être booléen")
-        if type(self.cross_head_gating) is not bool:
-            raise ValueError("cross_head_gating doit être booléen")
         if self.cross_differential_attention and (self.d_model // self.n_heads) % 4:
             raise ValueError("cross_differential_attention nécessite d_model / n_heads divisible par 4")
-        if type(self.multimodal_adaln) is not bool:
-            raise ValueError("multimodal_adaln doit être booléen")
         if type(self.kv_lora_rank) is not int or self.kv_lora_rank < 0:
             raise ValueError("kv_lora_rank doit être un entier positif ou nul")
         if type(self.cross_kv_lora_rank) is not int or self.cross_kv_lora_rank < 0:
@@ -228,32 +222,12 @@ class BlueConfig:
                 raise ValueError("kv_lora_rank + differential_attention nécessite d_model / n_heads divisible par 8")
         if type(self.attention_sinks) is not int or self.attention_sinks < 0:
             raise ValueError("attention_sinks doit être un entier positif ou nul")
-        if type(self.value_residual) is not bool:
-            raise ValueError("value_residual doit être booléen")
-        if type(self.qk_residual) is not bool:
-            raise ValueError("qk_residual doit être booléen")
-        if type(self.qk_norm_temperature) is not bool:
-            raise ValueError("qk_norm_temperature doit être booléen")
-        if type(self.dynamic_mixer_router) is not bool:
-            raise ValueError("dynamic_mixer_router doit être booléen")
         if not math.isfinite(self.logit_softcap) or self.logit_softcap < 0:
             raise ValueError("logit_softcap doit être fini et positif ou nul")
         if not math.isfinite(self.attn_logit_softcap) or self.attn_logit_softcap < 0:
             raise ValueError("attn_logit_softcap doit être fini et positif ou nul")
         if not math.isfinite(self.cross_logit_softcap) or self.cross_logit_softcap < 0:
             raise ValueError("cross_logit_softcap doit être fini et positif ou nul")
-        if type(self.dynamic_attn_scale) is not bool:
-            raise ValueError("dynamic_attn_scale doit être booléen")
-        if type(self.forgetting_attention) is not bool:
-            raise ValueError("forgetting_attention doit être booléen")
-        if type(self.gated_value_attention) is not bool:
-            raise ValueError("gated_value_attention doit être booléen")
-        if type(self.talking_heads) is not bool:
-            raise ValueError("talking_heads doit être booléen")
-        if type(self.head_confidence_gate) is not bool:
-            raise ValueError("head_confidence_gate doit être booléen")
-        if type(self.conv_diff_branch) is not bool:
-            raise ValueError("conv_diff_branch doit être booléen")
         if type(self.nsa_block_size) is not int or (self.nsa_block_size != 0 and self.nsa_block_size < 2):
             raise ValueError("nsa_block_size doit être 0 ou un entier >= 2")
         if type(self.nsa_top_k) is not int or self.nsa_top_k < 1:
@@ -271,8 +245,6 @@ class BlueConfig:
             raise ValueError("ssm_chunk_size doit être un entier strictement positif")
         if type(self.ssm_every) is not int or self.ssm_every < 1:
             raise ValueError("ssm_every doit être un entier strictement positif")
-        if type(self.ssm_d_skip) is not bool:
-            raise ValueError("ssm_d_skip doit être booléen")
         if type(self.ttt_state_dim) is not int or self.ttt_state_dim < 0:
             raise ValueError("ttt_state_dim doit être un entier positif ou nul")
         if self.ttt_heads is not None:
@@ -284,16 +256,12 @@ class BlueConfig:
             raise ValueError("ttt_base_lr doit être fini et strictement positif")
         if type(self.ttt_every) is not int or self.ttt_every < 1:
             raise ValueError("ttt_every doit être un entier strictement positif")
-        if type(self.ttt_weight_decay) is not bool:
-            raise ValueError("ttt_weight_decay doit être booléen")
         if type(self.residual_streams) is not int or self.residual_streams < 1:
             raise ValueError("residual_streams doit être un entier strictement positif")
         if not math.isfinite(self.layer_scale_init) or self.layer_scale_init < 0:
             raise ValueError("layer_scale_init doit être fini et positif ou nul")
         if type(self.latent_reasoning_steps) is not int or self.latent_reasoning_steps < 1:
             raise ValueError("latent_reasoning_steps doit être un entier strictement positif")
-        if type(self.latent_reasoning_adaptive) is not bool:
-            raise ValueError("latent_reasoning_adaptive doit être booléen")
         if self.latent_reasoning_adaptive and self.latent_reasoning_steps < 2:
             raise ValueError("latent_reasoning_adaptive nécessite latent_reasoning_steps >= 2")
         if not math.isfinite(self.ponder_prior) or not 0.0 < self.ponder_prior < 1.0:
@@ -302,8 +270,6 @@ class BlueConfig:
             raise ValueError("ponder_kl_weight doit être fini et positif ou nul")
         if type(self.memory_slots) is not int or self.memory_slots < 0:
             raise ValueError("memory_slots doit être un entier positif ou nul")
-        if type(self.memory_decay) is not bool:
-            raise ValueError("memory_decay doit être booléen")
         if self.d_model % 4 or self.n_heads % self.n_kv_heads:
             raise ValueError("d_model doit être divisible par 4 et n_heads par n_kv_heads")
         if self.top_k > self.n_experts:
@@ -314,24 +280,16 @@ class BlueConfig:
             raise ValueError("moe_shared_latent_dim doit être un entier positif ou nul")
         if self.moe_router_geometry not in ("euclidean", "hyperbolic"):
             raise ValueError("moe_router_geometry doit être euclidean ou hyperbolic")
-        if type(self.moe_router_temperature) is not bool:
-            raise ValueError("moe_router_temperature doit être booléen")
         if not math.isfinite(self.moe_entropy_weight) or self.moe_entropy_weight < 0:
             raise ValueError("moe_entropy_weight doit être fini et positif ou nul")
         if not math.isfinite(self.moe_router_orthogonality_weight) or self.moe_router_orthogonality_weight < 0:
             raise ValueError("moe_router_orthogonality_weight doit être fini et positif ou nul")
         if not math.isfinite(self.moe_routed_scaling_factor) or self.moe_routed_scaling_factor <= 0:
             raise ValueError("moe_routed_scaling_factor doit être fini et strictement positif")
-        if type(self.moe_learnable_scaling) is not bool:
-            raise ValueError("moe_learnable_scaling doit être booléen")
-        if type(self.moe_input_residual_gate) is not bool:
-            raise ValueError("moe_input_residual_gate doit être booléen")
         if self.top1_gate not in ("normalized", "probability"):
             raise ValueError("top1_gate doit être normalized ou probability")
         if self.top1_gate == "probability" and (self.top_k != 1 or self.n_experts < 2):
             raise ValueError("top1_gate probability nécessite top_k=1 et au moins deux experts")
-        if type(self.shared_expert_gate) is not bool:
-            raise ValueError("shared_expert_gate doit être booléen")
         if not math.isfinite(self.router_bias_update_rate) or self.router_bias_update_rate < 0:
             raise ValueError("router_bias_update_rate doit être fini et positif ou nul")
         if not math.isfinite(self.depth_routing_capacity) or not 0.0 < self.depth_routing_capacity <= 1.0:
@@ -340,8 +298,6 @@ class BlueConfig:
             raise ValueError("depth_budget_weight doit être fini et positif ou nul")
         if self.image_size % self.patch_size:
             raise ValueError("image_size doit être divisible par patch_size")
-        if type(self.vision_rope_2d) is not bool:
-            raise ValueError("vision_rope_2d doit être booléen")
         if self.vision_rope_2d:
             rope_dim = self.d_model // self.n_heads
             if self.kv_lora_rank > 0:
@@ -373,10 +329,6 @@ class BlueConfig:
                 raise ValueError("rope_original_max_seq_len nécessite rope_scaling_type yarn")
         if not math.isfinite(self.norm_eps) or self.norm_eps <= 0:
             raise ValueError("norm_eps doit être fini et > 0")
-        if type(self.stable_rms_norm) is not bool:
-            raise ValueError("stable_rms_norm doit être booléen")
-        if type(self.dynamic_tanh_norm) is not bool:
-            raise ValueError("dynamic_tanh_norm doit être booléen")
         if type(self.kan_degree) is not int or (self.kan_degree != 0 and not 2 <= self.kan_degree <= 8):
             raise ValueError("kan_degree doit être 0 ou un entier entre 2 et 8")
         if self.alignment_mode not in ("paired", "class"):
@@ -409,14 +361,6 @@ class BlueConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} doit être fini et positif ou nul")
-        if type(self.evidential_classification) is not bool:
-            raise ValueError("evidential_classification doit être booléen")
-        if type(self.head_cross_pool) is not bool:
-            raise ValueError("head_cross_pool doit être booléen")
-        if type(self.chained_future_heads) is not bool:
-            raise ValueError("chained_future_heads doit être booléen")
-        if type(self.embedding_output_skip) is not bool:
-            raise ValueError("embedding_output_skip doit être booléen")
         if not math.isfinite(self.mtp_decay) or not 0.0 < self.mtp_decay <= 1.0:
             raise ValueError("mtp_decay doit être fini et appartenir à ]0, 1]")
         if type(self.flow_matching_dim) is not int or self.flow_matching_dim < 0:
@@ -427,40 +371,16 @@ class BlueConfig:
             raise ValueError("flow_time_schedule doit être uniform ou logit_normal")
         if not math.isfinite(self.jepa_cov_weight) or self.jepa_cov_weight < 0:
             raise ValueError("jepa_cov_weight doit être fini et positif ou nul")
-        if type(self.gradient_checkpointing) is not bool:
-            raise ValueError("gradient_checkpointing doit être booléen")
         if type(self.checkpoint_every) is not int or self.checkpoint_every < 1:
             raise ValueError("checkpoint_every doit être un entier strictement positif")
-        if type(self.adaptive_loss_weighting) is not bool:
-            raise ValueError("adaptive_loss_weighting doit être booléen")
-        if type(self.temporal_statistics) is not bool:
-            raise ValueError("temporal_statistics doit être booléen")
-        if type(self.temporal_statistics_relative) is not bool:
-            raise ValueError("temporal_statistics_relative doit être booléen")
-        if type(self.temporal_spectral_mixing) is not bool:
-            raise ValueError("temporal_spectral_mixing doit être booléen")
-        if type(self.temporal_wavelet_mixing) is not bool:
-            raise ValueError("temporal_wavelet_mixing doit être booléen")
-        if type(self.audio_enabled) is not bool:
-            raise ValueError("audio_enabled doit être booléen")
-        if type(self.graph_enabled) is not bool:
-            raise ValueError("graph_enabled doit être booléen")
-        if type(self.pointcloud_enabled) is not bool:
-            raise ValueError("pointcloud_enabled doit être booléen")
         if type(self.pointcloud_features) is not int or self.pointcloud_features < 0:
             raise ValueError("pointcloud_features doit être un entier positif ou nul")
-        if type(self.tabular_enabled) is not bool:
-            raise ValueError("tabular_enabled doit être booléen")
         if type(self.tabular_cat_features) is not int or self.tabular_cat_features < 0:
             raise ValueError("tabular_cat_features doit être un entier positif ou nul")
         if type(self.tabular_cat_cardinality) is not int or self.tabular_cat_cardinality < 2:
             raise ValueError("tabular_cat_cardinality doit être un entier >= 2")
-        if type(self.video_enabled) is not bool:
-            raise ValueError("video_enabled doit être booléen")
         if self.video_size % self.video_patch_size:
             raise ValueError("video_size doit être divisible par video_patch_size")
-        if type(self.hierarchical_resampler) is not bool:
-            raise ValueError("hierarchical_resampler doit être booléen")
         if type(self.register_latents) is not int or self.register_latents < 0:
             raise ValueError("register_latents doit être un entier positif ou nul")
         if type(self.cross_modal_fusion_layers) is not int or self.cross_modal_fusion_layers < 0:
@@ -468,14 +388,6 @@ class BlueConfig:
         self.latent_fsq_levels = tuple(self.latent_fsq_levels)
         if any(type(level) is not int or level < 2 for level in self.latent_fsq_levels):
             raise ValueError("latent_fsq_levels doit contenir des entiers >= 2")
-        if type(self.forecast_adapter_relative) is not bool:
-            raise ValueError("forecast_adapter_relative doit être booléen")
-        if type(self.forecast_adapter_missing_gate) is not bool:
-            raise ValueError("forecast_adapter_missing_gate doit être booléen")
-        if type(self.forecast_adapter_separate_missing) is not bool:
-            raise ValueError("forecast_adapter_separate_missing doit être booléen")
-        if type(self.forecast_tail_power) is not bool:
-            raise ValueError("forecast_tail_power doit être booléen")
         if self.forecast_adapter_separate_missing and not (self.forecast_adapter_missing_gate
                                                            and self.forecast_adapter_context):
             raise ValueError("forecast_adapter_separate_missing nécessite l'adaptateur et sa porte de valeurs manquantes")
