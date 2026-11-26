@@ -13,6 +13,7 @@ Cet audit a relu les modules du modèle, de l'entraînement, du décodage, de l'
 | Série 1D de longueur `series_features` dans un JSONL | Diffusée en pas identiques, sans erreur | Formes vérifiées à la lecture, avec fichier et ligne |
 | `audit-splits` et signatures de calibration | Ignoraient audio, graphe, nuage 3D, tabulaire et vidéo : faux doublons, jeux tabulaires refusés, calibration acceptée pour une autre combinaison de modalités | Liste unique des modalités d'entrée |
 | `generate` en ligne de commande | Échantillonnage non reproductible | Option `--seed` |
+| `observed_loss` de validation (`--monitor observed_loss`) | Ignorait les termes ajoutés ensuite (entropie et orthogonalité du routeur, distillation MTP, z-loss, lissage des prévisions) : sélection du meilleur checkpoint sur un autre objectif | Tous les termes pondérés inclus |
 | Guidage (`context_guidance_scale`) ou Mirostat combinés à beam, Jacobi ou spéculatif | Option ignorée en silence | `ValueError` explicite |
 | `attention_mask=None` passé à `generate` | `TypeError` | Les entrées `None` sont ignorées |
 | Échelles INT4 en FP16 | Échelle nulle (0/0) pour des groupes de poids très petits ou nuls | Bornées aux valeurs FP16 représentables |
