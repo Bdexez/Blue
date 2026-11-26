@@ -724,7 +724,8 @@ def main(argv=None):
     training.add_argument("--patience", type=int, default=0, help="Validations sans progrès avant arrêt ; 0 désactive l'arrêt")
     training.add_argument("--min-delta", type=float, default=0.0, help="Amélioration minimale de la mesure de validation")
     training.add_argument("--shuffle", action=argparse.BooleanOptionalAction, default=None)
-    training.add_argument("--workers", type=int, default=0, help="Processus de chargement des données")
+    training.add_argument("--workers", type=int,
+                          help="Processus de chargement des données (défaut : 2 sur GPU avec --data, sinon 0)")
     generate = commands.add_parser("generate", help="Générer du texte avec le cache KV")
     generate.add_argument("--checkpoint", required=True)
     generate.add_argument("--prompt", default="Bonjour")
