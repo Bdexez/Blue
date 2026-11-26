@@ -82,6 +82,7 @@ Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélé
 
 ## Maintenance
 
+- `train --resume auto` reprend depuis `OUTPUT/latest.pt` s'il existe et démarre sinon un nouvel entraînement : une tâche interrompue se relance avec la même commande (reprise identique au bit près, testée).
 - `metrics.jsonl` indique la durée de chaque pas (`step_seconds`) ; l'EMA des poids se met à jour en une opération multi-tenseurs (2.3 → 1.6 ms sur GPU pour `small`, résultat identique).
 
 - `Blue._encode_inputs` est l'unique chemin d'encodage des modalités non textuelles, partagé par `forward` et `encode_modalities` (sorties identiques au bit près).
