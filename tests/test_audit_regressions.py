@@ -373,6 +373,32 @@ class VerifierInvariantTests(unittest.TestCase):
         self.assertFalse(config.gradient_checkpointing)  # L'option basculée est restaurée.
 
 
+class LeftPaddingTests(unittest.TestCase):
+    def test_left_padded_rows_match_unpadded_rows(self):
+        for changes in ({"attention_sinks": 2}, {"attention_sinks": 2, "kv_lora_rank": 16},
+                        {"dynamic_attn_scale": True}, {"attention_sinks": 1, "sliding_window": 3, "global_every": 2}):
+            with self.subTest(changes):
+                model = tiny(**changes).eval()
+                with torch.no_grad():  # Paramètres non neutres : sinks et échelle dépendent des positions.
+                    for module in model.modules():
+                        if getattr(module, "pos_temp_alpha", None) is not None:
+                            module.pos_temp_alpha.fill_(2.0)
+                        if getattr(module, "sink_v", None) is not None:
+                            module.sink_v.normal_()
+                first = torch.randint(4, 200, (1, 8), generator=torch.Generator().manual_seed(1))
+                second = torch.randint(4, 200, (1, 5), generator=torch.Generator().manual_seed(2))
+                ids = torch.cat((first, torch.cat((torch.zeros(1, 3, dtype=torch.long), second), 1)))
+                mask = torch.ones_like(ids, dtype=torch.bool)
+                mask[1, :3] = False
+                with torch.no_grad():
+                    padded = model(ids, attention_mask=mask).logits[1, 3:]
+                    alone = model(second).logits[0]
+                torch.testing.assert_close(padded, alone, rtol=1e-4, atol=1e-5)
+                batched = model.generate(ids, attention_mask=mask, max_new_tokens=6, temperature=0, eos_id=None)
+                single = model.generate(second, max_new_tokens=6, temperature=0, eos_id=None)
+                self.assertTrue(torch.equal(batched[1, 8:], single[0, 5:]))
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):

@@ -161,9 +161,15 @@ class RotaryEmbedding(nn.Module):
             return (base / self.scaling_factor) * (1.0 - ramp) + base * ramp
         return base
 
-    def forward(self, x, offset=0):
+    def forward(self, x, offset=0, shift=None):
         # [B, H, T, D] ; phases calculées en fp32, même en précision mixte.
-        cos, sin = self._phase_tables(offset, x.size(-2), x.device, x.dtype)
+        if shift is None:
+            cos, sin = self._phase_tables(offset, x.size(-2), x.device, x.dtype)
+        else:
+            # Positions comptées depuis le premier token valide de chaque ligne (padding à gauche).
+            positions = (torch.arange(offset, offset + x.size(-2), device=x.device)[None] - shift[:, None]).clamp_min(0)
+            cos, sin = self._phase_tables(0, offset + x.size(-2), x.device, x.dtype)
+            cos, sin = cos[positions].unsqueeze(1), sin[positions].unsqueeze(1)
         even, odd = x[..., 0::2], x[..., 1::2]
         return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
 
@@ -182,7 +188,9 @@ class RotaryEmbedding2D(RotaryEmbedding):
         exponent = torch.arange(0, half, 2, dtype=torch.float32, device=device) / half
         return 1.0 / (self.theta ** exponent)
 
-    def forward(self, x, offset=0):
+    def forward(self, x, offset=0, shift=None):
+        if shift is not None:
+            raise ValueError("RotaryEmbedding2D ne prend pas de décalage de positions")
         # x: [B, H, G*G, D] ; première moitié en coordonnée verticale, seconde en horizontale.
         if offset != 0 or x.size(-2) != self.grid_size * self.grid_size:
             raise ValueError("RotaryEmbedding2D attend une grille complète de patches sans décalage")
@@ -412,9 +420,14 @@ class GroupedQueryAttention(nn.Module):
             dot2 = (self.lambda_q2.float() * self.lambda_k2.float()).sum().clamp(-10.0, 10.0)
             return (dot1.exp() - dot2.exp() + self.lambda_init).to(dtype)
 
-    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None, q0=None, dense=None):
+    def forward(self, x, valid, *, offset=0, cache=None, use_cache=False, v0=None, q0=None, dense=None,
+                position_shift=None):
         b, t, _ = x.shape
         v_first = q_first = None
+
+        def rope(values, start):
+            return self.rope(values, start, position_shift)
+
         q_proj = self.q(x)
         if self.qk_residual:
             if self.layer_index == 0:
@@ -435,26 +448,26 @@ class GroupedQueryAttention(nn.Module):
                 q1, q2 = q_proj.view(b, t, self.n_heads, 2, sub).unbind(3)
                 q1 = self.q_norm(q1.transpose(1, 2))
                 q2 = self.q_norm(q2.transpose(1, 2))
-                q1 = torch.cat((q1[..., :self.nope_dim], self.rope(q1[..., self.nope_dim:], offset)), dim=-1)
-                q2 = torch.cat((q2[..., :self.nope_dim], self.rope(q2[..., self.nope_dim:], offset)), dim=-1)
+                q1 = torch.cat((q1[..., :self.nope_dim], rope(q1[..., self.nope_dim:], offset)), dim=-1)
+                q2 = torch.cat((q2[..., :self.nope_dim], rope(q2[..., self.nope_dim:], offset)), dim=-1)
                 kr1, kr2 = self.k_rope(x).view(b, t, 2, self.rope_dim).unbind(2)
-                kr1 = self.rope(self.k_rope_norm(kr1.unsqueeze(1)), offset)
-                kr2 = self.rope(self.k_rope_norm(kr2.unsqueeze(1)), offset)
+                kr1 = rope(self.k_rope_norm(kr1.unsqueeze(1)), offset)
+                kr2 = rope(self.k_rope_norm(kr2.unsqueeze(1)), offset)
                 k_rope = torch.cat((kr1, kr2), dim=-1)
             else:
                 q = self.q_norm(q_proj.view(b, t, self.n_heads, self.head_dim).transpose(1, 2))
-                q = torch.cat((q[..., :self.nope_dim], self.rope(q[..., self.nope_dim:], offset)), dim=-1)
-                k_rope = self.rope(self.k_rope_norm(self.k_rope(x).unsqueeze(1)), offset)
+                q = torch.cat((q[..., :self.nope_dim], rope(q[..., self.nope_dim:], offset)), dim=-1)
+                k_rope = rope(self.k_rope_norm(self.k_rope(x).unsqueeze(1)), offset)
             cache_k, cache_v = c_kv, k_rope
         elif self.differential:
             sub = self.head_dim // 2
             q1, q2 = q_proj.view(b, t, self.n_heads, 2, sub).unbind(3)
-            q1 = self.rope(self.q_norm(q1.transpose(1, 2)), offset)
-            q2 = self.rope(self.q_norm(q2.transpose(1, 2)), offset)
+            q1 = rope(self.q_norm(q1.transpose(1, 2)), offset)
+            q2 = rope(self.q_norm(q2.transpose(1, 2)), offset)
             k, v = self.kv(x).view(b, t, 2, self.n_kv_heads, self.head_dim).unbind(2)
             k1, k2 = k.view(b, t, self.n_kv_heads, 2, sub).unbind(3)
-            k1 = self.rope(self.k_norm(k1.transpose(1, 2)), offset)
-            k2 = self.rope(self.k_norm(k2.transpose(1, 2)), offset)
+            k1 = rope(self.k_norm(k1.transpose(1, 2)), offset)
+            k2 = rope(self.k_norm(k2.transpose(1, 2)), offset)
             v_cur = v.transpose(1, 2)
             if self.value_residual:
                 if self.layer_index == 0:
@@ -473,8 +486,8 @@ class GroupedQueryAttention(nn.Module):
                 elif v0 is not None and self.v_res_gate is not None:
                     lam_v = torch.sigmoid(self.v_res_gate).to(v.dtype)
                     v = (1.0 - lam_v) * v + lam_v * v0.to(v.dtype)
-            q = self.rope(self.q_norm(q), offset)
-            cache_k, cache_v = self.rope(self.k_norm(k), offset), v
+            q = rope(self.q_norm(q), offset)
+            cache_k, cache_v = rope(self.k_norm(k), offset), v
 
         if self.qk_log_scale is not None:
             with torch.autocast(device_type=x.device.type, enabled=False):
@@ -488,7 +501,11 @@ class GroupedQueryAttention(nn.Module):
         if self.pos_temp_alpha is not None:
             with torch.autocast(device_type=x.device.type, enabled=False):
                 pos = torch.arange(offset, offset + t, device=x.device, dtype=torch.float32)
-                pos_log = torch.log1p(pos / self.pos_temp_base).view(1, 1, t, 1)
+                if position_shift is None:
+                    pos = pos.view(1, 1, t, 1)
+                else:
+                    pos = (pos[None] - position_shift[:, None]).clamp_min(0).view(b, 1, t, 1)
+                pos_log = torch.log1p(pos / self.pos_temp_base)
                 alpha = F.softplus(self.pos_temp_alpha.float()) - math.log(2.0)
                 q_scale = (1.0 + alpha * pos_log).clamp(0.25, 4.0)
             if self.differential:
@@ -1226,7 +1243,8 @@ class DecoderBlock(nn.Module):
                 self.ls_cross.fill_(self.ls_init)
                 self.ls_moe.fill_(self.ls_init)
 
-    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None, q0=None, dense=None):
+    def forward(self, x, valid, context, *, offset=0, cache=None, use_cache=False, v0=None, q0=None, dense=None,
+                position_shift=None):
         if self.hc_attn is not None:
             h_pre, h_post, h_res = self.hc_attn.routing_weights(x)
             h = self.norm1(self.hc_attn.combine_input(x, h_pre))
@@ -1234,6 +1252,7 @@ class DecoderBlock(nn.Module):
             h = self.norm1(x)
         attention, (k, v, key_valid, v_first, q_first) = self.attn(
             h, valid, offset=offset, cache=cache, use_cache=use_cache, v0=v0, q0=q0, dense=dense,
+            position_shift=position_shift,
         )
         local, conv_state = self.conv(h, valid, None if cache is None else cache.conv_state)
         if self.mixer_router is not None:

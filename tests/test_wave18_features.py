@@ -8,6 +8,8 @@ from blue.verifier import verify_architecture
 
 class Wave18FeaturesTests(unittest.TestCase):
     def test_qk_norm_temperature_chained_future_heads_and_beam_search(self):
+        # Graine fixe : sans elle, l'initialisation dépend des tests exécutés avant dans le même processus.
+        torch.manual_seed(1808)
         config = BlueConfig(
             d_model=32,
             n_heads=4,
@@ -58,7 +60,8 @@ class Wave18FeaturesTests(unittest.TestCase):
             self.assertGreater(block.attn.qk_log_scale.grad.abs().sum().item(), 0.0)
 
         # Verify Beam Search with beam_width=1 matches greedy decoding bit-for-bit,
-        # and beam_width=3 achieves >= cumulative log-probability than greedy (beam_width=1)!
+        # and, for this fixed model, beam_width=3 reaches a cumulative log-probability >= greedy
+        # (not guaranteed in general: beam search may prune the greedy continuation).
         model.eval()
         prompt = torch.tensor([[1, 66, 108, 117]])
         greedy = model.generate(prompt, max_new_tokens=8, temperature=0, eos_id=None)
