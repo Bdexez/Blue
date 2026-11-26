@@ -28,9 +28,9 @@ from blue.ssm import GatedDeltaNet  # noqa: E402
 from blue.ttt import TTTLinear  # noqa: E402
 
 VARIANTS = {
-    "small": {},
-    "small+recurrent": dict(ssm_state_dim=16, ttt_state_dim=16, memory_slots=8),
-    "small+temporal": dict(temporal_spectral_mixing=True, temporal_wavelet_mixing=True),
+    "": {},
+    "+recurrent": dict(ssm_state_dim=16, ttt_state_dim=16, memory_slots=8),
+    "+temporal": dict(temporal_spectral_mixing=True, temporal_wavelet_mixing=True),
 }
 
 
@@ -50,9 +50,9 @@ def median_ms(function, device, repeats):
 
 def model_measures(name, changes, device, args):
     torch.manual_seed(0)
-    model = Blue(replace(BlueConfig.preset("small"), **changes)).to(device)
+    model = Blue(replace(BlueConfig.preset(args.preset), **changes)).to(device)
     batch = synthetic_batch(model.config, batch_size=args.batch_size, device=device)
-    ids = torch.randint(4, 200, (args.batch_size, args.text_length), device=device)
+    ids = torch.randint(4, 200, (args.batch_size, min(args.text_length, model.config.max_seq_len)), device=device)
     batch.update(input_ids=ids, labels=ids.clone(), attention_mask=torch.ones_like(ids, dtype=torch.bool))
 
     def train_step():
@@ -61,13 +61,13 @@ def model_measures(name, changes, device, args):
 
     model.train()
     train_step()
-    result = dict(variant=name, train_step_ms=median_ms(train_step, device, args.repeats))
+    result = dict(variant=args.preset + name, train_step_ms=median_ms(train_step, device, args.repeats))
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
         train_step()
         result["train_peak_mib"] = torch.cuda.max_memory_allocated(device) / 2**20
     model.eval()
-    prompt = ids[:1, :32]
+    prompt = ids[:1, :min(32, model.config.max_seq_len - args.new_tokens)]
     context = dict(images=batch["images"][:1], series=batch["series"][:1])
 
     def decode():
@@ -101,6 +101,7 @@ def branch_measures(device, args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--device", action="append", help="cpu, cuda... (plusieurs possibles)")
+    parser.add_argument("--preset", default="small", help="Preset mesuré (défaut : small)")
     parser.add_argument("--threads", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--text-length", type=int, default=96)
@@ -109,7 +110,7 @@ def main():
     parser.add_argument("--output", help="Rapport JSON ; sinon sortie standard")
     args = parser.parse_args()
     torch.set_num_threads(args.threads)
-    report = dict(torch=torch.__version__, python=platform.python_version(), threads=args.threads,
+    report = dict(torch=torch.__version__, python=platform.python_version(), threads=args.threads, preset=args.preset,
                   batch_size=args.batch_size, text_length=args.text_length, new_tokens=args.new_tokens,
                   devices={})
     for name in args.device or ["cpu"]:
