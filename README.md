@@ -189,7 +189,7 @@ The trainer ([`blue/training.py`](blue/training.py)) supports:
 - **LR schedules**: `cosine` or **Warmup-Stable-Decay (`--lr-schedule wsd`)**.
 - **Stability & efficiency**: weight EMA (`--ema-decay`), BF16/FP16 AMP, gradient clipping with FP64 fallback, selective activation checkpointing (`checkpoint_every`), adaptive uncertainty loss weighting (`adaptive_loss_weighting`), label smoothing (`label_smoothing`), and PaLM Z-loss (`lm_z_loss_weight`).
 - **Native lightweight adaptation**: **DoRA / LoRA** directly from the CLI (`--dora-rank`) with exact algebraic merge on export.
-- **Heterogeneous modalities & DDP**: `--mixed-modalities`, `--loss-normalization observed`, `--modality-policy balanced`, multi-rank distributed global alignment, and **bit-exact resume** (`--resume`, including under DDP).
+- **Heterogeneous modalities & DDP**: `--mixed-modalities`, `--loss-normalization observed`, `--modality-policy balanced`, multi-rank distributed global alignment, and **bit-exact resume** (`--resume`, or `--resume auto` to continue from `OUTPUT/latest.pt` when it exists, including under DDP).
 
 ```bash
 # Fast CPU training with Muon optimizer, WSD schedule and EMA

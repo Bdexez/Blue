@@ -448,6 +448,28 @@ class CommandLineErrorTests(unittest.TestCase):
         self.assertIn("Traceback", run.stderr)
 
 
+class AutomaticResumeTests(unittest.TestCase):
+    def test_auto_resume_starts_fresh_then_continues_exactly(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        from blue.cli import main
+        common = ["--threads", "1", "train", "--preset", "tiny", "--steps", "6", "--batch-size", "2",
+                  "--eval-every", "6", "--save-every", "1"]
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            full, split = Path(directory) / "full", Path(directory) / "split"
+            main(common + ["--output", str(full)])
+            main(common + ["--output", str(split), "--resume", "auto", "--stop-after", "3"])
+            self.assertEqual(torch.load(split / "latest.pt", weights_only=True)["step"], 3)
+            main(common + ["--output", str(split), "--resume", "auto"])
+            expected = torch.load(full / "latest.pt", weights_only=True)
+            resumed = torch.load(split / "latest.pt", weights_only=True)
+        self.assertEqual(resumed["step"], 6)
+        for name, value in expected["model"].items():
+            self.assertTrue(torch.equal(value, resumed["model"][name]), name)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):

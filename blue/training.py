@@ -272,6 +272,12 @@ def train(args, config):
             device = torch.device("cuda", local_rank)
         dist.init_process_group("nccl" if device.type == "cuda" else "gloo")
     seed_everything(args.seed)
+    if args.resume == "auto":
+        # Relancer la même commande après une interruption : reprendre si un point existe.
+        candidate = Path(args.output) / "latest.pt"
+        args.resume = str(candidate) if candidate.exists() else None
+        if rank == 0:
+            print(json.dumps({"resume": args.resume}), flush=True)
     initialization = None
     if args.resume or args.init_from:
         overrides = json.loads(Path(args.model_overrides).read_text(encoding="utf-8")) if args.model_overrides else None

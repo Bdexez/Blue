@@ -706,7 +706,8 @@ def main(argv=None):
     training.add_argument("--data", help="Jeu d'entraînement JSONL ; sinon données synthétiques")
     training.add_argument("--val-data", help="Jeu de validation JSONL indépendant")
     initialization = training.add_mutually_exclusive_group()
-    initialization.add_argument("--resume", help="Checkpoint complet dont reprendre l'entraînement")
+    initialization.add_argument("--resume", help="Checkpoint complet dont reprendre l'entraînement ; "
+                                                 "auto : OUTPUT/latest.pt s'il existe, sinon nouvel entraînement")
     initialization.add_argument("--init-from", help="Poids initiaux pour un nouvel entraînement avec un optimiseur neuf")
     training.add_argument("--model-overrides", help="Objet JSON partiel de configuration à appliquer avec --init-from")
     training.add_argument("--output", default="runs/blue")
