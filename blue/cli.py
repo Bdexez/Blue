@@ -51,6 +51,180 @@ def audit_series_calibration(data, dataset_sha256, references, *, output, subjec
                              f"{pair['shared_unique_records']} valeur(s) distincte(s)")
 
 
+def _run_predict(args, parser):
+    if args.batch_size < 1:
+        parser.error("batch-size doit être >= 1")
+    if args.max_new_tokens < 0:
+        parser.error("max-new-tokens doit être >= 0")
+    if args.series_probability and not args.series_classifier:
+        parser.error("series-probability nécessite series-classifier")
+    if args.series_set and not args.series_classifier:
+        parser.error("series-set nécessite series-classifier")
+    if args.series_gate and not args.series_classifier:
+        parser.error("series-gate nécessite series-classifier")
+    if args.series_gate_guard and not args.series_gate:
+        parser.error("series-gate-guard nécessite series-gate")
+    sources = (args.data, args.checkpoint, args.calibration, args.series_classifier, args.series_probability,
+               args.series_set, args.series_gate, args.series_gate_guard)
+    if args.output and any(same_file(args.output, path) for path in sources if path):
+        parser.error("Le fichier de prédictions doit être distinct des fichiers d'entrée")
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    calibration = ForecastCalibration.load(args.calibration) if args.calibration else None
+    series_classifier = SeriesClassifier.load(args.series_classifier) if args.series_classifier else None
+    series_probability = SeriesProbabilityCalibration.load(args.series_probability) if args.series_probability else None
+    if calibration is not None:
+        calibration.validate_checkpoint(args.checkpoint)
+        calibration.validate(model.config, amp=args.amp)
+    if series_classifier is not None:
+        series_classifier.validate_checkpoint(args.checkpoint)
+        series_classifier.validate(model.config, amp=args.amp)
+    if series_probability is not None:
+        series_probability.validate_files(args.checkpoint, args.series_classifier)
+        series_probability.validate(series_classifier, amp=args.amp)
+    series_set = SeriesPredictionSet.load(args.series_set) if args.series_set else None
+    if series_set is not None:
+        series_set.validate_files(args.checkpoint, args.series_classifier, args.series_probability)
+        series_set.validate(series_classifier, series_probability, amp=args.amp)
+    series_gate = SeriesGate.load(args.series_gate) if args.series_gate else None
+    if series_gate is not None:
+        series_gate.validate_files(args.checkpoint, args.series_classifier)
+        series_gate.validate(series_classifier, amp=args.amp)
+    series_gate_guard = SeriesGateGuard.load(args.series_gate_guard) if args.series_gate_guard else None
+    if series_gate_guard is not None:
+        series_gate_guard.validate_files(args.checkpoint, args.series_classifier, args.series_gate)
+        series_gate_guard.validate(series_gate, series_classifier, amp=args.amp)
+    model.eval()
+    dataset = JointDataset(args.data, model.config, allow_mixed=True)
+    if dataset.references_image(args.output):
+        parser.error("Le fichier de prédictions doit être distinct des images d'entrée")
+    count = 0
+    autocast = nullcontext() if args.amp == "none" else torch.autocast(
+        torch.device(args.device).type, dtype=torch.bfloat16 if args.amp == "bf16" else torch.float16)
+    with prediction_stream(args.output) as stream, torch.inference_mode(), autocast:
+        # Lots de lignes consécutives de même signature ; l'ordre des résultats est conservé.
+        for indices in OrderedModalityBatchSampler(dataset, args.batch_size):
+            batch = {key: value.to(args.device)
+                     for key, value in collate_records([dataset[index] for index in indices]).items()
+                     if key not in ("labels", "class_labels", "forecast_targets")}
+            if calibration is not None:
+                calibration.validate(model.config, batch)
+            output = model(**batch)
+            class_ids = output.classification_logits.argmax(-1).tolist()
+            class_probabilities = output.classification_logits.float().softmax(-1).tolist()
+            forecasts = output.forecast.tolist()
+            if series_classifier is not None:
+                scores = series_classifier.scores(model, batch)
+                series_ids = scores.argmax(-1)
+                if series_gate is not None:
+                    chosen, used, advantage = series_gate.choose(batch, output.classification_logits, scores)
+                    if series_gate_guard is not None:
+                        used = series_gate_guard.select(advantage)
+                        chosen = torch.where(used, series_ids, output.classification_logits.argmax(-1))
+                if series_probability is not None:
+                    calibrated_probabilities = series_probability.probabilities(scores)
+                if series_set is not None:
+                    probs = calibrated_probabilities if series_probability else log_probabilities(scores).exp()
+                    set_masks = series_set.predict(probs, series_ids)
+            if calibration is not None:
+                intervals = calibration.interval(output.forecast).tolist()
+            for position, index in enumerate(indices):
+                row = {
+                    "index": index,
+                    "class_id": class_ids[position],
+                    "class_probabilities": class_probabilities[position],
+                    "quantiles": list(model.config.quantiles),
+                    "forecast": forecasts[position],
+                }
+                if series_classifier is not None:
+                    row["series_classifier_class_id"] = series_ids[position].item()
+                    row["series_classifier_scores"] = scores[position].tolist()
+                    if series_gate is not None:
+                        if series_gate_guard is not None:
+                            row["series_gate_guard_max_harm"] = series_gate_guard.max_harm
+                            row["series_gate_guard_threshold"] = series_gate_guard.threshold
+                        row["series_gate_class_id"] = chosen[position].item()
+                        row["series_gate_selected"] = "series_classifier" if used[position].item() else "base"
+                        row["series_gate_advantage"] = advantage[position].item()
+                    if series_probability is not None:
+                        row["series_classifier_probabilities"] = calibrated_probabilities[position].tolist()
+                        row["series_classifier_inverse_temperature"] = series_probability.inverse_temperature
+                    if series_set is not None:
+                        row["series_prediction_set"] = set_masks[position].nonzero().flatten().tolist()
+                        row["series_prediction_set_nominal_coverage"] = series_set.coverage
+                        row["series_prediction_set_method"] = series_set.method
+                        row["series_prediction_set_scope"] = series_set.scope
+                if calibration is not None:
+                    row["calibrated_interval"] = intervals[position]
+                    row["calibrated_nominal_coverage"] = calibration.coverage
+                    row["calibrated_coverage_scope"] = calibration.scope
+                    row["calibrated_score_scale"] = calibration.score_scale
+                    if calibration.lower_tail_fraction is not None:
+                        row["calibrated_lower_tail_fraction"] = calibration.lower_tail_fraction
+                    if calibration.score_scale == "width":
+                        row["calibrated_scale_floor"] = calibration.scale_floor
+                if args.max_new_tokens and "input_ids" in batch:
+                    # Génération sur l'exemple seul : son prompt sans padding ni eos final.
+                    single = {key: value.to(args.device) for key, value in collate_records([dataset[index]]).items()
+                              if key not in ("labels", "class_labels", "forecast_targets")}
+                    prompt = single["input_ids"]
+                    if prompt[0, -1] == ByteTokenizer.eos_id:
+                        prompt = prompt[:, :-1]
+                    context = {key: value for key, value in single.items()
+                               if key not in ("input_ids", "attention_mask")}
+                    generated = model.generate(prompt, max_new_tokens=args.max_new_tokens,
+                                               temperature=0, **context)
+                    row["generated_text"] = ByteTokenizer().decode(generated[0])
+                stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+                count += 1
+    if args.output:
+        print(f"{count} prédictions écrites dans {args.output}")
+
+
+def _run_embed(args, parser):
+    if args.batch_size < 1:
+        parser.error("batch-size doit être >= 1")
+    if args.output and any(same_file(args.output, path) for path in (args.data, args.checkpoint)):
+        parser.error("Le fichier de vecteurs doit être distinct des fichiers d'entrée")
+    checkpoint_sha = file_sha256(args.checkpoint)
+    model, _ = load_checkpoint(args.checkpoint, args.device)
+    model.eval()
+    dataset = JointDataset(args.data, model.config, allow_mixed=True)
+    if dataset.references_image(args.output):
+        parser.error("Le fichier de vecteurs doit être distinct des images d'entrée")
+    sampler = OrderedModalityBatchSampler(dataset, args.batch_size)
+    loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records,
+                        generator=torch.Generator().manual_seed(0))
+    autocast = nullcontext() if args.amp == "none" else torch.autocast(
+        torch.device(args.device).type, dtype=torch.bfloat16 if args.amp == "bf16" else torch.float16)
+    count = 0
+    with prediction_stream(args.output) as stream, torch.inference_mode(), autocast:
+        for batch in loader:
+            inputs = {key: value.to(args.device) for key, value in batch.items()
+                      if key in ("input_ids", "attention_mask", "images", "series", "series_mask",
+                                 "audio", "audio_mask", "graph_nodes", "graph_edges", "graph_mask",
+                                 "points", "point_features", "point_mask", "tabular_num", "tabular_cat",
+                                 "video", "video_mask")}
+            vectors = {name: value.cpu().tolist() for name, value in model.encode_modalities(**inputs).items()}
+            size = len(next(iter(vectors.values())))
+            for offset in range(size):
+                row = {"format_version": 1, "index": count,
+                       "checkpoint_sha256": checkpoint_sha, "dataset_sha256": dataset.fingerprint,
+                       "dataset_images_sha256": dataset.image_fingerprint,
+                       "alignment_text_view": model.config.alignment_text_view,
+                       "amp": args.amp, "device": str(args.device), "batch_size": args.batch_size,
+                       "torch_version": str(torch.__version__),
+                       "vectors": {name: value[offset] for name, value in vectors.items()}}
+                stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+                count += 1
+        if file_sha256(args.checkpoint) != checkpoint_sha:
+            raise ValueError("Le checkpoint a changé pendant l'extraction")
+        verified = JointDataset(args.data, model.config, allow_mixed=True)
+        if (verified.fingerprint, verified.image_fingerprint) != (dataset.fingerprint, dataset.image_fingerprint):
+            raise ValueError("Le jeu ou ses images ont changé pendant l'extraction")
+    if args.output:
+        print(f"{count} vecteurs écrits dans {args.output}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="BLUE — réseau multimodal à experts")
     parser.add_argument("--threads", type=int, default=4, help="Threads CPU (défaut : 4)")
@@ -511,175 +685,9 @@ def main(argv=None):
                                    edt_n=args.edt_n)
         print(ByteTokenizer().decode(generated[0]))
     elif args.command == "predict":
-        if args.batch_size < 1:
-            parser.error("batch-size doit être >= 1")
-        if args.max_new_tokens < 0:
-            parser.error("max-new-tokens doit être >= 0")
-        if args.series_probability and not args.series_classifier:
-            parser.error("series-probability nécessite series-classifier")
-        if args.series_set and not args.series_classifier:
-            parser.error("series-set nécessite series-classifier")
-        if args.series_gate and not args.series_classifier:
-            parser.error("series-gate nécessite series-classifier")
-        if args.series_gate_guard and not args.series_gate:
-            parser.error("series-gate-guard nécessite series-gate")
-        sources = (args.data, args.checkpoint, args.calibration, args.series_classifier, args.series_probability,
-                   args.series_set, args.series_gate, args.series_gate_guard)
-        if args.output and any(same_file(args.output, path) for path in sources if path):
-            parser.error("Le fichier de prédictions doit être distinct des fichiers d'entrée")
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        calibration = ForecastCalibration.load(args.calibration) if args.calibration else None
-        series_classifier = SeriesClassifier.load(args.series_classifier) if args.series_classifier else None
-        series_probability = SeriesProbabilityCalibration.load(args.series_probability) if args.series_probability else None
-        if calibration is not None:
-            calibration.validate_checkpoint(args.checkpoint)
-            calibration.validate(model.config, amp=args.amp)
-        if series_classifier is not None:
-            series_classifier.validate_checkpoint(args.checkpoint)
-            series_classifier.validate(model.config, amp=args.amp)
-        if series_probability is not None:
-            series_probability.validate_files(args.checkpoint, args.series_classifier)
-            series_probability.validate(series_classifier, amp=args.amp)
-        series_set = SeriesPredictionSet.load(args.series_set) if args.series_set else None
-        if series_set is not None:
-            series_set.validate_files(args.checkpoint, args.series_classifier, args.series_probability)
-            series_set.validate(series_classifier, series_probability, amp=args.amp)
-        series_gate = SeriesGate.load(args.series_gate) if args.series_gate else None
-        if series_gate is not None:
-            series_gate.validate_files(args.checkpoint, args.series_classifier)
-            series_gate.validate(series_classifier, amp=args.amp)
-        series_gate_guard = SeriesGateGuard.load(args.series_gate_guard) if args.series_gate_guard else None
-        if series_gate_guard is not None:
-            series_gate_guard.validate_files(args.checkpoint, args.series_classifier, args.series_gate)
-            series_gate_guard.validate(series_gate, series_classifier, amp=args.amp)
-        model.eval()
-        dataset = JointDataset(args.data, model.config, allow_mixed=True)
-        if dataset.references_image(args.output):
-            parser.error("Le fichier de prédictions doit être distinct des images d'entrée")
-        count = 0
-        autocast = nullcontext() if args.amp == "none" else torch.autocast(
-            torch.device(args.device).type, dtype=torch.bfloat16 if args.amp == "bf16" else torch.float16)
-        with prediction_stream(args.output) as stream, torch.inference_mode(), autocast:
-            # Lots de lignes consécutives de même signature ; l'ordre des résultats est conservé.
-            for indices in OrderedModalityBatchSampler(dataset, args.batch_size):
-                batch = {key: value.to(args.device)
-                         for key, value in collate_records([dataset[index] for index in indices]).items()
-                         if key not in ("labels", "class_labels", "forecast_targets")}
-                if calibration is not None:
-                    calibration.validate(model.config, batch)
-                output = model(**batch)
-                class_ids = output.classification_logits.argmax(-1).tolist()
-                class_probabilities = output.classification_logits.float().softmax(-1).tolist()
-                forecasts = output.forecast.tolist()
-                if series_classifier is not None:
-                    scores = series_classifier.scores(model, batch)
-                    series_ids = scores.argmax(-1)
-                    if series_gate is not None:
-                        chosen, used, advantage = series_gate.choose(batch, output.classification_logits, scores)
-                        if series_gate_guard is not None:
-                            used = series_gate_guard.select(advantage)
-                            chosen = torch.where(used, series_ids, output.classification_logits.argmax(-1))
-                    if series_probability is not None:
-                        calibrated_probabilities = series_probability.probabilities(scores)
-                    if series_set is not None:
-                        probs = calibrated_probabilities if series_probability else log_probabilities(scores).exp()
-                        set_masks = series_set.predict(probs, series_ids)
-                if calibration is not None:
-                    intervals = calibration.interval(output.forecast).tolist()
-                for position, index in enumerate(indices):
-                    row = {
-                        "index": index,
-                        "class_id": class_ids[position],
-                        "class_probabilities": class_probabilities[position],
-                        "quantiles": list(model.config.quantiles),
-                        "forecast": forecasts[position],
-                    }
-                    if series_classifier is not None:
-                        row["series_classifier_class_id"] = series_ids[position].item()
-                        row["series_classifier_scores"] = scores[position].tolist()
-                        if series_gate is not None:
-                            if series_gate_guard is not None:
-                                row["series_gate_guard_max_harm"] = series_gate_guard.max_harm
-                                row["series_gate_guard_threshold"] = series_gate_guard.threshold
-                            row["series_gate_class_id"] = chosen[position].item()
-                            row["series_gate_selected"] = "series_classifier" if used[position].item() else "base"
-                            row["series_gate_advantage"] = advantage[position].item()
-                        if series_probability is not None:
-                            row["series_classifier_probabilities"] = calibrated_probabilities[position].tolist()
-                            row["series_classifier_inverse_temperature"] = series_probability.inverse_temperature
-                        if series_set is not None:
-                            row["series_prediction_set"] = set_masks[position].nonzero().flatten().tolist()
-                            row["series_prediction_set_nominal_coverage"] = series_set.coverage
-                            row["series_prediction_set_method"] = series_set.method
-                            row["series_prediction_set_scope"] = series_set.scope
-                    if calibration is not None:
-                        row["calibrated_interval"] = intervals[position]
-                        row["calibrated_nominal_coverage"] = calibration.coverage
-                        row["calibrated_coverage_scope"] = calibration.scope
-                        row["calibrated_score_scale"] = calibration.score_scale
-                        if calibration.lower_tail_fraction is not None:
-                            row["calibrated_lower_tail_fraction"] = calibration.lower_tail_fraction
-                        if calibration.score_scale == "width":
-                            row["calibrated_scale_floor"] = calibration.scale_floor
-                    if args.max_new_tokens and "input_ids" in batch:
-                        # Génération sur l'exemple seul : son prompt sans padding ni eos final.
-                        single = {key: value.to(args.device) for key, value in collate_records([dataset[index]]).items()
-                                  if key not in ("labels", "class_labels", "forecast_targets")}
-                        prompt = single["input_ids"]
-                        if prompt[0, -1] == ByteTokenizer.eos_id:
-                            prompt = prompt[:, :-1]
-                        context = {key: value for key, value in single.items()
-                                   if key not in ("input_ids", "attention_mask")}
-                        generated = model.generate(prompt, max_new_tokens=args.max_new_tokens,
-                                                   temperature=0, **context)
-                        row["generated_text"] = ByteTokenizer().decode(generated[0])
-                    stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
-                    count += 1
-        if args.output:
-            print(f"{count} prédictions écrites dans {args.output}")
+        _run_predict(args, parser)
     elif args.command == "embed":
-        if args.batch_size < 1:
-            parser.error("batch-size doit être >= 1")
-        if args.output and any(same_file(args.output, path) for path in (args.data, args.checkpoint)):
-            parser.error("Le fichier de vecteurs doit être distinct des fichiers d'entrée")
-        checkpoint_sha = file_sha256(args.checkpoint)
-        model, _ = load_checkpoint(args.checkpoint, args.device)
-        model.eval()
-        dataset = JointDataset(args.data, model.config, allow_mixed=True)
-        if dataset.references_image(args.output):
-            parser.error("Le fichier de vecteurs doit être distinct des images d'entrée")
-        sampler = OrderedModalityBatchSampler(dataset, args.batch_size)
-        loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_records,
-                            generator=torch.Generator().manual_seed(0))
-        autocast = nullcontext() if args.amp == "none" else torch.autocast(
-            torch.device(args.device).type, dtype=torch.bfloat16 if args.amp == "bf16" else torch.float16)
-        count = 0
-        with prediction_stream(args.output) as stream, torch.inference_mode(), autocast:
-            for batch in loader:
-                inputs = {key: value.to(args.device) for key, value in batch.items()
-                          if key in ("input_ids", "attention_mask", "images", "series", "series_mask",
-                                     "audio", "audio_mask", "graph_nodes", "graph_edges", "graph_mask",
-                                     "points", "point_features", "point_mask", "tabular_num", "tabular_cat",
-                                     "video", "video_mask")}
-                vectors = {name: value.cpu().tolist() for name, value in model.encode_modalities(**inputs).items()}
-                size = len(next(iter(vectors.values())))
-                for offset in range(size):
-                    row = {"format_version": 1, "index": count,
-                           "checkpoint_sha256": checkpoint_sha, "dataset_sha256": dataset.fingerprint,
-                           "dataset_images_sha256": dataset.image_fingerprint,
-                           "alignment_text_view": model.config.alignment_text_view,
-                           "amp": args.amp, "device": str(args.device), "batch_size": args.batch_size,
-                           "torch_version": str(torch.__version__),
-                           "vectors": {name: value[offset] for name, value in vectors.items()}}
-                    stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
-                    count += 1
-            if file_sha256(args.checkpoint) != checkpoint_sha:
-                raise ValueError("Le checkpoint a changé pendant l'extraction")
-            verified = JointDataset(args.data, model.config, allow_mixed=True)
-            if (verified.fingerprint, verified.image_fingerprint) != (dataset.fingerprint, dataset.image_fingerprint):
-                raise ValueError("Le jeu ou ses images ont changé pendant l'extraction")
-        if args.output:
-            print(f"{count} vecteurs écrits dans {args.output}")
+        _run_embed(args, parser)
     elif args.command == "search-embeddings":
         if min(args.top_k, args.query_batch_size, args.candidate_batch_size) < 1:
             parser.error("top-k et les tailles de lot doivent être >= 1")
