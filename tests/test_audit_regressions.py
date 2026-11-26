@@ -432,6 +432,22 @@ class ExportProtectionTests(unittest.TestCase):
             self.assertEqual(checkpoint.read_bytes(), before)
 
 
+class CommandLineErrorTests(unittest.TestCase):
+    def test_usage_errors_print_a_message_without_traceback(self):
+        import os
+        import subprocess
+        import sys
+        environment = {key: value for key, value in os.environ.items() if key != "BLUE_TRACEBACK"}
+        run = subprocess.run([sys.executable, "-m", "blue", "generate", "--checkpoint", "absent.pt"],
+                             capture_output=True, text=True, env=environment)
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("blue : erreur :", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+        run = subprocess.run([sys.executable, "-m", "blue", "generate", "--checkpoint", "absent.pt"],
+                             capture_output=True, text=True, env=dict(environment, BLUE_TRACEBACK="1"))
+        self.assertIn("Traceback", run.stderr)
+
+
 class QuantizationRangeTests(unittest.TestCase):
     def test_int4_scales_stay_positive_and_finite(self):
         for magnitude in (0.0, 1e-12, 1e-7, 1e-3, 1.0, 1e6):
