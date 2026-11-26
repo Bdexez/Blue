@@ -847,9 +847,12 @@ class SparseMoE(nn.Module):
         if not (tokens.is_cuda and tokens.size(0) >= 64 and hasattr(torch, "_grouped_mm")):
             return False
         hidden = self.experts[0].down.in_features
+        degree = self.experts[0].kan_degree if self.experts[0].kan_coeffs is not None else 0
         return (tokens.size(-1) % 8 == 0 and hidden % 8 == 0
-                and all(type(expert) is SwiGLU and expert.kan_coeffs is None
-                        and type(expert.up_gate) is nn.Linear and type(expert.down) is nn.Linear
+                and all(type(expert) is SwiGLU and type(expert.up_gate) is nn.Linear
+                        and type(expert.down) is nn.Linear
+                        and (expert.kan_coeffs is not None) == bool(degree)
+                        and (not degree or expert.kan_degree == degree)
                         for expert in self.experts))
 
     def _grouped_gemm_experts(self, tokens, mixed, order, slot_counts, weights, flat_selected):
@@ -871,7 +874,21 @@ class SparseMoE(nn.Module):
         up_gate = torch.stack(up_gate).to(dtype).transpose(1, 2)
         down = torch.stack(down).to(dtype).transpose(1, 2)
         gate, up = torch._grouped_mm(tokens[rows].to(dtype), up_gate, offs=offsets).chunk(2, dim=-1)
-        outputs = torch._grouped_mm(F.silu(gate) * up, down, offs=offsets)
+        activation = F.silu(gate)
+        if self.experts[0].kan_coeffs is not None:
+            # Même terme de Tchebychev que SwiGLU, avec les coefficients de l'expert de chaque ligne.
+            coefficients = [expert.kan_coeffs for expert in self.experts]
+            coefficients += [coefficients[0].new_zeros(coefficients[0].shape)] * self.n_null
+            per_row = torch.stack(coefficients).float()[flat_selected[order]]  # [S, degré - 1, H]
+            with torch.autocast(device_type="cuda", enabled=False):
+                z = torch.tanh(gate.float())
+                previous, current = torch.ones_like(z), z
+                chebyshev = torch.zeros_like(z)
+                for index in range(self.experts[0].kan_degree - 1):
+                    previous, current = current, 2.0 * z * current - previous
+                    chebyshev = chebyshev + current * per_row[:, index]
+            activation = activation + chebyshev.to(activation.dtype)
+        outputs = torch._grouped_mm(activation * up, down, offs=offsets)
         contributions = outputs * weights.reshape(-1)[order, None].to(outputs.dtype)
         if self.n_null:
             routed = (flat_selected[order] < self.n_experts).unsqueeze(-1)
