@@ -13,6 +13,7 @@ Cet audit a relu les modules du modèle, de l'entraînement, du décodage, de l'
 | Série 1D de longueur `series_features` dans un JSONL | Diffusée en pas identiques, sans erreur | Formes vérifiées à la lecture, avec fichier et ligne |
 | `audit-splits` et signatures de calibration | Ignoraient audio, graphe, nuage 3D, tabulaire et vidéo : faux doublons, jeux tabulaires refusés, calibration acceptée pour une autre combinaison de modalités | Liste unique des modalités d'entrée |
 | `generate` en ligne de commande | Échantillonnage non reproductible | Option `--seed` |
+| Checkpoints | Renommage atomique sans `fsync` : après une coupure de courant, `latest.pt` pouvait être vide ou tronqué | Fichier puis répertoire synchronisés avant publication |
 | Génération en lot avec padding à gauche et `attention_sinks` ou `dynamic_attn_scale` | Une ligne paddée produisait d'autres logits et tokens que la même ligne seule (positions absolues décalées par le padding) | Positions comptées depuis le premier token valide de chaque ligne, blocs NSA réalignés de même |
 | `observed_loss` de validation (`--monitor observed_loss`) | Ignorait les termes ajoutés ensuite (entropie et orthogonalité du routeur, distillation MTP, z-loss, lissage des prévisions) : sélection du meilleur checkpoint sur un autre objectif | Tous les termes pondérés inclus |
 | Guidage (`context_guidance_scale`) ou Mirostat combinés à beam, Jacobi ou spéculatif | Option ignorée en silence | `ValueError` explicite |
@@ -74,6 +75,8 @@ Un essai de `torch.compile` sur les blocs du décodeur (preset `small`) accélé
 - A/B Muon (3 seeds, 150 pas, données synthétiques) : perte de validation inchangée à la précision du bruit (0.8291 contre 0.8295, 0.8382 contre 0.8374, 0.7700 contre 0.7707). La correction repose sur la définition de Muon, pas sur un gain mesuré sur ces données faciles.
 
 ## Maintenance
+
+- `metrics.jsonl` indique la durée de chaque pas (`step_seconds`) ; l'EMA des poids se met à jour en une opération multi-tenseurs (2.3 → 1.6 ms sur GPU pour `small`, résultat identique).
 
 - `Blue._encode_inputs` est l'unique chemin d'encodage des modalités non textuelles, partagé par `forward` et `encode_modalities` (sorties identiques au bit près).
 - `Blue._parallel_decode` porte la boucle commune des décodeurs spéculatifs (glouton et stochastique) et de Jacobi ; chacun ne fournit plus que sa proposition et sa règle d'acceptation (−83 lignes, sorties et flux aléatoire identiques).
