@@ -587,12 +587,15 @@ def train(args, config):
             if rank == 0 and "series" in batch:
                 series = batch["series"]
                 valid = batch.get("series_mask", torch.ones(series.shape[:2], device=series.device, dtype=torch.bool)).bool()
-                valid_steps = valid.sum().item()
+                # Trois compteurs lus en une seule synchronisation.
+                valid_steps, observed_values, affine_changed = torch.stack((
+                    valid.sum(), (torch.isfinite(series) & valid.unsqueeze(-1)).sum(),
+                    (torch.isfinite(original_series) & valid.unsqueeze(-1)
+                     & (series != original_series)).any(dim=(1, 2)).sum(),
+                )).tolist()
                 statistics = dict(examples=series.size(0), valid_steps=valid_steps,
                                   possible_values=valid_steps * series.size(-1),
-                                  observed_values=(torch.isfinite(series) & valid.unsqueeze(-1)).sum().item(),
-                                  affine_changed_examples=(torch.isfinite(original_series) & valid.unsqueeze(-1)
-                                                           & (series != original_series)).any(dim=(1, 2)).sum().item())
+                                  observed_values=observed_values, affine_changed_examples=affine_changed)
                 for name, value in statistics.items():
                     series_statistics[name] = series_statistics.get(name, 0) + value
             if args.alignment_cross_rank_views:
