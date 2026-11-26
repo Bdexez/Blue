@@ -57,6 +57,11 @@ class CudaSmokeTests(unittest.TestCase):
         for name, value in first.items():
             self.assertTrue(torch.equal(value, second[name]), name)
 
+    def test_verifier_passes_on_gpu(self):
+        from blue.verifier import verify_architecture
+        report = verify_architecture(replace(BlueConfig.preset("tiny"), **CONFIGURATIONS["recurrent"]), device="cuda")
+        self.assertTrue(report["passed"], report)
+
     def test_cached_generation_matches_cpu(self):
         torch.manual_seed(0)
         model = Blue(replace(BlueConfig.preset("tiny"), **CONFIGURATIONS["recurrent"])).eval()

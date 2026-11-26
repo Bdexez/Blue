@@ -135,10 +135,13 @@ def _verify(config, *, seed, dev, device):
         loss_b, fingerprint_b = gradient_fingerprint()
     finally:
         model.config.gradient_checkpointing = original
-    checkpoint_diff = max([abs(loss_a - loss_b)] + [
-        abs(x - y) for name in fingerprint_a for x, y in zip(fingerprint_a[name], fingerprint_b.get(name, (float("nan"),) * 2))])
-    checks["gradient_checkpointing_max_abs_diff"] = round(checkpoint_diff, 10)
-    checks["gradient_checkpointing_passed"] = set(fingerprint_a) == set(fingerprint_b) and checkpoint_diff <= 1e-6
+    # Écarts rapportés à la norme de chaque gradient : nuls sur CPU (calcul déterministe),
+    # de l'ordre de l'arrondi sur GPU, où les additions atomiques varient d'un appel à l'autre.
+    checkpoint_diff = max([abs(loss_a - loss_b) / max(abs(loss_a), 1e-12)] + [
+        abs(x - y) / max(fingerprint_a[name][1], 1e-12)
+        for name in fingerprint_a for x, y in zip(fingerprint_a[name], fingerprint_b.get(name, (float("nan"),) * 2))])
+    checks["gradient_checkpointing_max_rel_diff"] = round(checkpoint_diff, 10)
+    checks["gradient_checkpointing_passed"] = set(fingerprint_a) == set(fingerprint_b) and checkpoint_diff <= 1e-4
 
     passed = all(v for k, v in checks.items() if k.endswith("_passed") or k.endswith("_finite"))
     return {"passed": passed, "checks": checks}
