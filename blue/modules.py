@@ -840,6 +840,44 @@ class SparseMoE(nn.Module):
             with torch.no_grad():
                 self.routed_log_scale.zero_()
 
+    def _grouped_gemm_ready(self, tokens) -> bool:
+        """Multiplications groupées natives (CUDA) : experts SwiGLU standards, sans experts nuls.
+
+        Les experts nuls exigeraient de connaître le nombre de créneaux routés,
+        c'est-à-dire une synchronisation ; ce cas garde la boucle par expert.
+        """
+        # En dessous d'environ 64 jetons (décodage), empiler les poids des experts coûte plus
+        # que la boucle sur les quelques experts choisis.
+        if not (tokens.is_cuda and tokens.size(0) >= 64 and self.n_null == 0 and hasattr(torch, "_grouped_mm")):
+            return False
+        hidden = self.experts[0].down.in_features
+        return (tokens.size(-1) % 8 == 0 and hidden % 8 == 0
+                and all(type(expert) is SwiGLU and expert.kan_coeffs is None
+                        and type(expert.up_gate) is nn.Linear and type(expert.down) is nn.Linear
+                        for expert in self.experts))
+
+    def _grouped_gemm_experts(self, tokens, mixed, order, slot_counts, weights):
+        """Tous les experts en deux multiplications groupées, sans synchronisation de l'hôte."""
+        rows = order // self.top_k  # Créneaux triés par expert (tri stable).
+        offsets = slot_counts[:self.n_experts].cumsum(0).to(torch.int32)
+        dtype = (torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else tokens.dtype)
+        up_gate = torch.stack([expert.up_gate.weight for expert in self.experts]).to(dtype).transpose(1, 2)
+        down = torch.stack([expert.down.weight for expert in self.experts]).to(dtype).transpose(1, 2)
+        gate, up = torch._grouped_mm(tokens[rows].to(dtype), up_gate, offs=offsets).chunk(2, dim=-1)
+        outputs = torch._grouped_mm(F.silu(gate) * up, down, offs=offsets)
+        contributions = outputs * weights.reshape(-1)[order, None].to(outputs.dtype)
+        return mixed.index_add(0, rows, contributions.to(mixed.dtype))
+
+    def _finish(self, x, flat, indices, mixed, slot_counts, flat_selected, probs, scores, entropy):
+        mixed = mixed.to(flat.dtype)
+        result = (mixed if indices is None else torch.zeros_like(flat).index_copy(0, indices, mixed)).view_as(x)
+        full_fraction = slot_counts.float() / flat_selected.numel()
+        # Conservée détachée : la lecture seule (propriété) synchronise le GPU.
+        self._null_fraction = full_fraction[self.n_experts:].sum().detach() if self.n_null > 0 else None
+        balance = self.total_slots * (probs.mean(0) * full_fraction).sum()
+        z_loss = scores.logsumexp(-1).square().mean()
+        return result, balance, z_loss, full_fraction[:self.n_experts].detach(), entropy
+
     @torch.no_grad()
     def update_expert_bias(self, usage: torch.Tensor):
         """Mise à jour sans gradient du biais d'équilibrage (DeepSeek-V3)."""
@@ -910,6 +948,9 @@ class SparseMoE(nn.Module):
             0, flat_selected, torch.ones_like(flat_selected))
         order = flat_selected.argsort(stable=True)
         flat_weights = weights.reshape(-1)
+        if self._grouped_gemm_ready(tokens):
+            mixed = self._grouped_gemm_experts(tokens, mixed, order, slot_counts, weights)
+            return self._finish(x, flat, indices, mixed, slot_counts, flat_selected, probs, scores, entropy)
         rows_all, contributions = [], []
         start = 0
         for expert, count in zip(self.experts, slot_counts[:self.n_experts].tolist()):
@@ -923,14 +964,7 @@ class SparseMoE(nn.Module):
             start += count
         if contributions:
             mixed = mixed.index_add(0, torch.cat(rows_all), torch.cat(contributions).to(mixed.dtype))
-        mixed = mixed.to(flat.dtype)
-        result = (mixed if indices is None else torch.zeros_like(flat).index_copy(0, indices, mixed)).view_as(x)
-        full_fraction = slot_counts.float() / flat_selected.numel()
-        # Conservée détachée : la lecture seule (propriété) synchronise le GPU.
-        self._null_fraction = full_fraction[self.n_experts:].sum().detach() if self.n_null > 0 else None
-        balance = self.total_slots * (probs.mean(0) * full_fraction).sum()
-        z_loss = scores.logsumexp(-1).square().mean()
-        return result, balance, z_loss, full_fraction[:self.n_experts].detach(), entropy
+        return self._finish(x, flat, indices, mixed, slot_counts, flat_selected, probs, scores, entropy)
 
 
 class EncoderBlock(nn.Module):
