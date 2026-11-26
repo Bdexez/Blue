@@ -34,6 +34,8 @@ jobs:
         env:
           OMP_NUM_THREADS: '1'
         run: python -m pytest -n auto -q tests
+      - name: Build the wheel
+        run: python -m pip wheel --no-deps --wheel-dir dist .
       - name: Inspect all architecture presets without allocating weights
         run: python -m blue inspect --all
       - name: Distributed validation smoke test
