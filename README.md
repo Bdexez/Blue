@@ -176,6 +176,8 @@ python3 -m venv .venv
 .venv/bin/ruff check blue tools tests
 ```
 
+> Invalid options or inputs print `blue : erreur : <message>` and exit with status 2; set `BLUE_TRACEBACK=1` to see the full Python traceback.
+>
 > On GPU, install a CUDA PyTorch build and add `--device cuda` (optionally `--amp bf16`, or `--matmul-precision high` to use TF32 for FP32 matrix products on Ampere and newer GPUs). Training and decoding were benchmarked on an RTX 3060 Ti ([audit](AUDIT.md)); the test suite runs on CPU, plus CUDA smoke tests when a GPU is available.
 
 ---
