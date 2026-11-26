@@ -10,51 +10,51 @@
       "models": [
         {
           "variant": "small",
-          "train_step_ms": 327.3834669998905,
-          "decode_ms_per_token": 9.492919515594167
+          "train_step_ms": 321.88976199904573,
+          "decode_ms_per_token": 9.380290468754993
         },
         {
           "variant": "small+recurrent",
-          "train_step_ms": 1017.4030380003387,
-          "decode_ms_per_token": 14.166560203136669
+          "train_step_ms": 977.7227579979808,
+          "decode_ms_per_token": 13.746885156251665
         },
         {
           "variant": "small+temporal",
-          "train_step_ms": 326.9023059983738,
-          "decode_ms_per_token": 9.592507515662874
+          "train_step_ms": 325.70461399882333,
+          "decode_ms_per_token": 9.268575703117676
         }
       ],
       "branches": {
-        "gated_deltanet_forward_backward_ms": 6.457259998569498,
-        "ttt_linear_forward_backward_ms": 53.75903100139112,
-        "episodic_memory_forward_backward_ms": 83.04804100043839
+        "gated_deltanet_forward_backward_ms": 6.26615200235392,
+        "ttt_linear_forward_backward_ms": 52.85258300136775,
+        "episodic_memory_forward_backward_ms": 77.39920799940592
       }
     },
     "cuda": {
       "models": [
         {
           "variant": "small",
-          "train_step_ms": 65.18423200031975,
+          "train_step_ms": 65.30261499938206,
           "train_peak_mib": 785.07080078125,
-          "decode_ms_per_token": 11.157382625015089
+          "decode_ms_per_token": 10.771917937518083
         },
         {
           "variant": "small+recurrent",
-          "train_step_ms": 1087.2918480017688,
+          "train_step_ms": 1051.5372739973827,
           "train_peak_mib": 1112.818359375,
-          "decode_ms_per_token": 19.63390151558997
+          "decode_ms_per_token": 18.605558109356934
         },
         {
           "variant": "small+temporal",
-          "train_step_ms": 80.49127499907627,
+          "train_step_ms": 75.05643100012094,
           "train_peak_mib": 797.474609375,
-          "decode_ms_per_token": 11.423386374985967
+          "decode_ms_per_token": 10.834397218786762
         }
       ],
       "branches": {
-        "gated_deltanet_forward_backward_ms": 3.0220440021366812,
-        "ttt_linear_forward_backward_ms": 108.5529839983792,
-        "episodic_memory_forward_backward_ms": 111.36869300025865
+        "gated_deltanet_forward_backward_ms": 2.597902999696089,
+        "ttt_linear_forward_backward_ms": 99.64117699928465,
+        "episodic_memory_forward_backward_ms": 103.56994299945654
       },
       "gpu": "NVIDIA GeForce RTX 3060 Ti"
     }
